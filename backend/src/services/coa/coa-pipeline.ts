@@ -1,3 +1,5 @@
+// ★ หัวใจของระบบ ★ — orchestrator 3 ขั้น: extract text → LLM parse → evaluate
+// แก้ลำดับขั้น/เปลี่ยน OCR engine/เปลี่ยน LLM service ที่นี่
 import * as path from "path";
 import * as Tesseract from "tesseract.js";
 import { PdfService } from "../pdf.service";
@@ -6,6 +8,8 @@ import { OllamaCoaService } from "./ollama-coa.service";
 import { evaluateCoa, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
 
+// Step 1 — ดึงข้อความออกจากไฟล์
+// PDF: ลอง text-layer ก่อน (ฟรี+เร็ว) ถ้าไม่ได้ค่อย fallback ไป Tesseract
 export async function extractText(filePath: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
 
@@ -36,6 +40,8 @@ export async function extractText(filePath: string): Promise<string> {
   return data.text;
 }
 
+// Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
+// คืน CoaReport ที่ evaluate เสร็จแล้ว พร้อม summary PASS/FAIL/SKIP
 export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   const filename = path.basename(filePath);
   const ollama = new OllamaCoaService();

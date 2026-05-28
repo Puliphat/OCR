@@ -1,3 +1,5 @@
+// Bridge ไปคุย Ollama — มี 2 mode: vision OCR (ไม่ได้ใช้ตอนนี้) + parse text → JSON
+// ★ Prompt ของ parseCoa อยู่ที่นี่ ★ — ปรับ rules / schema ที่นี่เมื่อ LLM parse พลาด
 import axios from "axios";
 import * as fs from "fs";
 
@@ -26,6 +28,8 @@ export class OllamaCoaService {
   private readonly ocrModel =
     process.env.OLLAMA_OCR_MODEL || "scb10x/typhoon-ocr-3b";
 
+  // Vision OCR ผ่าน typhoon-ocr-3b — ปิดไว้ใน pipeline เพราะกินแรม ~7.5GB
+  // เก็บไว้เผื่ออยากเปิดเทียบกับ Tesseract ในอนาคต
   async extractTextFromImage(imagePath: string): Promise<string | null> {
     try {
       const imageBuffer = fs.readFileSync(imagePath);
@@ -53,6 +57,8 @@ export class OllamaCoaService {
     }
   }
 
+  // ส่ง text COA ให้ gemma3 → คืน JSON shape { product, lotNo, items[] }
+  // ปรับ prompt เมื่อเจอใบแบบใหม่ที่ parse ไม่เข้า / เพิ่ม field — temperature=0, format=json บังคับให้ deterministic
   async parseCoa(text: string): Promise<RawCoa | null> {
     const prompt = `
 You are parsing a Certificate of Analysis (COA) / Quality Inspection Certificate.

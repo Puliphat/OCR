@@ -1,3 +1,5 @@
+// CLI runner — รัน pipeline กับไฟล์ใน uploads/ แบบ batch โดยไม่ผ่าน HTTP
+// ใช้เวลา debug normalizer/prompt: ผลพิมพ์ลง stdout + append log ที่ coa-logs/run.log
 import * as fs from "fs";
 import * as path from "path";
 import { formatReport, CoaReport } from "../services/coa/coa-evaluator";

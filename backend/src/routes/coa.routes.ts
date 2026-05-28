@@ -1,3 +1,5 @@
+// HTTP layer ของ COA — รับไฟล์ผ่าน multer แล้วโยนเข้า pipeline
+// endpoint หลัก: POST /api/coa/upload (multipart "file") + GET /api/coa/health
 import { Router, Request, Response } from "express";
 import multer from "multer";
 import * as path from "path";
@@ -35,6 +37,8 @@ router.get("/health", (_req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// รับไฟล์ → save → runCoaPipeline → เขียน JSON log → return report
+// อยากเปิด persist DB: uncomment block "TODO: persist ลง DB" ข้างใน
 router.post(
   "/upload",
   (req: Request, res: Response, next) => {

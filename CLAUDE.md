@@ -8,10 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ชื่อโฟลเดอร์ `OCR` เป็นของเดิม โค้ด invoice ถูกถอดออกแล้ว (ดู git history ถ้าต้องการอ้างอิง) — ปัจจุบัน:
 
-- COA pipeline รันผ่าน CLI script (`src/scripts/test-coa.ts`)
-- **ยังไม่มี HTTP route** สำหรับ COA — `src/index.ts` start Express ขึ้นเปล่าๆ พร้อม TODO ให้เพิ่ม route
-- **ยังไม่มี COA UI** — `app/page.tsx` เป็น placeholder รอเชื่อม
-- **ยังไม่ persist ผลลง DB** — `data-source.ts` มี `entities: []` ว่าง พร้อมรับ entity ใหม่ (เช่น `CoaReport`, `CoaItem`) เมื่อพร้อมเก็บ
+- COA pipeline รันได้ทั้งผ่าน **HTTP** (`POST /api/coa/upload`) และ **CLI** (`src/scripts/test-coa.ts`)
+- **มี UI แล้ว** ที่ `app/page.tsx` (upload + ตารางผล) ใช้ react-query เรียก backend
+- **ยังไม่ persist ผลลง DB** — `CoaReportEntity` / `CoaItemEntity` ถูกเขียนไว้พร้อมใช้แล้ว แต่ยัง comment ไว้ใน `data-source.ts:entities` และใน route handler (`coa.routes.ts`)
+- **DB init ปิดอยู่ default** — `index.ts` จะ init TypeORM เฉพาะเมื่อ `ENABLE_DB=true` ใน env (ไม่งั้น start server เปล่าๆ ไม่ต้องต่อ Postgres)
 
 ## Stack
 
@@ -25,21 +25,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```powershell
-# COA pipeline (วิธีรันหลัก ณ ตอนนี้)
+# Backend HTTP server (พร้อมรับ /api/coa/upload จาก frontend)
 cd backend
 npm install
+npm run dev                              # nodemon + ts-node, port 3001
+npm run build                            # tsc → dist/
+
+# COA pipeline แบบ CLI (รัน batch กับไฟล์ใน uploads/ โดยไม่ผ่าน HTTP)
 npx ts-node src/scripts/test-coa.ts                  # ทุกไฟล์ใน backend/uploads/
 npx ts-node src/scripts/test-coa.ts path\to\file.pdf # PDF/PNG/JPG เฉพาะไฟล์
-# ผลลัพธ์ append ที่ backend/coa-logs/run.log
+# ผลลัพธ์ append ที่ backend/coa-logs/run.log + JSON ต่อรายการ
 
 # COA evaluator regression check (ไม่ต้องพึ่ง Ollama — print-based, ไม่มี test runner)
 npx ts-node src/services/coa/evaluator.test.ts
 
-# Backend HTTP server (รอเพิ่ม COA route)
-npm run dev                              # nodemon + ts-node, port 3001
-npm run build                            # tsc → dist/
-
-# Frontend (รอ COA UI)
+# Frontend
 cd frontend
 npm install
 npm run dev                              # Next.js, port 3000
@@ -61,13 +61,43 @@ PORT=3001
 ชื่อ DB default ยังเป็น `invoice_db` (ของเดิม) — เปลี่ยนได้ผ่าน `DB_NAME` env หรือ default ใน `data-source.ts`
 TypeORM `synchronize: true` — เพิ่ม entity เมื่อไร ตารางใน Postgres รีเฟลคอัตโนมัติตอน start
 
+## โครงสร้างโดยรวม
+
+```
+backend/src/
+├── index.ts                    entry: เปิด Express, mount /api/coa, init DB
+├── data-source.ts              TypeORM config (entities ยัง comment ไว้)
+├── routes/coa.routes.ts        POST /api/coa/upload, GET /api/coa/health
+├── entities/                   มีไฟล์แล้วแต่ยัง inactive รอ enable
+│   ├── CoaReportEntity.ts
+│   └── CoaItemEntity.ts
+├── scripts/test-coa.ts         CLI runner (batch ไฟล์ใน uploads/)
+└── services/
+    ├── pdf.service.ts                 PDF → PNG (pdfjs render, scale 2000/width)
+    ├── image-processing.service.ts    sharp preprocess ก่อน OCR
+    └── coa/                           ★ หัวใจของระบบ ★
+        ├── coa-pipeline.ts            orchestrator (3 steps)
+        ├── pdf-text-extractor.ts      ดูด text-layer จาก PDF (ฟรี, ไม่ต้อง OCR)
+        ├── ollama-coa.service.ts      เรียก Ollama gemma3 → JSON (prompt อยู่ที่นี่)
+        ├── coa-evaluator.ts           PASS/FAIL/SKIP + summary
+        ├── spec-normalizer.ts         parse spec format (range, ±, ≤≥, …)
+        ├── result-normalizer.ts       parse result (รับ number/string/{avg,min,max})
+        ├── spec-normalizer.test.ts
+        └── evaluator.test.ts          fixtures จากใบจริง
+
+frontend/
+├── app/page.tsx                UI: upload form + ตารางผล
+├── components/providers.tsx    react-query provider
+└── lib/
+    ├── axios.ts                baseURL → localhost:3001
+    └── types.ts                CoaRow, UploadResponse
+```
+
 ## COA pipeline (สิ่งที่ต้องอ่านก่อนแก้)
 
-ทั้งหมดอยู่ใน `backend/src/services/coa/` + `src/scripts/test-coa.ts` + `src/services/pdf.service.ts` + `src/services/image-processing.service.ts` (สองตัวท้าย shared infra)
+**3 ขั้น** (อยู่ใน `backend/src/services/coa/coa-pipeline.ts`):
 
-**3 ขั้น:**
-
-1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → fallback ไป `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → `image-processing.service.processImage` (sharp preprocess) → Tesseract `eng+tha` ใน `test-coa.ts:getText()`
+1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → fallback ไป `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → `image-processing.service.processImage` (sharp preprocess) → Tesseract `eng+tha`
 2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama gemma3, `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
 3. **Deterministic evaluator** (`coa/coa-evaluator.ts`) → status `PASS`/`FAIL`/`SKIP` ต่อ row พร้อม `reason` + summary
 
@@ -82,11 +112,17 @@ TypeORM `synchronize: true` — เพิ่ม entity เมื่อไร ต
 
 **`evaluator.test.ts`** = mock fixture จากใบจริง (Inolob T204F, Twaron TR_1099, TXAX-A, D-2072) + failing case — ใช้ตรวจ regression เวลาแก้ normalizer
 
-## Next steps (เปิดทาง — ยังไม่มี)
+## จุดที่แก้บ่อย (cheatsheet)
 
-1. สร้าง entity `CoaReport` + `CoaItem` ใน `src/entities/` แล้วเพิ่มเข้า `data-source.ts:entities`
-2. เขียน controller/route — รับ upload (multer ใน `index.ts`), เรียก COA pipeline เหมือนใน `test-coa.ts:processFile`, save ผ่าน TypeORM, return `CoaReport`
-3. Frontend: เขียน UI ใหม่ที่ `app/page.tsx` ใช้ react-query + axios (`lib/axios.ts`, baseURL `http://localhost:3001`) เพื่อ upload + แสดง result table
+| ต้องการแก้ | ไปที่ |
+|---|---|
+| LLM parse ผิด / เพิ่ม field | `coa/ollama-coa.service.ts` (prompt ใน `parseCoa`) |
+| spec format ใหม่ที่ pipeline อ่านไม่เข้าใจ | `coa/spec-normalizer.ts` + เพิ่ม fixture ที่ `evaluator.test.ts` |
+| result column รูปแบบใหม่ | `coa/result-normalizer.ts` |
+| OCR อ่านไม่ออก | `coa/pdf-text-extractor.ts` (threshold 100 chars) หรือ `image-processing.service.ts` (sharp config) |
+| เพิ่ม endpoint / รับ field เพิ่ม | `routes/coa.routes.ts` |
+| UI ตาราง / สี / column | `frontend/app/page.tsx` (`ResultTable`, `StatusPill`) |
+| เปิด persist DB | (1) เติม `ENABLE_DB=true` + `DB_PASSWORD=...` ใน `.env` (2) uncomment `entities` ใน `data-source.ts` (3) uncomment block ใต้ `// TODO: persist ลง DB` ใน `routes/coa.routes.ts` |
 
 ## Reference template (อ่านประกอบ — stack ไม่ตรง)
 

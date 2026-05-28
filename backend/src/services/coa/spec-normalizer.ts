@@ -1,3 +1,5 @@
+// ★ แก้บ่อยที่สุด ★ — แปลง spec string จากใบ COA → {op, min/max/value}
+// เจอ format ใหม่ที่ไม่เข้า? เพิ่ม branch ใน normalizeSpec + เพิ่ม fixture ที่ evaluator.test.ts
 export type SpecOp =
   | "between"
   | "le"
@@ -29,6 +31,8 @@ function stripUnits(s: string): string {
     .trim();
 }
 
+// Parse spec จากคอลัมน์เดียว (เช่น "275-425", "≤ 0.2", "26 ± 2")
+// ลำดับ branch สำคัญ — ± ก่อน range เพราะ "26 ± 2" ก็เข้า regex range ได้
 export function normalizeSpec(raw: unknown): ParsedSpec | null {
   if (raw == null) return null;
   let s = String(raw).trim();
@@ -116,6 +120,8 @@ export interface SpecCandidate {
   max?: string | number | null;
 }
 
+// รองรับกรณีตารางแยกคอลัมน์ Min/Max (LLM แยกใส่ specMin/specMax ให้)
+// ทั้ง min+max → between, มีอย่างเดียว → ge/le, ไม่มี → fallback ใช้ specRaw
 export function normalizeSpecFromCandidate(c: SpecCandidate): ParsedSpec | null {
   const minPresent = c.min !== null && c.min !== undefined && String(c.min).trim() !== "";
   const maxPresent = c.max !== null && c.max !== undefined && String(c.max).trim() !== "";

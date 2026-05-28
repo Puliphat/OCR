@@ -1,3 +1,5 @@
+// ดึง text-layer จาก PDF โดยตรง (ใช้ pdfjs-dist) — ไม่ต้อง render เป็นภาพ + OCR
+// PDF ส่วนใหญ่ที่ export จาก Word/Excel มี text-layer อยู่แล้ว ใช้ทางนี้เร็ว/แม่นกว่ามาก
 import * as fs from "fs";
 import * as path from "path";
 
@@ -11,6 +13,8 @@ export interface PdfTextResult {
   pageCount: number;
 }
 
+// อ่านทุกหน้า เรียงเป็น line ตาม Y-coordinate (Δy > 2 = ขึ้นบรรทัดใหม่)
+// hasUsableText = true เมื่อข้อความ (ไม่นับช่องว่าง) ≥ 100 chars — ไม่ถึงถือว่า scanned ต้อง fallback OCR
 export async function extractPdfText(filePath: string): Promise<PdfTextResult> {
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const data = new Uint8Array(fs.readFileSync(filePath));

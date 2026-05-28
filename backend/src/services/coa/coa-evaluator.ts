@@ -1,3 +1,5 @@
+// Deterministic evaluator — รับ JSON จาก LLM แล้วตัด PASS/FAIL/SKIP ต่อ row
+// Logic ไม่พึ่ง LLM เลย เปลี่ยน rule ที่นี่ได้โดยไม่ต้อง re-run pipeline
 import { ParsedSpec, normalizeSpecFromCandidate } from "./spec-normalizer";
 import { normalizeResult, ResultValues } from "./result-normalizer";
 
@@ -26,6 +28,8 @@ export interface EvaluatedItem {
   resultRaw: string | null;
 }
 
+// Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
+// spec อ่านไม่ออก → SKIP "spec not parseable", result ไม่ใช่ตัวเลข → SKIP "result not numeric"
 export function evaluateItem(item: CoaItemInput): EvaluatedItem {
   const name = (item.name ?? "").trim() || "(unknown)";
   const unit = item.unit?.toString().trim() || null;
@@ -130,6 +134,7 @@ export interface CoaReport {
   summary: { pass: number; fail: number; skip: number; total: number };
 }
 
+// Evaluate ทั้งใบ — loop เรียก evaluateItem แล้วรวม summary
 export function evaluateCoa(input: CoaInput): CoaReport {
   const rows = (input.items ?? []).map(evaluateItem);
   const summary = rows.reduce(
@@ -151,6 +156,7 @@ export function evaluateCoa(input: CoaInput): CoaReport {
   };
 }
 
+// Pretty-print แบบ ASCII table — ใช้กับ CLI (test-coa.ts) เท่านั้น (HTTP คืน JSON)
 export function formatReport(report: CoaReport): string {
   const lines: string[] = [];
   lines.push("");

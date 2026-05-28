@@ -2,6 +2,8 @@ import sharp = require("sharp");
 import * as path from "path";
 
 export class ImageProcessingService {
+  // Preprocess รูปก่อนส่ง Tesseract — grayscale + upscale 2000px + sharpen
+  // ถ้า OCR อ่านพลาดบ่อย ลองเพิ่ม .threshold() / .normalize() ตรง chain นี้
   async processImage(filePath: string): Promise<string> {
     try {
       console.log(`Processing image: ${filePath}`);

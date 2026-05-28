@@ -1,3 +1,5 @@
+// แปลง result จาก LLM → number ตัวเดียวสำหรับเทียบ spec
+// รับได้ทั้ง number / string / object {avg,min,max,raw} — ใช้ avg เป็นหลัก
 export interface ResultValues {
   avg?: number;
   min?: number;
@@ -24,6 +26,8 @@ function extractNumbers(s: string): number[] {
   return matches ? matches.map(toNum).filter((n) => !Number.isNaN(n)) : [];
 }
 
+// คืน null = ไม่ใช่ตัวเลข (evaluator จะตี SKIP ไม่ใช่ FAIL)
+// reject ค่าที่ไม่ขึ้นต้นด้วยตัวเลข/+/-/. เช่น "White", "K2Ti6O13", "Pass"
 export function normalizeResult(raw: unknown): NormalizedResult | null {
   if (raw == null) return null;
 
