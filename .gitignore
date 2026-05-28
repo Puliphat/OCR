@@ -1,0 +1,27 @@
+/.claude
+
+# dependencies
+node_modules/
+
+# build output
+backend/dist/
+*.tsbuildinfo
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+backend/coa-logs/
+
+# runtime data (uploads, generated PNGs)
+backend/uploads/
+backend/png-out/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
