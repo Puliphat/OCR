@@ -1,5 +1,6 @@
 // ★ หัวใจของระบบ ★ — orchestrator 3 ขั้น: extract text → LLM parse → evaluate
 // แก้ลำดับขั้น/เปลี่ยน OCR engine/เปลี่ยน LLM service ที่นี่
+import * as fs from "fs";
 import * as path from "path";
 import * as Tesseract from "tesseract.js";
 import { PdfService } from "../pdf.service";
@@ -8,8 +9,21 @@ import { OllamaCoaService } from "./ollama-coa.service";
 import { evaluateCoa, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
 
+// Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
+// overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
+const DEBUG_DIR = path.join(__dirname, "..", "..", "..", "coa-logs");
+function dumpDebug(name: string, content: string) {
+  try {
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    fs.writeFileSync(path.join(DEBUG_DIR, name), content, "utf8");
+  } catch {
+    /* ignore — debug only */
+  }
+}
+
 // Step 1 — ดึงข้อความออกจากไฟล์
-// PDF: ลอง text-layer ก่อน (ฟรี+เร็ว) ถ้าไม่ได้ค่อย fallback ไป Tesseract
+// ลำดับ: (1) PDF text-layer → (2) Typhoon vision OCR (ถ้าเปิด USE_TYPHOON_OCR) → (3) Tesseract
+// Typhoon ต้องการ RAM ~7.5GB — ปิด default ไว้ ตั้ง USE_TYPHOON_OCR=true ใน .env ค่อยเปิด
 export async function extractText(filePath: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
 
@@ -27,17 +41,61 @@ export async function extractText(filePath: string): Promise<string> {
     }
   }
 
-  // 2. OCR fallback (Tesseract only — Typhoon needs 7.5GB so skipped for now)
+  // render PDF → PNG (ใช้ทั้ง Typhoon และ Tesseract)
   let imagePath = filePath;
   if (ext === ".pdf") {
     const imgs = await new PdfService().convertToImage(filePath);
     imagePath = imgs[0];
   }
-  const processed = await new ImageProcessingService().processImage(imagePath);
-  console.log(`  [tesseract] running…`);
-  const { data } = await Tesseract.recognize(processed, "eng+tha");
-  console.log(`  [tesseract] ${data.text.length} chars`);
-  return data.text;
+
+  // 2. Typhoon vision OCR — ถ้าเปิด env switch (แม่นกว่า Tesseract มากสำหรับ COA แต่กิน RAM ~7.5GB)
+  if (process.env.USE_TYPHOON_OCR === "true") {
+    const model = process.env.OLLAMA_OCR_MODEL || "scb10x/typhoon-ocr-3b";
+    console.log(`  [typhoon] OCR via ${model}…`);
+    const text = await new OllamaCoaService().extractTextFromImage(imagePath);
+    if (text && text.trim().replace(/\s/g, "").length >= 50) {
+      console.log(`  [typhoon] ${text.length} chars`);
+      return text;
+    }
+    console.warn(`  [typhoon] empty/failed — falling back to Tesseract`);
+  }
+
+  // Multi-rotation OCR — บาง scan/PDF มาเอียง 90/180/270° → text เป็นขยะถ้าไม่หมุนก่อน
+  // จัดลำดับลองตาม aspect ratio (portrait ลอง 90/270 ก่อน), pick by Tesseract confidence
+  // Early exit ถ้า confidence ≥ 75 — ไฟล์ orientation ปกติยังเร็ว 1 pass เท่าเดิม
+  const proc = new ImageProcessingService();
+  const meta = await proc.metadata(imagePath);
+  const isPortrait = (meta.height ?? 0) > (meta.width ?? 0);
+  const order: number[] = isPortrait
+    ? [90, 270, 0, 180]
+    : [0, 180, 90, 270];
+
+  let best = { text: "", confidence: -1, angle: 0 };
+  for (const angle of order) {
+    console.log(`  [tesseract] try ${angle}°…`);
+    const buf = await proc.preprocess(imagePath, angle);
+    const { data } = await Tesseract.recognize(buf, "eng+tha", {
+      // PSM 6 = assume uniform text block (เหมาะกับตาราง COA มากกว่า auto)
+      // preserve_interword_spaces=1 รักษา space ระหว่างคอลัมน์ ช่วยแยก result/spec
+      // เก็บ "|" ไว้ (gemma3 ใช้เป็น column boundary signal)
+      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+      preserve_interword_spaces: "1",
+    } as any);
+    console.log(
+      `  [tesseract] ${angle}°: ${data.text.length} chars, conf ${data.confidence.toFixed(1)}`
+    );
+    if (data.confidence > best.confidence) {
+      best = { text: data.text, confidence: data.confidence, angle };
+    }
+    if (data.confidence >= 75) {
+      console.log(`  [tesseract] picked ${angle}° (conf ≥ 75)`);
+      return data.text;
+    }
+  }
+  console.log(
+    `  [tesseract] best rotation: ${best.angle}° (conf ${best.confidence.toFixed(1)})`
+  );
+  return best.text;
 }
 
 // Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
@@ -47,6 +105,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   const ollama = new OllamaCoaService();
 
   const text = await extractText(filePath);
+  dumpDebug("_last-ocr.txt", text);
   if (!text.trim()) {
     return {
       filename,
@@ -60,6 +119,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   console.log(`  [ollama] parsing…`);
   const raw = await ollama.parseCoa(text);
   if (!raw) {
+    console.log(`  [ollama] parse failed / no items`);
     return {
       filename,
       product: null,
@@ -68,11 +128,29 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
     };
   }
+  console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items`);
 
-  return evaluateCoa({
+  const evaluated = evaluateCoa({
     filename,
     product: raw.product ?? null,
     lotNo: raw.lotNo ?? null,
     items: raw.items ?? [],
   });
+
+  // Log ทุก row ที่ evaluate ได้ (รวม SKIP เพื่อ debug ว่าทำไมถูก skip)
+  for (const r of evaluated.rows) {
+    const min = r.min == null ? "-" : String(r.min);
+    const max = r.max == null ? "-" : String(r.max);
+    const res = r.result == null ? "-" : String(r.result);
+    console.log(
+      `  [eval] ${r.status.padEnd(4)} ${truncForLog(r.name, 30).padEnd(30)} min=${min.padEnd(8)} max=${max.padEnd(8)} result=${res.padEnd(8)} ${r.reason}`
+    );
+  }
+
+  // ช่วง test: เก็บ SKIP ไว้ดูด้วย (เดิม filter ออก) — กลับมา filter ทีหลัง
+  return evaluated;
+}
+
+function truncForLog(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }

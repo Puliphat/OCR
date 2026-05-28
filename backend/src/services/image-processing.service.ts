@@ -1,30 +1,21 @@
 import sharp = require("sharp");
-import * as path from "path";
 
 export class ImageProcessingService {
-  // Preprocess รูปก่อนส่ง Tesseract — grayscale + upscale 2000px + sharpen
-  // ถ้า OCR อ่านพลาดบ่อย ลองเพิ่ม .threshold() / .normalize() ตรง chain นี้
-  async processImage(filePath: string): Promise<string> {
-    try {
-      console.log(`Processing image: ${filePath}`);
+  // Preprocess รูปก่อนส่ง Tesseract — return Buffer (ไม่เซฟไฟล์ ลด clutter ใน uploads/)
+  // rotation: หมุนภาพก่อน preprocess (0/90/180/270) — ใช้คู่กับ multi-rotation OCR ใน coa-pipeline
+  // normalize() เพิ่ม contrast — ช่วยอ่านตัวอักษรเก่า/จาง
+  async preprocess(filePath: string, rotation = 0): Promise<Buffer> {
+    let pipeline = sharp(filePath);
+    if (rotation !== 0) pipeline = pipeline.rotate(rotation);
+    return pipeline
+      .grayscale()
+      .resize({ width: 2000, withoutEnlargement: false })
+      .normalize()
+      .sharpen()
+      .toBuffer();
+  }
 
-      const processedFilePath = path.join(
-        path.dirname(filePath),
-        `processed_${path.basename(filePath)}`
-      );
-
-      await sharp(filePath)
-        .grayscale() // Remove color noise
-        .resize({ width: 2000, withoutEnlargement: false }) // Upscale to improve text resolution (target width 2000px)
-        .sharpen() // Enhance edges
-        .toFile(processedFilePath);
-
-      console.log(`Image processed and saved to: ${processedFilePath}`);
-      return processedFilePath;
-    } catch (error) {
-      console.error("Failed to process image", error);
-      // Fallback to original file if processing fails
-      return filePath;
-    }
+  async metadata(filePath: string) {
+    return sharp(filePath).metadata();
   }
 }

@@ -19,8 +19,16 @@ export interface ParsedSpec {
 
 const NUM = String.raw`-?\d+(?:[.,]\d+)?`;
 
+// EU decimal vs US thousands: ถ้ามี comma แต่ไม่มี period → comma คือทศนิยม (0,28 → 0.28)
+// ถ้ามีทั้ง 2 → comma คือ thousands ให้ strip ออก (1,000.5 → 1000.5)
 function toNum(s: string): number {
-  return Number(s.replace(/,/g, ""));
+  let cleaned = s.trim();
+  if (cleaned.includes(",") && !cleaned.includes(".")) {
+    cleaned = cleaned.replace(/,/g, ".");
+  } else {
+    cleaned = cleaned.replace(/,/g, "");
+  }
+  return Number(cleaned);
 }
 
 function stripUnits(s: string): string {
@@ -130,10 +138,13 @@ export function normalizeSpecFromCandidate(c: SpecCandidate): ParsedSpec | null 
     const parsedMin = normalizeSpec(c.min);
     const parsedMax = normalizeSpec(c.max);
     if (parsedMin?.value != null && parsedMax?.value != null) {
+      // LLM อาจ flip min/max — swap ถ้า min > max (real spec ไม่มีทาง min > max)
+      const lo = Math.min(parsedMin.value, parsedMax.value);
+      const hi = Math.max(parsedMin.value, parsedMax.value);
       return {
         op: "between",
-        min: parsedMin.value,
-        max: parsedMax.value,
+        min: lo,
+        max: hi,
         raw: `${c.min}~${c.max}`,
       };
     }

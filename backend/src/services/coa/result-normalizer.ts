@@ -17,8 +17,15 @@ export interface NormalizedResult {
 
 const NUM_RE = /-?\d+(?:[.,]\d+)?/g;
 
+// EU decimal (0,28 → 0.28) vs US thousands (1,000 → 1000) — sync logic กับ spec-normalizer
 function toNum(s: string): number {
-  return Number(s.replace(/,/g, ""));
+  let cleaned = s.trim();
+  if (cleaned.includes(",") && !cleaned.includes(".")) {
+    cleaned = cleaned.replace(/,/g, ".");
+  } else {
+    cleaned = cleaned.replace(/,/g, "");
+  }
+  return Number(cleaned);
 }
 
 function extractNumbers(s: string): number[] {
