@@ -17,7 +17,6 @@ backend/dist/
 backend/coa-logs/
 
 # runtime data (uploads, generated PNGs)
-backend/uploads/
 backend/png-out/
 
 # OS / editor
