@@ -18,6 +18,7 @@ backend/coa-logs/
 
 # runtime data (uploads, generated PNGs)
 backend/png-out/
+backend/uploads/
 
 # OS / editor
 .DS_Store
