@@ -8,6 +8,7 @@ import { ImageProcessingService } from "../image-processing.service";
 import { OllamaCoaService } from "./ollama-coa.service";
 import { evaluateCoa, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
+import { recoverSpecsFromOcr } from "./spec-recovery";
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
 // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
@@ -129,6 +130,12 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     };
   }
   console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items`);
+
+  // กู้คืน spec ที่ gemma3 (โมเดลเล็ก) หล่นทิ้งบางรัน — เติมเฉพาะ row ที่ spec ว่าง ★ ไม่ทับของเดิม ★
+  const rec = recoverSpecsFromOcr(raw.items ?? [], text);
+  if (rec.recovered > 0) {
+    console.log(`  [spec-recovery] เติม spec จาก OCR ${rec.recovered} รายการ (${rec.mode})`);
+  }
 
   const evaluated = evaluateCoa({
     filename,

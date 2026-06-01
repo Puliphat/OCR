@@ -7,7 +7,7 @@ const pdfjsDistPath = path.dirname(
 
 export class PdfService {
   // PDF → PNG (เฉพาะหน้า 1) — ใช้เมื่อ text-layer ใช้ไม่ได้ ก่อนส่งเข้า Tesseract
-  // scale = 2000/baseWidth → resize ภาพเป็นกว้าง 2000px เพื่อให้ Tesseract อ่านชัด
+  // scale = 2000/baseWidth (≈242dpi บน A4) — ค่าที่ validate มาแล้ว; เคยลอง 3000 แล้ว OCR บางไฟล์แย่ลง
   async convertToImage(filePath: string): Promise<string[]> {
     try {
       console.log(`Converting PDF to image: ${filePath}`);

@@ -26,6 +26,7 @@ export interface EvaluatedItem {
   reason: string;
   specRaw: string | null;
   resultRaw: string | null;
+  needsReview: boolean; // ธงเตือนคน: ค่าน่าสงสัยว่า OCR ทศนิยมหาย (ไม่เปลี่ยน PASS/FAIL)
 }
 
 // Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
@@ -58,6 +59,7 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       result: result?.value ?? null,
       status: "SKIP",
       reason: "spec not parseable (text/formula/empty)",
+      needsReview: false,
     };
   }
 
@@ -69,6 +71,7 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       result: null,
       status: "SKIP",
       reason: "result not numeric",
+      needsReview: false,
     };
   }
 
@@ -109,14 +112,84 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       break;
   }
 
+  // ★ Anti-fabricated-PASS guard ★ — โมเดลเล็กบางตัว (เห็นใน qwen2.5) เวลาเจอตารางคอลัมน์แยก
+  //   "Spec | Result" จะเอา "ค่าผล" ไปแปะเป็นขอบช่วง spec (เช่น spec=80.0, result=69.11 → "69.11~80.0")
+  //   ทำให้ result ตกในช่วงของตัวเองเสมอ → PASS ปลอม 100% ซึ่งซ่อนของที่อาจ OOS = บาปหนักสุดของ QA
+  // สัญญาณ: spec เป็น between แล้ว result ตรงกับขอบเป๊ะ → ดาวน์เกรดเป็น SKIP ให้คนตรวจ
+  // ปลอดภัย: เคสนี้เป็น would-be-PASS เท่านั้น (FAIL จริง result อยู่นอกช่วง ไม่มีทาง == ขอบ) → ไม่ซ่อน FAIL
+  if (pass && spec.op === "between" && (r === spec.min || r === spec.max)) {
+    return {
+      ...base,
+      min,
+      max,
+      result: r,
+      status: "SKIP",
+      reason: "ขอบช่วง spec = ค่าผลพอดี — อาจเป็น spec ปลอม (โมเดลเอาค่าผลมาเป็นขอบ) ตรวจใบจริง",
+      needsReview: true,
+    };
+  }
+
+  const review = detectDecimalRisk(r, spec, pass);
+  const reason = pass
+    ? review ?? ""
+    : `result ${r} outside spec ${spec.raw}` + (review ? ` — ${review}` : "");
+
   return {
     ...base,
     min,
     max,
     result: r,
     status: pass ? "PASS" : "FAIL",
-    reason: pass ? "" : `result ${r} outside spec ${spec.raw}`,
+    reason,
+    needsReview: !!review,
   };
+}
+
+// ตรวจความเสี่ยง "OCR ทศนิยมหาย" — ★ ไม่เปลี่ยน PASS/FAIL ★ แค่ตั้งธงให้คนตรวจใบจริง
+//  - FAIL: ถ้าเติมทศนิยมแล้วเข้า spec (423→42.3 ใน 15-45) = น่าจะ OCR พลาด ไม่ใช่ของเสียจริง
+//  - PASS: ถ้า spec เป็น lower-bound (≥/Min) แล้วค่าจริงอาจตก (≥10 ได้ 13 แต่จริง 1.3) = ผ่านแบบอันตราย
+function specContains(spec: ParsedSpec, v: number): boolean {
+  switch (spec.op) {
+    case "between":
+      return v >= (spec.min ?? -Infinity) && v <= (spec.max ?? Infinity);
+    case "le":
+      return v <= (spec.value ?? Infinity);
+    case "lt":
+      return v < (spec.value ?? Infinity);
+    case "ge":
+      return v >= (spec.value ?? -Infinity);
+    case "gt":
+      return v > (spec.value ?? -Infinity);
+    case "eq":
+    case "approx":
+      return v === spec.value;
+    default:
+      return false;
+  }
+}
+
+function detectDecimalRisk(
+  r: number,
+  spec: ParsedSpec,
+  pass: boolean
+): string | null {
+  if (!Number.isInteger(r) || r === 0) return null;
+  const alts = [r / 10, r / 100];
+  if (!pass) {
+    for (const a of alts) {
+      if (specContains(spec, a))
+        return `อาจเป็น OCR ทศนิยมหาย (${r}→${a} เข้า spec) ตรวจใบจริง`;
+    }
+    return null;
+  }
+  // pass: flag เฉพาะ spec แบบ lower-bound (กัน false alarm บนค่าที่ถูกต้องอยู่แล้ว เช่น 56 ใน 45-75)
+  if (spec.op === "ge" || spec.op === "gt") {
+    for (const a of alts) {
+      if (!specContains(spec, a))
+        return `ผ่านแบบเสี่ยง: ถ้าจริงคือ ${a} (ทศนิยมหาย) จะตก spec`;
+    }
+  }
+  return null;
 }
 
 export interface CoaInput {
@@ -187,7 +260,7 @@ export function formatReport(report: CoaReport): string {
         pad(fmtNum(r.result), 10),
         pad(trunc(r.unit ?? "", 8), 8),
         pad(r.status, 6),
-        r.reason,
+        (r.needsReview ? "⚠ " : "") + r.reason,
       ].join("  ")
     );
   }

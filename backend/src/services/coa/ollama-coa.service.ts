@@ -83,10 +83,11 @@ export class OllamaCoaService {
   // ส่ง text COA ให้ gemma3 → คืน JSON shape { product, lotNo, items[] }
   // ปรับ prompt เมื่อเจอใบแบบใหม่ที่ parse ไม่เข้า / เพิ่ม field — temperature=0, format=json บังคับให้ deterministic
   async parseCoa(text: string): Promise<RawCoa | null> {
+    // Prompt สั้น/clean (≈22 บรรทัด) — โมเดลเล็ก (gemma3/qwen2.5:3b) ทำงานดีกว่าเมื่อ rule กระชับ
+    // เก็บ rule ความปลอดภัยครบ: ห้ามรวมเลข, ห้ามเอา lot เป็น spec, "X Max"=spec, ห้ามปั้นค่า
+    // ★ key fix ★ "Output EVERY row that has a spec" → กัน qwen/gemma3 ทิ้งแถว (Z99/Inolob)
     const prompt = `
-You are parsing a Certificate of Analysis (COA) / Quality Inspection Certificate.
-
-Return ONLY valid JSON. No prose, no markdown fences.
+You are parsing a Certificate of Analysis (COA). Return ONLY valid JSON, no prose, no markdown.
 
 Schema:
 {
@@ -94,43 +95,25 @@ Schema:
   "lotNo":   "<lot/batch number or null>",
   "items": [
     {
-      "name":     "<characteristic / parameter name>",
-      "unit":     "<unit like g/l, %, μm, °C, or null>",
-      "method":   "<test method or null>",
-      "specRaw":  "<the spec string verbatim if shown in one cell, else null>",
-      "specMin":  "<spec lower limit (number or string) if a separate Min column exists, else null>",
-      "specMax":  "<spec upper limit (number or string) if a separate Max column exists, else null>",
-      "result":   "<observed/measured value verbatim — if Avg/Mean column exists USE THAT NUMBER, else use the single result column>"
+      "name":    "<parameter name>",
+      "unit":    "<unit (g/l, %, μm, °C…) or null>",
+      "method":  "<test method or null>",
+      "specRaw": "<spec verbatim if in ONE cell: 275-425, 40~70, 26 ± 2, ≤0.2, 3 Max, 99 Min — else null>",
+      "specMin": "<lower limit if a SEPARATE Min/Lower column exists, else null>",
+      "specMax": "<upper limit if a SEPARATE Max/Upper column exists, else null>",
+      "result":  "<measured value; if an Avg/Mean column exists use THAT number>"
     }
   ]
 }
 
 Rules:
-- Items live in the test/result table only. Do NOT include header rows, footers, addresses, signatures, or notes.
-- If the spec is a range written in one cell (e.g. "275-425", "40.0 ~ 70.0", "26 ± 2"), put it in "specRaw" and leave specMin/specMax null.
-- If the table has SEPARATE Min and Max spec columns, fill "specMin" and "specMax" and leave "specRaw" null.
-- If the table has SEPARATE "Lower limit" and "Upper limit" columns, treat Lower=specMin and Upper=specMax.
-
-- **Column header mapping**: If the table has explicit headers like "Min. Spec." / "Lower limit" → specMin, "Max. Spec." / "Upper limit" → specMax, "Actual Result(s)" / "Test result" → result, use those headers to assign columns for every following data row.
-
-- **NEVER use lot/batch/PO numbers as spec values.** Lot/batch numbers are typically 6+ contiguous digits with no decimal (e.g. "72700403", "850996", "26031301"). If such a number appears in a data row's middle columns, treat it as a batch identifier — set "lotNo" but NEVER place it in specMin/specMax/result.
-- Example: text row "280 72700403 180 250,00 200,00" under headers "Min | Batch no. | Result | Max | Min" → lotNo="72700403", result="180", specMax="250.00", specMin="200.00".
-
-- For "≤ 0.2", "≦ 0.2", "0.5 Max." → put verbatim in "specRaw".
-- For "≥ 50", "99.2 Min." → put verbatim in "specRaw".
-- **"X Max." / "X Min." is a SPEC, not a unit.** When you see a number followed by "Max" or "Min" (with/without period), the whole phrase is the spec range — put it in specRaw. Do NOT put "Max"/"Min" alone in unit field.
-- For the result column, when multiple batch statistic columns exist (Avg, Min, Max, Std), USE THE Avg (or Mean) NUMBER as "result". If no Avg/Mean column exists but there are multiple measurement numbers, USE THE LAST NUMBER before the spec range — that is usually the Avg or final reading on a COA.
-- **CRITICAL: "result" and "specRaw" come from DIFFERENT columns. NEVER include the result number inside specRaw.** specRaw must contain ONLY the spec range/limit (e.g. "15-45", "3 Max", "270~350") — strip out any leading number that is actually the Avg/result.
-- **CRITICAL: NEVER concatenate digits separated by whitespace.** OCR often splits a single number into space-separated tokens (e.g. "1 4 23" is THREE separate measurements 1, 4, 23 — NOT the number 1423 or 423). Treat each whitespace-separated token as its own number.
-- **Sanity check**: a valid "result" should be plausibly within the same order of magnitude as the spec. If spec is "15-45" and you produced result="423", you almost certainly concatenated digits — re-read and pick a single token in the right magnitude.
-- The "|" character in OCR text usually marks a column boundary — split on it when determining which number is which column.
-- Row structure on scanned COAs is usually: [item name] [individual measurement values] [Avg] [Spec range] [Status word like Success/Accept]. The LAST individual number before the spec-format is the result; the spec-format text after it is specRaw.
-- Example: OCR row "Sieve Residue 1 4 23 | 15 -45 Success" → name="Sieve Residue", result="23", specRaw="15-45" (the LAST number 23 fits spec 15-45; "423" would be a wrong concatenation).
-- Example: OCR row "Density 336 322 33s 329.0 | 270 ~350 Success" → name="Density", result="329.0", specRaw="270~350" (329.0 is clearly the Avg column, earlier numbers are individual measurements).
-- Example: OCR row "Sieve Residue under 150% 1 : 2 i 1 | 1.3 . 20 Max Success" → name="Sieve Residue under 150%", result="1.3", specRaw="20 Max" (1.3 is the Avg between the "|" and the spec; "13" would be a wrong concatenation of "1" and ".3").
-- Preserve units exactly. Do not invent units.
-- Skip rows that have no result value at all.
-- Skip stamp text such as "ACCEPT", "REJECT", "By: QA Dept." — these are post-scan annotations, not data.
+- Output EVERY test row that has a specification. Never skip or merge rows. Copy specRaw and result VERBATIM — do not reformat or compute.
+- Items are test-table rows only. Skip headers, addresses, signatures, notes, stamps (ACCEPT/REJECT/"By: ...").
+- "X Max" / "X Min" (e.g. "3 Max", "99 Min") is a SPEC → put the whole phrase in specRaw, never in unit.
+- result and spec are DIFFERENT columns — never put the result number inside specRaw.
+- NEVER use a lot/batch/PO number (usually 6+ digits, no decimal) as a spec or result value.
+- Numbers separated by spaces are SEPARATE values (OCR artifact): "1 4 23" is 1, 4, 23 — do NOT join into "423". Pick one token; never invent digits.
+- If a result is non-numeric (e.g. "White", a formula), copy it verbatim — do not force a number.
 
 COA Text:
 ${text}
