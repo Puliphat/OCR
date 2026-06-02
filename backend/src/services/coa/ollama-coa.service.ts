@@ -39,10 +39,22 @@ export interface RawCoa {
   items: RawCoaItem[];
 }
 
+// process-global: พอ GPU runner crash ครั้งแรก (VRAM ไม่พอ → CUDA error) → ข้าม GPU ทุก call ถัดไป
+//   กันเสียเวลา crash ซ้ำทั้ง batch. reset เมื่อ restart process (ไม่ auto-recover ถ้า VRAM ว่างทีหลัง)
+let gpuDisabled = false;
+
+// สำหรับ A/B harness เท่านั้น — เคลียร์ latch ระหว่างเปลี่ยน model ไม่ให้ crash ของตัวหนึ่งลาก backend ตัวถัดไป
+export function resetGpuState(): void {
+  gpuDisabled = false;
+}
+
 export class OllamaCoaService {
   private readonly generateUrl =
     process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
-  private readonly model = process.env.OLLAMA_MODEL || "qwen2.5:3b-instruct";
+  // default = 7b: bake-off บน Lot240521 (5-row ground truth) ได้ 3/5 correct & stable
+  //   vs 3b ได้แค่ 1/5 (column-collapse หนัก). 7b ~4.7GB RAM, ช้ากว่า 3b เล็กน้อย แต่แม่นกว่าชัด
+  //   (vision qwen2.5vl:3b รันไม่ได้บนเครื่องนี้ — OOM ต้อง ~8.5GiB). override ด้วย OLLAMA_MODEL ได้
+  private readonly model = process.env.OLLAMA_MODEL || "qwen2.5:7b-instruct";
 
   // debug: raw JSON ของ run ล่าสุด (pipeline หยิบไปแนบ CoaReport.debug.llmRaw)
   public lastRawResponse: string | null = null;
@@ -93,35 +105,76 @@ COA Text:
 ${text}
 `.trim();
 
-    try {
-      const response = await axios.post(
-        this.generateUrl,
-        {
-          model: this.model,
-          // system role: qwen2.5-instruct เชื่อฟัง system message แรงกว่า rule ใน prompt เดี่ยว
-          //   ตอกย้ำ 2 บาปหลักที่เคยเจอ — ปั้นเลข + ย้าย result ไปช่อง spec (fabricated-PASS)
-          system:
-            "You are a precise COA data-extraction engine. Output ONLY valid JSON matching the schema. Copy every value verbatim from its own column. Never invent a number and never move a measured result into a spec column.",
-          prompt,
-          stream: false,
-          format: "json",
-          keep_alive: 0,
-          // num_ctx 8192: ตาราง COA ใหญ่ (หลายหน้า/หลายแถว) เกิน 4096 tokens → โมเดล truncate ท้าย = หล่นแถวท้าย
-          //   qwen2.5:3b รองรับ 32k, 8192 ราคาถูกบน 3b — กัน silent truncation. temp 0 = deterministic
-          options: { temperature: 0, num_ctx: 8192 },
-        },
-        { timeout: 300_000 }
-      );
-      const raw = response.data.response;
-      const rawStr = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
-      this.lastRawResponse = rawStr;
-      dumpOllamaRaw(rawStr);
-      const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.items)) return null;
-      return parsed as RawCoa;
-    } catch (error: any) {
-      console.error("[ollama-coa] parse failed:", error?.message ?? error);
-      return null;
+    const makeBody = (extra: Record<string, unknown>) => ({
+      model: this.model,
+      // system role: qwen2.5-instruct เชื่อฟัง system message แรงกว่า rule ใน prompt เดี่ยว
+      //   ตอกย้ำ 2 บาปหลักที่เคยเจอ — ปั้นเลข + ย้าย result ไปช่อง spec (fabricated-PASS)
+      system:
+        "You are a precise COA data-extraction engine. Output ONLY valid JSON matching the schema. Copy every value verbatim from its own column. Never invent a number and never move a measured result into a spec column.",
+      prompt,
+      stream: false,
+      format: "json",
+      keep_alive: 0,
+      // num_ctx 8192: ตาราง COA ใหญ่ (หลายหน้า/หลายแถว) เกิน 4096 tokens → โมเดล truncate ท้าย = หล่นแถวท้าย
+      //   8192 กัน silent truncation. temp 0 = deterministic. ...extra = ใส่ num_gpu:0 ตอน fallback CPU
+      options: { temperature: 0, num_ctx: 8192, ...extra },
+    });
+
+    // ★ GPU→CPU fallback ★ — 7b (4.7GB) มัก crash บน GPU ที่ VRAM น้อย (CUDA runner terminated)
+    //   ลอง GPU ก่อน (เร็ว); ถ้า crash เพราะ VRAM → retry CPU (num_gpu:0) ช้าแต่ไม่พัง
+    //   พอ GPU พังครั้งแรก ตั้ง gpuDisabled → call ถัดไปข้าม GPU เลย (ไม่เสียเวลา crash ซ้ำทั้ง batch)
+    type Attempt = { label: "gpu" | "cpu"; extra: Record<string, unknown>; timeout: number };
+    const attempts: Attempt[] = gpuDisabled
+      ? [{ label: "cpu", extra: { num_gpu: 0 }, timeout: 300_000 }]
+      : [
+          { label: "gpu", extra: {}, timeout: 120_000 },
+          { label: "cpu", extra: { num_gpu: 0 }, timeout: 300_000 },
+        ];
+
+    let lastErr = "";
+    for (const a of attempts) {
+      try {
+        const response = await axios.post(this.generateUrl, makeBody(a.extra), {
+          timeout: a.timeout,
+        });
+        const raw = response.data.response;
+        const rawStr = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+        // GPU runner ที่ตายกลางคันบางทีตอบ HTTP 200 + response ว่าง/ถูกตัด (ไม่ใช่ 500) →
+        //   ถ้าไม่ดักจะตก JSON.parse fail → return null โดยไม่ลอง CPU (silent miss เคส VRAM พอดี)
+        if (a.label === "gpu" && !rawStr.trim()) {
+          gpuDisabled = true;
+          lastErr = "empty GPU response (runner likely died)";
+          console.warn(`[ollama-coa] GPU returned empty → retry on CPU (num_gpu:0)`);
+          continue;
+        }
+        this.lastRawResponse = rawStr;
+        dumpOllamaRaw(rawStr);
+        const parsed = JSON.parse(rawStr);
+        if (!parsed || !Array.isArray(parsed.items)) return null;
+        return parsed as RawCoa;
+      } catch (error: any) {
+        lastErr = error?.response?.data?.error ?? error?.message ?? String(error);
+        // retry บน CPU เฉพาะตอน GPU attempt พังด้วย signal จริงของ VRAM/runner/timeout
+        //   regex แคบ (เลี่ยง false-positive จาก "gpu"/"system memory" ลอยๆ ใน 400/รายงานอื่น)
+        //   CPU retry ตอน GPU พังปลอดภัยเสมอ. ไม่ retry: JSON พัง / 400 / ECONNREFUSED (CPU ก็แก้ไม่ได้)
+        const gpuRetriable =
+          a.label === "gpu" &&
+          /cuda|llama runner|runner process|terminated|out of memory|timeout|etimedout/i.test(
+            lastErr
+          );
+        if (gpuRetriable) {
+          gpuDisabled = true;
+          console.warn(
+            `[ollama-coa] GPU attempt failed (${lastErr.slice(0, 90)}) → retry on CPU (num_gpu:0)`
+          );
+          continue;
+        }
+        console.error(`[ollama-coa] ${a.label} parse failed:`, lastErr);
+        return null; // error อื่น CPU ก็แก้ไม่ได้
+      }
     }
+    // ถึงตรงนี้ได้เฉพาะกรณี GPU พัง→ตก CPU แต่ array หมด (กันพลาด — ปกติ return ในลูป)
+    console.error(`[ollama-coa] parse failed (all attempts): ${lastErr}`);
+    return null;
   }
 }
