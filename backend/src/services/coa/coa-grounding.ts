@@ -16,6 +16,7 @@
 // ★ SAFETY ★ row จริงชื่ออยู่ใน OCR → ผ่านทาง name (short-circuit) ไม่แตะ number เลย
 //   number path เป็น fallback เฉพาะแถวที่ชื่อเพี้ยน/non-latin → drop = miss (honest) ไม่ใช่ false verdict
 import { RawCoaItem } from "./ollama-coa.service";
+import { EvaluatedItem } from "./coa-evaluator";
 
 export interface GroundingResult {
   kept: RawCoaItem[];
@@ -129,4 +130,71 @@ export function dropUngroundedItems(
     }
   }
   return { kept, dropped };
+}
+
+// ★ Anti-fabricated-FAIL guard (column collapse) ★ — downgrade FAIL ที่ spec ไม่ใช่ของแถวตัวเอง
+//
+// อาการ (เคสจริง Lot240521, Suzorite): scan/text-layer ตาราง transposed (ชื่อ/spec/result คนละบรรทัด)
+//   หรือ scan เอียง → LLM map spec ผิด เอา spec ค่าเดียว broadcast ทุกแถว
+//   (Lot240521: "20 Max" ×3 แถว sieve · Suzorite: "92~100" ×3 ทั้งที่จริง +100=Max1, -100/+200=Max5)
+//   → result ตกนอก spec ที่ "ไม่ใช่ของตัวเอง" → FAIL ปลอม needsReview=false = บอกของเสียทั้งที่ไม่รู้จริง
+//
+// กติกา: FAIL row คง verdict ได้ ต่อเมื่อ spec กับ result โผล่ "บรรทัด OCR เดียวกัน"
+//   (= เป็นแถวตารางจริง result ถูกเทียบกับ spec ที่อยู่ข้างกันจริง ไม่ใช่ spec ที่ยกมาจากแถวอื่น)
+//   ไม่ co-locate → downgrade FAIL → SKIP + needsReview (honest "ตรวจใบจริง" ดีกว่า fabricated FAIL)
+//
+// ★ SAFETY ★ แตะเฉพาะ status FAIL (would-be bad verdict) — PASS/SKIP ไม่ยุ่ง
+//   true FAIL ในตารางปกติ (name|spec|result บรรทัดเดียว) → spec+result co-locate → คง FAIL ไว้
+//   ใช้ numberMatches แบบ whole-token (เลขเท่ากัน/digit-string เท่ากัน) ตัดความบังเอิญ substring
+export interface FailGuardResult {
+  downgraded: { name: string; reason: string }[];
+}
+
+export const FAIL_DOWNGRADE_REASON =
+  "spec กับ result อยู่คนละบรรทัด OCR — น่าจะ column collapse (spec ยกมาจากแถวอื่น) ตรวจใบจริง";
+
+// mutate rows in place: FAIL ที่ spec+result ไม่ co-locate → SKIP. คืนรายการที่ downgrade
+export function downgradeUngroundedFails(
+  rows: EvaluatedItem[],
+  ocrText: string
+): FailGuardResult {
+  const downgraded: { name: string; reason: string }[] = [];
+  if (!rows?.length || !ocrText) return { downgraded };
+
+  const lineTokens = ocrText.split(/\r?\n/).map(parseNumTokens);
+
+  for (const r of rows) {
+    if (r.status !== "FAIL") continue;
+
+    // เลขของ result (จาก resultRaw + ค่าที่ normalize แล้ว) และ spec (specRaw + min/max)
+    const resultNums = [
+      ...numberTokens(r.resultRaw),
+      ...(r.result != null ? [String(r.result)] : []),
+    ];
+    const specNums = [
+      ...numberTokens(r.specRaw),
+      ...(r.min != null ? [String(r.min)] : []),
+      ...(r.max != null ? [String(r.max)] : []),
+    ];
+    // ไม่มีเลขให้เทียบฝั่งใดฝั่งหนึ่ง → พิสูจน์ไม่ได้ว่า collapse → ปล่อยตามเดิม (อย่าตัดสินมั่ว)
+    if (!resultNums.length || !specNums.length) continue;
+
+    let colocated = false;
+    for (const lt of lineTokens) {
+      if (!lt.length) continue;
+      const rHit = resultNums.some((n) => numberMatches(n, lt));
+      const sHit = specNums.some((n) => numberMatches(n, lt));
+      if (rHit && sHit) {
+        colocated = true;
+        break;
+      }
+    }
+    if (colocated) continue;
+
+    r.status = "SKIP";
+    r.needsReview = true;
+    r.reason = FAIL_DOWNGRADE_REASON;
+    downgraded.push({ name: r.name, reason: FAIL_DOWNGRADE_REASON });
+  }
+  return { downgraded };
 }

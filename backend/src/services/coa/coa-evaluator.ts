@@ -207,10 +207,9 @@ export interface CoaReport {
   summary: { pass: number; fail: number; skip: number; total: number };
 }
 
-// Evaluate ทั้งใบ — loop เรียก evaluateItem แล้วรวม summary
-export function evaluateCoa(input: CoaInput): CoaReport {
-  const rows = (input.items ?? []).map(evaluateItem);
-  const summary = rows.reduce(
+// รวม summary จาก rows — แยกออกมาเพื่อให้ post-eval guard (fail-guard) เรียกซ้ำหลังแก้ status ได้
+export function summarize(rows: EvaluatedItem[]): CoaReport["summary"] {
+  return rows.reduce(
     (acc, r) => {
       acc.total++;
       if (r.status === "PASS") acc.pass++;
@@ -220,6 +219,12 @@ export function evaluateCoa(input: CoaInput): CoaReport {
     },
     { pass: 0, fail: 0, skip: 0, total: 0 }
   );
+}
+
+// Evaluate ทั้งใบ — loop เรียก evaluateItem แล้วรวม summary
+export function evaluateCoa(input: CoaInput): CoaReport {
+  const rows = (input.items ?? []).map(evaluateItem);
+  const summary = summarize(rows);
   return {
     filename: input.filename,
     product: input.product?.trim() || null,

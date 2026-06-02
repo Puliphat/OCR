@@ -7,10 +7,10 @@ import { PdfService } from "../pdf.service";
 import { ImageProcessingService } from "../image-processing.service";
 import { OllamaCoaService } from "./ollama-coa.service";
 import { RapidOcrService } from "./rapidocr.service";
-import { evaluateCoa, CoaReport } from "./coa-evaluator";
+import { evaluateCoa, summarize, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
 import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
-import { dropUngroundedItems } from "./coa-grounding";
+import { dropUngroundedItems, downgradeUngroundedFails } from "./coa-grounding";
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
 // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
@@ -164,6 +164,19 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     lotNo: raw.lotNo ?? null,
     items: raw.items ?? [],
   });
+
+  // ★ Anti-fabricated-FAIL ★ — downgrade FAIL ที่ spec กับ result ไม่อยู่บรรทัด OCR เดียวกัน
+  //   (column collapse: spec ถูก broadcast/map ผิดแถวบน scan ตาราง transposed) → SKIP+needsReview
+  //   กัน verdict "ของเสีย" จาก spec ที่ไม่ใช่ของแถวนั้นจริง
+  const failGuard = downgradeUngroundedFails(evaluated.rows, text);
+  if (failGuard.downgraded.length > 0) {
+    console.warn(
+      `  [fail-guard] downgrade ${failGuard.downgraded.length} FAIL→SKIP (column collapse): ${failGuard.downgraded
+        .map((d) => d.name)
+        .join(", ")}`
+    );
+    evaluated.summary = summarize(evaluated.rows);
+  }
 
   // Log ทุก row ที่ evaluate ได้ (รวม SKIP เพื่อ debug ว่าทำไมถูก skip)
   for (const r of evaluated.rows) {
