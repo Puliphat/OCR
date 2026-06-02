@@ -63,12 +63,29 @@ export async function extractText(
   //    daemon ล่ม/unreachable → คืน null → fall through ไป Tesseract อัตโนมัติ
   if (process.env.USE_RAPIDOCR !== "false") {
     console.log(`  [rapidocr] OCR via sidecar…`);
+    // null = daemon ล่ม/errored · "" หรือ string สั้น = daemon ทำงานแต่ scan โล่ง/คุณภาพต่ำ
     const text = await new RapidOcrService().extractText(imagePath);
     if (text && text.replace(/\s/g, "").length >= 50) {
       console.log(`  [rapidocr] ${text.length} chars`);
       return { text, engine: "rapidocr" };
     }
-    console.warn(`  [rapidocr] empty/unreachable — falling back to Tesseract`);
+    // ★ RapidOCR ล้ม → Tesseract fallback ให้ผล "อ่านได้แต่เลขเพี้ยน" (เคยทำ corpus พังเงียบ)
+    //   แยกสาเหตุให้ชัด (อย่าโทษ daemon เมื่อ daemon ขึ้นอยู่ — misdirection แบบเดิม):
+    //   daemonDown = ติดต่อ daemon ไม่ได้/500 · ไม่ใช่ = daemon อ่านแล้วได้ข้อความน้อย (ไฟล์โล่ง)
+    const daemonDown = text == null;
+    //   RAPIDOCR_REQUIRED=true → โยน error แทน fallback เงียบๆ (ใช้ตอน validation run กัน garbage ปนผล)
+    if (process.env.RAPIDOCR_REQUIRED === "true") {
+      throw new Error(
+        daemonDown
+          ? "RapidOCR daemon unreachable/errored and RAPIDOCR_REQUIRED=true — refusing silent Tesseract fallback. Start it: `npm run ocr:daemon` from backend/."
+          : "RapidOCR returned too little text (daemon IS running — scan may be blank/low-quality) and RAPIDOCR_REQUIRED=true — refusing silent Tesseract fallback. Inspect the file."
+      );
+    }
+    console.warn(
+      daemonDown
+        ? `  [rapidocr] ⚠ daemon FAILED — falling back to Tesseract (numbers may be garbled; check coa-log debug.ocrEngine)`
+        : `  [rapidocr] ⚠ thin result (<50 chars, daemon up) — falling back to Tesseract; scan may be low-quality`
+    );
   }
 
   // 3. Tesseract multi-rotation OCR (fallback) — ใช้เมื่อ RapidOCR daemon ล่ม/อ่านไม่ได้

@@ -24,19 +24,35 @@ export class RapidOcrService {
 
   // ยิงรูปไป daemon → tokens พร้อม box; null ถ้า daemon ล่ม (caller fall back)
   async ocrTokens(imagePath: string): Promise<OcrToken[] | null> {
+    // ★ ส่ง absolute path เสมอ ★ — daemon resolve relative path ตาม cwd ของตัวเอง (มัก != backend/)
+    //   relative + cwd ผิด → RapidOCR หาไฟล์ไม่เจอ → throw → HTTP 500 (เคยทำ corpus พังเงียบ, วินิจฉัยยาก)
+    const abs = path.resolve(imagePath);
     try {
       const res = await axios.post(
         `${this.url}/ocr`,
-        { path: imagePath },
+        { path: abs },
         { timeout: 300_000 }
       );
       if (res.data?.error) {
-        console.error("[rapidocr] daemon error:", res.data.error);
+        console.error("[rapidocr] daemon returned error:", res.data.error);
         return null;
       }
       return (res.data?.tokens as OcrToken[]) ?? [];
     } catch (e: any) {
-      console.warn("[rapidocr] daemon unreachable:", e?.message ?? e);
+      // แยก 2 กรณีให้ชัด (เดิม log "unreachable" ทั้งคู่ → ชี้นำผิดทาง):
+      //  • มี e.response = daemon ติดต่อได้ แต่ตอบ error (เช่น 500 เปิดไฟล์ไม่ได้) → ปัญหาที่ path/ไฟล์
+      //  • ไม่มี response = daemon ล่ม/ไม่ได้ start (ECONNREFUSED ฯลฯ) → ต้อง start daemon
+      if (e?.response) {
+        const detail =
+          e.response.data?.error ?? e.response.statusText ?? e.message;
+        console.error(
+          `[rapidocr] daemon REACHABLE but errored (HTTP ${e.response.status}) on "${abs}": ${detail}`
+        );
+      } else {
+        console.warn(
+          `[rapidocr] daemon UNREACHABLE (${e?.code ?? e?.message ?? e}) — start it: \`npm run ocr:daemon\` from backend/`
+        );
+      }
       return null;
     }
   }
