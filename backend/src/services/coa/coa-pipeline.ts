@@ -10,6 +10,7 @@ import { RapidOcrService } from "./rapidocr.service";
 import { evaluateCoa, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
 import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
+import { dropUngroundedItems } from "./coa-grounding";
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
 // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
@@ -132,6 +133,18 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     };
   }
   console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items`);
+
+  // ★ Anti-hallucination ★ — ตัด row ที่ชื่อ+ค่าไม่มีใน OCR เลย (LLM ปั้นทั้งใบเมื่อ OCR เป็นขยะ)
+  //   กัน false-PASS อันตรายสุด: ส่งงานบอก "ผ่าน" จากข้อมูลที่ไม่มีอยู่จริงในเอกสาร
+  const grounding = dropUngroundedItems(raw.items ?? [], text);
+  if (grounding.dropped.length > 0) {
+    console.warn(
+      `  [grounding] ตัด ${grounding.dropped.length} row ที่ไม่มีใน OCR (น่าจะ hallucination): ${grounding.dropped
+        .map((d) => d.name)
+        .join(", ")}`
+    );
+    raw.items = grounding.kept;
+  }
 
   // กู้คืน spec ที่ LLM (โมเดลเล็ก) หล่นทิ้งบางรัน — เติมเฉพาะ row ที่ spec ว่าง ★ ไม่ทับของเดิม ★
   const rec = recoverSpecsFromOcr(raw.items ?? [], text);
