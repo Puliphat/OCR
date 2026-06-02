@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   COA Analyzer — Notion-style minimal
+   สไตล์แยกเป็นหมวดใน ./styles/* (ไฟล์นี้แค่รวม import ไม่มี rule เอง)
+   ลำดับ: tokens → base → ทีละ section → responsive ปิดท้าย
+   ───────────────────────────────────────────────────────────────────────────── */
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/topbar.css";
+@import "./styles/hero.css";
+@import "./styles/upload.css";
+@import "./styles/empty.css";
+@import "./styles/results.css";
+@import "./styles/helper.css";
+@import "./styles/responsive.css";

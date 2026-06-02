@@ -1,0 +1,76 @@
+/* ─── base / reset / shared keyframes ─────────────────────────────────────── */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans), "Geist", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ultra-faint warm light at top — depth without breaking flatness (skill-approved) */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    900px 500px at 80% -10%,
+    rgba(255, 107, 61, 0.04),
+    transparent 60%
+  );
+}
+
+.mono {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+}
+.serif {
+  font-family: var(--font-serif), "Instrument Serif", Georgia, serif;
+}
+
+/* ─── page shell ──────────────────────────────────────────────────────────── */
+.app {
+  position: relative;
+  z-index: 1;
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 48px 40px 96px;
+}
+
+/* ─── shared card surface ─────────────────────────────────────────────────── */
+.card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+/* ─── shared keyframes ────────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes scan {
+  0%, 100% { top: 10%; }
+  50% { top: 86%; }
+}
+@keyframes dot {
+  0%, 60%, 100% { opacity: 0.25; }
+  30% { opacity: 1; }
+}

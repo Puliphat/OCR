@@ -1,0 +1,157 @@
+/* ─── empty state (3-step how-it-works) ───────────────────────────────────── */
+.empty {
+  margin-top: 20px;
+  animation: fadeIn 0.4s ease;
+}
+.empty-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  padding: 20px;
+}
+.step {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--bg);
+  position: relative;
+  overflow: hidden;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.step:hover {
+  background: var(--hover);
+  border-color: #dcdbd7;
+}
+.step-num {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--ink-3);
+  margin-bottom: 14px;
+  text-transform: uppercase;
+}
+.step-num span { color: var(--accent); }
+.step-art {
+  width: 100%;
+  height: 76px;
+  border-radius: 8px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+  position: relative;
+  overflow: hidden;
+}
+.step-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.step-desc {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+
+/* step-art content — flat, no neon glow */
+.art-pdf {
+  width: 40px;
+  height: 50px;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  position: relative;
+}
+.art-pdf::before {
+  content: "PDF";
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.art-pdf::after {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--paper);
+}
+.art-scan {
+  width: 58px;
+  height: 48px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+}
+.art-scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.7;
+  animation: scan 1.6s ease-in-out infinite;
+}
+.art-scan::before,
+.art-scan::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--line);
+  border-radius: 1px;
+}
+.art-scan::before { top: 10px; right: 30%; }
+.art-scan::after { top: 18px; right: 50%; }
+.art-verdict {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.art-verdict-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--good);
+}
+.art-verdict-dot:nth-child(2) {
+  background: color-mix(in srgb, var(--good) 55%, var(--paper));
+}
+.art-verdict-dot:nth-child(3) {
+  background: color-mix(in srgb, var(--good) 28%, var(--paper));
+}
+.art-verdict-check {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--good);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  margin-left: 4px;
+}
+.empty-cta {
+  border-top: 1px solid var(--line);
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.empty-cta-text {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.empty-cta-text strong { color: var(--ink); font-weight: 600; }

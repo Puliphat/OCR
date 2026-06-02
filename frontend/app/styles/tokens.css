@@ -1,0 +1,26 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Design tokens — Notion-style minimal palette
+   ผสม design handoff (ความอุ่น) เข้ากับ Notion minimalism:
+   charcoal อุ่น (#37352F), เส้นเทาอ่อน 1px, accent = ส้มสว่างจี๊ด #FF6B3D
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg: #fbfbfa;          /* page canvas — warm off-white */
+  --paper: #ffffff;       /* card surface */
+  --hover: #f7f6f3;       /* subtle hover surface */
+  --ink: #37352f;         /* primary text — warm charcoal (Notion) */
+  --ink-2: #5f5e5b;       /* secondary text */
+  --ink-3: #9b9a97;       /* muted text / mono labels */
+  --line: #e9e9e7;        /* all borders / dividers */
+  --accent: #ff6b3d;      /* accent — ส้มสว่างจี๊ด (vivid orange) */
+  --accent-soft: #ffeae2; /* accent tint bg */
+  --good: #448361;        /* pass green */
+  --good-soft: #edf3ec;
+  --bad: #c4554d;         /* fail red */
+  --bad-soft: #fbecec;
+  --skip-soft: #f1f1ef;   /* skip muted bg */
+  --info: #337ea9;        /* total blue */
+  --info-soft: #e7f1f6;
+  --btn: #191918;         /* primary CTA (near-black) */
+  --btn-hover: #2f2e2b;
+}

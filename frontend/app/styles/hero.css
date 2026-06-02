@@ -1,0 +1,41 @@
+/* ─── hero ────────────────────────────────────────────────────────────────── */
+.hero {
+  margin-bottom: 28px;
+}
+.eyebrow {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.eyebrow::before {
+  content: "";
+  width: 18px;
+  height: 1px;
+  background: var(--accent);
+}
+h1.title {
+  font-family: var(--font-serif), "Instrument Serif", Georgia, serif;
+  font-weight: 400;
+  font-size: 50px;
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--ink);
+}
+h1.title em {
+  font-style: italic;
+  color: var(--accent);
+}
+.lede {
+  font-size: 14px;
+  color: var(--ink-2);
+  max-width: 460px;
+  margin-top: 14px;
+  line-height: 1.6;
+}

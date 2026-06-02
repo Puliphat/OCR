@@ -1,0 +1,21 @@
+/* ─── responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  .app { padding: 32px 20px 64px; }
+  .empty-grid { grid-template-columns: 1fr; }
+  h1.title { font-size: 36px; }
+  .upload { grid-template-columns: 1fr; }
+  .result-head { grid-template-columns: 1fr; }
+  .verdict { align-items: flex-start; text-align: left; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .rows-head { display: none; }
+  .row {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
+  }
+  .row-name { grid-column: 1 / -1; }
+  .row-result,
+  .row-status {
+    justify-self: start;
+    text-align: left;
+  }
+}

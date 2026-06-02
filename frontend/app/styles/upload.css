@@ -1,0 +1,188 @@
+/* ─── upload card ─────────────────────────────────────────────────────────── */
+.upload {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: center;
+}
+.drop {
+  border: 1px dashed color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 8px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--accent-soft);
+  transition: background 0.18s ease, border-color 0.18s ease;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+.drop:hover {
+  background: color-mix(in srgb, var(--accent) 22%, var(--paper));
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+.drop:active {
+  background: color-mix(in srgb, var(--accent) 32%, var(--paper));
+  border-color: var(--accent);
+}
+.drop.dragover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 28%, var(--paper));
+}
+.drop-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--ink);
+}
+.drop-text {
+  flex: 1;
+  min-width: 0;
+}
+.drop-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.drop-sub {
+  font-size: 12px;
+  color: var(--ink-3);
+  margin-top: 2px;
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+}
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px 4px 4px;
+  font-size: 12px;
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  color: var(--ink-2);
+  margin-top: 8px;
+}
+.file-chip .x {
+  cursor: pointer;
+  color: var(--ink-3);
+  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+  transition: color 0.15s ease;
+}
+.file-chip .x:hover {
+  color: var(--bad);
+}
+.file-chip-pdf {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* ─── buttons ─────────────────────────────────────────────────────────────── */
+.btn {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  background: var(--btn);
+  color: #fff;
+  padding: 11px 20px;
+  border-radius: 6px;
+  font-family: var(--font-sans), "Geist", sans-serif;
+  font-weight: 500;
+  font-size: 13.5px;
+  letter-spacing: -0.005em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.btn:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.btn.primary {
+  background: var(--btn);
+  color: #fff;
+}
+.btn .arrow {
+  transition: transform 0.18s ease;
+}
+.btn:hover:not(:disabled) .arrow {
+  transform: translateX(2px);
+}
+
+/* ─── analyzing state ─────────────────────────────────────────────────────── */
+.analyzing {
+  padding: 36px 28px;
+  text-align: center;
+  border-top: 1px solid var(--line);
+  animation: fadeIn 0.4s ease;
+}
+.scanner {
+  width: 260px;
+  height: 72px;
+  margin: 0 auto 16px;
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.scanner-doc {
+  position: absolute;
+  inset: 12px;
+  border-radius: 5px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+.scanner-doc::before,
+.scanner-doc::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  height: 3px;
+  background: var(--line);
+  border-radius: 2px;
+}
+.scanner-doc::before { top: 10px; right: 30%; }
+.scanner-doc::after { top: 22px; right: 50%; }
+.scanner-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.7;
+  animation: scan 1.5s ease-in-out infinite;
+}
+.analyzing-text {
+  font-size: 13px;
+  color: var(--ink-2);
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+}
+.analyzing-text .dot { animation: dot 1.4s infinite; }
+.analyzing-text .dot:nth-child(2) { animation-delay: 0.2s; }
+.analyzing-text .dot:nth-child(3) { animation-delay: 0.4s; }
