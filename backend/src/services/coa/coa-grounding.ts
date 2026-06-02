@@ -183,7 +183,11 @@ export function downgradeUngroundedFails(
     for (const lt of lineTokens) {
       if (!lt.length) continue;
       const rHit = resultNums.some((n) => numberMatches(n, lt));
-      const sHit = specNums.some((n) => numberMatches(n, lt));
+      // ★ ต้องครบทุก bound ★ — spec ทั้งหมด (min+max ของ range) ต้องอยู่บรรทัด result เดียวกัน
+      //   ใช้ .every กัน "range ประกอบข้ามแถว": LLM เล็กชอบ comma-join cell คนละคอลัมน์
+      //   (เคสจริง _diag/Lot240521 350μ: spec จริง "15~45" แต่ LLM ได้ "45~56" โดย 56 ยกมาจากแถว 150μ)
+      //   .some เดิมปล่อยผ่านเพราะ 45 บังเอิญอยู่บรรทัด result → fabricated FAIL รอด. .every จับได้
+      const sHit = specNums.every((n) => numberMatches(n, lt));
       if (rHit && sHit) {
         colocated = true;
         break;

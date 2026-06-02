@@ -109,5 +109,31 @@ const empty = [row({ name: "Sieve Analysis +100", specRaw: "92~100", min: 92, ma
 const rEmpty = downgradeUngroundedFails(empty, "");
 check("OCR ว่าง → ไม่ downgrade", rEmpty.downgraded.length === 0 && empty[0].status === "FAIL");
 
+// ★ เคสจริง _diag/Lot240521 350μ ★ — LLM comma-join cell ข้ามแถว ได้ range ปลอม "45~56"
+//   (spec จริง 15~45, result 42.3 = PASS) โดย 56 ยกมาจากแถว 150μ → ต้อง downgrade
+//   45 อยู่บรรทัด result (15~45) แต่ 56 ไม่อยู่ → .some เดิมปล่อยผ่าน, .every ต้องจับได้
+const ASSEMBLED_OCR = [
+  "Sieve Residue on 350u(%)  |  42  |  41  |  42.3  |  15 ~45  |  Success",
+  "Sicve Residueon 150w(%)  |  54  |  56  |  58  |  56.0  |  45 ~T5  |  Success",
+].join("\n");
+const assembled = [
+  row({ name: "Sieve Residue on 350u(%)", specRaw: "45~56", min: 45, max: 56, result: 42, resultRaw: "42" }),
+];
+const rAsm = downgradeUngroundedFails(assembled, ASSEMBLED_OCR);
+check(
+  "range bound ประกอบข้ามแถว (56 คนละบรรทัด result) → downgrade",
+  rAsm.downgraded.length === 1 && assembled[0].status === "SKIP",
+  `(downgraded=${rAsm.downgraded.length})`
+);
+
+// ตรงข้าม: between FAIL จริง bound ครบบรรทัดเดียวกับ result → คง FAIL
+const REAL_RANGE_OCR = "Bulk Density (g/L)  |  40 - 70  |  85";
+const realRange = [row({ name: "Bulk Density", specRaw: "40~70", min: 40, max: 70, result: 85, resultRaw: "85" })];
+const rReal = downgradeUngroundedFails(realRange, REAL_RANGE_OCR);
+check(
+  "between FAIL จริง (40+70+85 บรรทัดเดียว) → คง FAIL",
+  rReal.downgraded.length === 0 && realRange[0].status === "FAIL"
+);
+
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);

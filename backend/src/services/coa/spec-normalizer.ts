@@ -19,6 +19,12 @@ export interface ParsedSpec {
 
 const NUM = String.raw`-?\d+(?:[.,]\d+)?`;
 
+// คำตัดสิน/ผลรวมท้าย cell ที่ LLM เล็กชอบลากมาปนใน specRaw (เช่น "20 Max Success") →
+// regex spec anchored ที่ $ จึง match ไม่ได้ → normalizeSpec คืน null → ตกไปใช้ bare specMin/Max
+// (ทิศมั่ว = fabricated FAIL). ตัดทิ้งท้ายก่อน parse ให้ "20 Max Success" → "20 Max"
+const JUDGMENT_TAIL =
+  /\s*\b(success(?:ful)?|pass(?:ed)?|accept(?:ed|able)?|good|ok|qualified|conform(?:ed|ing)?|合格|ผ่าน)\b[\s.]*$/i;
+
 // EU decimal vs US thousands: ถ้ามี comma แต่ไม่มี period → comma คือทศนิยม (0,28 → 0.28)
 // ถ้ามีทั้ง 2 → comma คือ thousands ให้ strip ออก (1,000.5 → 1000.5)
 function toNum(s: string): number {
@@ -47,6 +53,8 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
   if (!s) return null;
 
   s = s.replace(/[～〜∼]/g, "~");
+  s = s.replace(JUDGMENT_TAIL, "").trim(); // ตัด "Success/Pass/ผ่าน" ท้ายที่ LLM ลากปนมา
+  if (!s) return null;
 
   const original = s;
   const cleaned = stripUnits(s);
