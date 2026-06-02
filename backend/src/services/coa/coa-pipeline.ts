@@ -24,9 +24,7 @@ function dumpDebug(name: string, content: string) {
 }
 
 // Step 1 — ดึงข้อความออกจากไฟล์
-// ลำดับ: (1) PDF text-layer → (2) RapidOCR sidecar → (3) Typhoon vision OCR (ถ้าเปิด) → (4) Tesseract
 // RapidOCR = default OCR (แม่นกว่า Tesseract มากบนตาราง COA, CPU ~300MB) — ปิดด้วย USE_RAPIDOCR=false
-// Typhoon ต้องการ RAM ~7.5GB — ปิด default ไว้ ตั้ง USE_TYPHOON_OCR=true ใน .env ค่อยเปิด
 export async function extractText(filePath: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
 
@@ -44,7 +42,7 @@ export async function extractText(filePath: string): Promise<string> {
     }
   }
 
-  // render PDF → PNG (ใช้ทั้ง Typhoon และ Tesseract)
+  // render PDF → PNG
   let imagePath = filePath;
   if (ext === ".pdf") {
     const imgs = await new PdfService().convertToImage(filePath);
@@ -53,7 +51,7 @@ export async function extractText(filePath: string): Promise<string> {
 
   // 2. RapidOCR sidecar (primary OCR) — Python daemon, แม่นกว่า Tesseract มากบนตาราง COA scan
   //    ต้อง start daemon ก่อน: `npm run ocr:daemon` (หรือ ocr-py/ocr_server.py). ปิดด้วย USE_RAPIDOCR=false
-  //    daemon ล่ม/unreachable → คืน null → fall through ไป Typhoon/Tesseract อัตโนมัติ
+  //    daemon ล่ม/unreachable → คืน null → fall through ไป Tesseract อัตโนมัติ
   if (process.env.USE_RAPIDOCR !== "false") {
     console.log(`  [rapidocr] OCR via sidecar…`);
     const text = await new RapidOcrService().extractText(imagePath);
@@ -61,22 +59,11 @@ export async function extractText(filePath: string): Promise<string> {
       console.log(`  [rapidocr] ${text.length} chars`);
       return text;
     }
-    console.warn(`  [rapidocr] empty/unreachable — falling back`);
+    console.warn(`  [rapidocr] empty/unreachable — falling back to Tesseract`);
   }
 
-  // 3. Typhoon vision OCR — ถ้าเปิด env switch (แม่นกว่า Tesseract มากสำหรับ COA แต่กิน RAM ~7.5GB)
-  if (process.env.USE_TYPHOON_OCR === "true") {
-    const model = process.env.OLLAMA_OCR_MODEL || "scb10x/typhoon-ocr-3b";
-    console.log(`  [typhoon] OCR via ${model}…`);
-    const text = await new OllamaCoaService().extractTextFromImage(imagePath);
-    if (text && text.trim().replace(/\s/g, "").length >= 50) {
-      console.log(`  [typhoon] ${text.length} chars`);
-      return text;
-    }
-    console.warn(`  [typhoon] empty/failed — falling back to Tesseract`);
-  }
-
-  // Multi-rotation OCR — บาง scan/PDF มาเอียง 90/180/270° → text เป็นขยะถ้าไม่หมุนก่อน
+  // 3. Tesseract multi-rotation OCR (fallback) — ใช้เมื่อ RapidOCR daemon ล่ม/อ่านไม่ได้
+  // บาง scan/PDF มาเอียง 90/180/270° → text เป็นขยะถ้าไม่หมุนก่อน
   // จัดลำดับลองตาม aspect ratio (portrait ลอง 90/270 ก่อน), pick by Tesseract confidence
   // Early exit ถ้า confidence ≥ 75 — ไฟล์ orientation ปกติยังเร็ว 1 pass เท่าเดิม
   const proc = new ImageProcessingService();
@@ -93,7 +80,7 @@ export async function extractText(filePath: string): Promise<string> {
     const { data } = await Tesseract.recognize(buf, "eng+tha", {
       // PSM 6 = assume uniform text block (เหมาะกับตาราง COA มากกว่า auto)
       // preserve_interword_spaces=1 รักษา space ระหว่างคอลัมน์ ช่วยแยก result/spec
-      // เก็บ "|" ไว้ (gemma3 ใช้เป็น column boundary signal)
+      // เก็บ "|" ไว้ (LLM ใช้เป็น column boundary signal)
       tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
       preserve_interword_spaces: "1",
     } as any);
@@ -146,7 +133,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   }
   console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items`);
 
-  // กู้คืน spec ที่ gemma3 (โมเดลเล็ก) หล่นทิ้งบางรัน — เติมเฉพาะ row ที่ spec ว่าง ★ ไม่ทับของเดิม ★
+  // กู้คืน spec ที่ LLM (โมเดลเล็ก) หล่นทิ้งบางรัน — เติมเฉพาะ row ที่ spec ว่าง ★ ไม่ทับของเดิม ★
   const rec = recoverSpecsFromOcr(raw.items ?? [], text);
   if (rec.recovered > 0) {
     console.log(`  [spec-recovery] เติม spec จาก OCR ${rec.recovered} รายการ (${rec.mode})`);

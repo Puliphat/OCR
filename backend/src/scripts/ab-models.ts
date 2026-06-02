@@ -1,8 +1,9 @@
-// A/B harness: เทียบ gemma3 vs qwen2.5:3b-instruct บน "ข้อความเดียวกัน"
-// ★ Fair test ★ — extract text ครั้งเดียวต่อไฟล์ แล้วป้อน text เดิมให้ทั้ง 2 โมเดล
+// A/B harness: เทียบ parse model บน "ข้อความเดียวกัน" (default qwen2.5:3b vs 7b)
+// ★ Fair test ★ — extract text ครั้งเดียวต่อไฟล์ แล้วป้อน text เดิมให้ทุกโมเดล
 //   (ถ้าปล่อยให้ OCR รันใหม่ต่อโมเดล ความ non-deterministic ของ Tesseract จะปนผล)
 // รัน: npx ts-node src/scripts/ab-models.ts            (ทุกไฟล์ต้นฉบับใน uploads/)
 //      npx ts-node src/scripts/ab-models.ts <file...>  (เฉพาะไฟล์)
+// เปลี่ยนรายชื่อโมเดลที่ MODELS ด้านล่าง
 import * as fs from "fs";
 import * as path from "path";
 import { extractText } from "../services/coa/coa-pipeline";
@@ -11,7 +12,7 @@ import { recoverSpecsFromOcr } from "../services/coa/spec-recovery";
 import { evaluateCoa } from "../services/coa/coa-evaluator";
 
 const UPLOADS = path.join(__dirname, "..", "..", "uploads");
-const MODELS = ["gemma3", "qwen2.5:3b-instruct"];
+const MODELS = ["qwen2.5:3b-instruct", "qwen2.5:7b-instruct"];
 
 // เฉพาะไฟล์ต้นฉบับ (ไม่เอา timestamped / processed_ / .png ที่ render ไว้)
 function originalFiles(): string[] {

@@ -54,7 +54,7 @@ function nearestAnchorIdx(x: number, anchors: number[]): number {
 // อ่านทุกหน้า เรียงเป็น line ตาม Y-coordinate (Δy > 2 = ขึ้นบรรทัดใหม่)
 // ถ้าตรวจพบ ≥ 2 column anchors → join ด้วย " | " แทน space เดียว
 // hasUsableText = true เมื่อข้อความ (ไม่นับช่องว่าง) ≥ 300 chars
-// (เดิม 100 chars — เจอ PR1950W มี text-layer 135 chars ผ่าน threshold แต่ gemma3 parse fail
+// (เดิม 100 chars — เจอ PR1950W มี text-layer 135 chars ผ่าน threshold แต่ LLM parse fail
 //  เพราะ text sparse ไม่มี row table จริง ขยับเป็น 300 ให้ fallback ไป OCR แทน)
 export async function extractPdfText(filePath: string): Promise<PdfTextResult> {
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");

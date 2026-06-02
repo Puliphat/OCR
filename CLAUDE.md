@@ -19,9 +19,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Frontend**: Next.js 16 (app router) + React 19 + Tailwind CSS 4 + @tanstack/react-query + axios
 - **OCR sidecar** (`ocr-py/`): Python **RapidOCR** (CPU onnxruntime, ~300MB) — default OCR engine สำหรับ scanned COA. แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). Tesseract.js เหลือเป็น fallback อย่างเดียวถ้า daemon ล่ม
 - **LLM**: Ollama HTTP API ที่ `localhost:11434`
-  - `qwen2.5:3b-instruct` — parse text → JSON (default; A/B vs gemma3 ดู `src/scripts/ab-models.ts`)
-  - `scb10x/typhoon-ocr-3b` — vision OCR (ปิดไว้เพราะกินแรม ~7.5GB ลงไม่ได้บนเครื่องนี้)
-  - Override: `OLLAMA_URL`, `OLLAMA_CHAT_URL`, `OLLAMA_MODEL`, `OLLAMA_OCR_MODEL`, `OCR_SIDECAR_URL`, `USE_RAPIDOCR`
+  - `qwen2.5:3b-instruct` — parse text → JSON (default; A/B vs โมเดลอื่น ดู `src/scripts/ab-models.ts`)
+  - Override: `OLLAMA_URL`, `OLLAMA_MODEL`, `OCR_SIDECAR_URL`, `USE_RAPIDOCR`
 
 ## Commands
 
@@ -60,9 +59,7 @@ npm run build
 ```
 DB_HOST=localhost  DB_PORT=5432  DB_USERNAME=postgres  DB_PASSWORD=postgres  DB_NAME=invoice_db
 OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_CHAT_URL=http://localhost:11434/v1
 OLLAMA_MODEL=qwen2.5:3b-instruct
-OLLAMA_OCR_MODEL=scb10x/typhoon-ocr-3b
 OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default)
 USE_RAPIDOCR=true                        # false = ข้าม sidecar ใช้ Tesseract เลย
 PORT=3001
@@ -89,7 +86,7 @@ backend/src/
         ├── coa-pipeline.ts            orchestrator (3 steps)
         ├── pdf-text-extractor.ts      ดูด text-layer จาก PDF (ฟรี, ไม่ต้อง OCR)
         ├── rapidocr.service.ts        ★ ยิง OCR sidecar (:8765) + จัด tokens เป็นแถว ★
-        ├── ollama-coa.service.ts      เรียก Ollama gemma3 → JSON (prompt อยู่ที่นี่)
+        ├── ollama-coa.service.ts      เรียก Ollama (qwen2.5:3b) → JSON (prompt อยู่ที่นี่)
         ├── coa-evaluator.ts           PASS/FAIL/SKIP + summary
         ├── spec-normalizer.ts         parse spec format (range, ±, ≤≥, …)
         ├── result-normalizer.ts       parse result (รับ number/string/{avg,min,max})
@@ -115,7 +112,7 @@ ocr-py/                         ★ Python OCR sidecar ★
 **3 ขั้น** (อยู่ใน `backend/src/services/coa/coa-pipeline.ts`):
 
 1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → ถ้า daemon ล่ม fall back Tesseract `eng+tha` (multi-rotation)
-2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama gemma3, `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
+2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama qwen2.5:3b-instruct, `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
 3. **Deterministic evaluator** (`coa/coa-evaluator.ts`) → status `PASS`/`FAIL`/`SKIP` ต่อ row พร้อม `reason` + summary
 
 **`spec-normalizer.ts`** จัดการ format จริงที่เจอ:

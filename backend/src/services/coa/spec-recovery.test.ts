@@ -24,7 +24,7 @@ const OCR = [
   "TT alk Density(EL) 336 | 322 | 33s 325.0) 270~350| Success",
 ].join("\n");
 
-// จำลอง output แย่ของ gemma3 ที่ user เจอ: spec null ทุก row → เดิมได้ 5 SKIP
+// จำลอง output แย่ของโมเดลเล็กที่ user เจอ: spec null ทุก row → เดิมได้ 5 SKIP
 const items: RawCoaItem[] = [
   { name: "Sieve Residue on S00p(%)", specRaw: null, specMin: null, specMax: null, result: "0" },
   { name: "Sieve Residue on 3501(%)", specRaw: null, specMin: null, specMax: null, result: "423" },
@@ -48,7 +48,7 @@ items.forEach((it, i) => {
   check(`row ${i} specRaw = "${expectSpecs[i]}"`, got === expectSpecs[i], `(got "${it.specRaw}")`);
 });
 
-// หมายเหตุ: result ที่ใส่ใน items เป็นค่าที่ gemma3 ปั้นออกมา (ทศนิยมหายบางตัว)
+// หมายเหตุ: result ที่ใส่ใน items เป็นค่าที่โมเดลเล็กปั้นออกมา (ทศนิยมหายบางตัว)
 // จุดประสงค์ test นี้คือ "spec recovery ทำงาน" — ไม่ได้ทดสอบว่า result ถูก (นั่นเป็นเรื่อง OCR)
 const report = evaluateCoa({ filename: "test", items });
 check(

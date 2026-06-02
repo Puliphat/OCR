@@ -1,6 +1,6 @@
-// กู้คืน "spec column" ที่โมเดลเล็ก (gemma3) หล่นทิ้งบางรัน — ทำแบบ deterministic ไม่พึ่ง LLM
+// กู้คืน "spec column" ที่โมเดลเล็ก (qwen2.5:3b) หล่นทิ้งบางรัน — ทำแบบ deterministic ไม่พึ่ง LLM
 //
-// ★ ทำไมต้องมี ★ gemma3 ไม่เสถียร: ไฟล์เดียวกัน/โค้ดเดียวกัน บางรัน parse spec ได้ บางรัน null หมด
+// ★ ทำไมต้องมี ★ โมเดลเล็กไม่เสถียร: ไฟล์เดียวกัน/โค้ดเดียวกัน บางรัน parse spec ได้ บางรัน null หมด
 //   (ดู Lot240521: run เก่า 4P/1F, run ล่าสุด 5 SKIP เพราะ spec null ทั้งคอลัมน์) ทั้งที่ spec
 //   ("3 Max","15 -45","45 -75","20 Max","270 ~350") อยู่ใน OCR text ครบ → ดึงเองด้วย regex
 //
@@ -87,7 +87,7 @@ export function recoverSpecsFromOcr(
   }
   if (!entries.length) return { recovered: 0, mode: "none" };
 
-  // เคสหลัก: gemma3 หล่น spec ทั้งคอลัมน์ → ทุก item ไม่มี spec และจำนวน data-row ที่มี spec ตรงกับจำนวน item
+  // เคสหลัก: LLM หล่น spec ทั้งคอลัมน์ → ทุก item ไม่มี spec และจำนวน data-row ที่มี spec ตรงกับจำนวน item
   // → zip ตามลำดับเอกสาร (ปลอดภัยสุด เพราะ COA เรียง row บนลงล่างตรงกับ item ที่ LLM อ่าน)
   if (targets.length === items.length && entries.length === items.length) {
     items.forEach((it, i) => {
