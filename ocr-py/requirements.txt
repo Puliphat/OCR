@@ -1,0 +1,6 @@
+# Python OCR sidecar deps — RapidOCR (CPU onnxruntime) for scanned COA files.
+# Setup:  python -m venv venv  &&  venv\Scripts\pip install -r requirements.txt
+# Run:    venv\Scripts\python ocr_server.py 8765   (or `npm run ocr:daemon` from backend/)
+rapidocr-onnxruntime
+opencv-python-headless
+pymupdf

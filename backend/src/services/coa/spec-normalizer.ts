@@ -131,6 +131,15 @@ export interface SpecCandidate {
 // รองรับกรณีตารางแยกคอลัมน์ Min/Max (LLM แยกใส่ specMin/specMax ให้)
 // ทั้ง min+max → between, มีอย่างเดียว → ge/le, ไม่มี → fallback ใช้ specRaw
 export function normalizeSpecFromCandidate(c: SpecCandidate): ParsedSpec | null {
+  // ★ specRaw (verbatim 1 cell) ที่มี operator/range ชัด = น่าเชื่อสุด — เช็คก่อน min/max ★
+  //   LLM เล็กชอบใส่ทั้ง specRaw="0.01 Max." (ถูก) + specMin="0.01" (bare) พร้อมกัน → ถ้าเช็ค min ก่อน
+  //   bare specMin บังให้เป็น ge → fabricated FAIL. specMin/specMax คือ "การตีความ column" ของ LLM
+  //   (พลาดบ่อย) ส่วน specRaw คือ copy ตรง ๆ → ทิศใน specRaw ชนะเมื่อมันบอกทิศชัด (ไม่ใช่เลขเปล่า)
+  if (c.specRaw != null && String(c.specRaw).trim() !== "") {
+    const pr = normalizeSpec(c.specRaw);
+    if (pr && pr.op !== "eq") return pr;
+  }
+
   const minPresent = c.min !== null && c.min !== undefined && String(c.min).trim() !== "";
   const maxPresent = c.max !== null && c.max !== undefined && String(c.max).trim() !== "";
 
@@ -149,13 +158,16 @@ export function normalizeSpecFromCandidate(c: SpecCandidate): ParsedSpec | null 
       };
     }
   }
+  // single column: ถ้าค่ามี operator/range ของตัวเอง (≥ ≤ < > ± range) = self-describing → ใช้ตามนั้น
+  //   กัน LLM ใส่ spec ผิดช่อง เช่น "≥ 50" ลง specMax แล้วถูกบังคับเป็น le → ผล PASS/FAIL กลับด้าน
+  //   เฉพาะ bare number (op "eq") เท่านั้นที่ใช้ทิศตาม column: min col → ge, max col → le
   if (minPresent && !maxPresent) {
     const p = normalizeSpec(c.min);
-    if (p?.value != null) return { op: "ge", value: p.value, raw: String(c.min) };
+    if (p) return p.op === "eq" ? { op: "ge", value: p.value, raw: String(c.min) } : p;
   }
   if (maxPresent && !minPresent) {
     const p = normalizeSpec(c.max);
-    if (p?.value != null) return { op: "le", value: p.value, raw: String(c.max) };
+    if (p) return p.op === "eq" ? { op: "le", value: p.value, raw: String(c.max) } : p;
   }
   if (c.specRaw) return normalizeSpec(c.specRaw);
   return null;

@@ -54,6 +54,14 @@ const candCases: [any, any][] = [
   [{ min: null,   max: "0.20%" }, { op: "le", value: 0.20 }],
   [{ min: "6.0",  max: null   },  { op: "ge", value: 6.0 }],
   [{ specRaw: "275-425" },        { op: "between", min: 275, max: 425 }],
+  // LLM ใส่ spec ผิดช่อง — ต้องเคารพ operator ในค่า ไม่ใช่ทิศของ column (กัน fabricated PASS/FAIL)
+  [{ min: null,   max: "≥ 50" },     { op: "ge", value: 50 }],
+  [{ min: "≤ 0.2", max: null  },     { op: "le", value: 0.2 }],
+  [{ min: null,   max: "120 ± 30" }, { op: "between", min: 90, max: 150 }],
+  // LLM ใส่ทั้ง specRaw (ถูก) + bare min/max (ผิดทิศ) พร้อมกัน → specRaw ที่มี operator ชนะ
+  [{ specRaw: "0.01 Max.", min: "0.01" }, { op: "le", value: 0.01 }],   // SODA Insoluble (เคย ge ผิด)
+  [{ specRaw: "99.2 Min.", min: "99.2" }, { op: "ge", value: 99.2 }],
+  [{ specRaw: "275-425", min: "275", max: "425" }, { op: "between", min: 275, max: 425 }],
 ];
 for (const [input, expected] of candCases) {
   const got = normalizeSpecFromCandidate(input);

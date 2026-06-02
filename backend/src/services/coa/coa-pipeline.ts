@@ -6,9 +6,10 @@ import * as Tesseract from "tesseract.js";
 import { PdfService } from "../pdf.service";
 import { ImageProcessingService } from "../image-processing.service";
 import { OllamaCoaService } from "./ollama-coa.service";
+import { RapidOcrService } from "./rapidocr.service";
 import { evaluateCoa, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
-import { recoverSpecsFromOcr } from "./spec-recovery";
+import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
 // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
@@ -23,7 +24,8 @@ function dumpDebug(name: string, content: string) {
 }
 
 // Step 1 — ดึงข้อความออกจากไฟล์
-// ลำดับ: (1) PDF text-layer → (2) Typhoon vision OCR (ถ้าเปิด USE_TYPHOON_OCR) → (3) Tesseract
+// ลำดับ: (1) PDF text-layer → (2) RapidOCR sidecar → (3) Typhoon vision OCR (ถ้าเปิด) → (4) Tesseract
+// RapidOCR = default OCR (แม่นกว่า Tesseract มากบนตาราง COA, CPU ~300MB) — ปิดด้วย USE_RAPIDOCR=false
 // Typhoon ต้องการ RAM ~7.5GB — ปิด default ไว้ ตั้ง USE_TYPHOON_OCR=true ใน .env ค่อยเปิด
 export async function extractText(filePath: string): Promise<string> {
   const ext = path.extname(filePath).toLowerCase();
@@ -49,7 +51,20 @@ export async function extractText(filePath: string): Promise<string> {
     imagePath = imgs[0];
   }
 
-  // 2. Typhoon vision OCR — ถ้าเปิด env switch (แม่นกว่า Tesseract มากสำหรับ COA แต่กิน RAM ~7.5GB)
+  // 2. RapidOCR sidecar (primary OCR) — Python daemon, แม่นกว่า Tesseract มากบนตาราง COA scan
+  //    ต้อง start daemon ก่อน: `npm run ocr:daemon` (หรือ ocr-py/ocr_server.py). ปิดด้วย USE_RAPIDOCR=false
+  //    daemon ล่ม/unreachable → คืน null → fall through ไป Typhoon/Tesseract อัตโนมัติ
+  if (process.env.USE_RAPIDOCR !== "false") {
+    console.log(`  [rapidocr] OCR via sidecar…`);
+    const text = await new RapidOcrService().extractText(imagePath);
+    if (text && text.replace(/\s/g, "").length >= 50) {
+      console.log(`  [rapidocr] ${text.length} chars`);
+      return text;
+    }
+    console.warn(`  [rapidocr] empty/unreachable — falling back`);
+  }
+
+  // 3. Typhoon vision OCR — ถ้าเปิด env switch (แม่นกว่า Tesseract มากสำหรับ COA แต่กิน RAM ~7.5GB)
   if (process.env.USE_TYPHOON_OCR === "true") {
     const model = process.env.OLLAMA_OCR_MODEL || "scb10x/typhoon-ocr-3b";
     console.log(`  [typhoon] OCR via ${model}…`);
@@ -135,6 +150,12 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   const rec = recoverSpecsFromOcr(raw.items ?? [], text);
   if (rec.recovered > 0) {
     console.log(`  [spec-recovery] เติม spec จาก OCR ${rec.recovered} รายการ (${rec.mode})`);
+  }
+
+  // แก้ทิศ spec ที่ LLM ใส่ผิดช่อง (bare bound) โดยยึด operator ใน OCR (X Max/Min, ≤/≥) — กัน fabricated FAIL
+  const fixed = correctSpecDirectionFromOcr(raw.items ?? [], text);
+  if (fixed > 0) {
+    console.log(`  [spec-direction] แก้ทิศ spec จาก OCR ${fixed} รายการ`);
   }
 
   const evaluated = evaluateCoa({

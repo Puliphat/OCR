@@ -6,7 +6,8 @@
   "scripts": {
     "start": "ts-node src/index.ts",
     "dev": "nodemon src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "ocr:daemon": "../ocr-py/venv/Scripts/python.exe ../ocr-py/ocr_server.py 8765"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.84",

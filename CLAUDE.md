@@ -15,16 +15,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Stack
 
-- **Backend**: Express + TypeScript + TypeORM + PostgreSQL + Tesseract.js + pdfjs-dist + axios → Ollama
+- **Backend**: Express + TypeScript + TypeORM + PostgreSQL + pdfjs-dist + axios → Ollama / OCR sidecar
 - **Frontend**: Next.js 16 (app router) + React 19 + Tailwind CSS 4 + @tanstack/react-query + axios
-- **OCR/LLM**: Tesseract (`eng+tha`, traineddata อยู่ที่ `backend/eng.traineddata` + `tha.traineddata`), Ollama HTTP API ที่ `localhost:11434`
-  - `gemma3` — parse text → JSON
-  - `scb10x/typhoon-ocr-3b` — vision OCR (COA pipeline ปิดไว้เพราะกินแรม ~7.5GB; ใช้ Tesseract fallback แทน)
-  - Override: `OLLAMA_URL`, `OLLAMA_CHAT_URL`, `OLLAMA_MODEL`, `OLLAMA_OCR_MODEL`
+- **OCR sidecar** (`ocr-py/`): Python **RapidOCR** (CPU onnxruntime, ~300MB) — default OCR engine สำหรับ scanned COA. แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). Tesseract.js เหลือเป็น fallback อย่างเดียวถ้า daemon ล่ม
+- **LLM**: Ollama HTTP API ที่ `localhost:11434`
+  - `qwen2.5:3b-instruct` — parse text → JSON (default; A/B vs gemma3 ดู `src/scripts/ab-models.ts`)
+  - `scb10x/typhoon-ocr-3b` — vision OCR (ปิดไว้เพราะกินแรม ~7.5GB ลงไม่ได้บนเครื่องนี้)
+  - Override: `OLLAMA_URL`, `OLLAMA_CHAT_URL`, `OLLAMA_MODEL`, `OLLAMA_OCR_MODEL`, `OCR_SIDECAR_URL`, `USE_RAPIDOCR`
 
 ## Commands
 
 ```powershell
+# OCR sidecar (ต้อง start ก่อน รัน pipeline กับไฟล์ scan) — daemon บน :8765
+cd ocr-py
+python -m venv venv                      # ครั้งแรกเท่านั้น
+venv\Scripts\pip install -r requirements.txt
+# start daemon (ค้างไว้ใน terminal แยก เหมือน Ollama):
+cd ..\backend; npm run ocr:daemon        # = ../ocr-py/venv/Scripts/python ../ocr-py/ocr_server.py 8765
+
 # Backend HTTP server (พร้อมรับ /api/coa/upload จาก frontend)
 cd backend
 npm install
@@ -53,8 +61,10 @@ npm run build
 DB_HOST=localhost  DB_PORT=5432  DB_USERNAME=postgres  DB_PASSWORD=postgres  DB_NAME=invoice_db
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_CHAT_URL=http://localhost:11434/v1
-OLLAMA_MODEL=gemma3
+OLLAMA_MODEL=qwen2.5:3b-instruct
 OLLAMA_OCR_MODEL=scb10x/typhoon-ocr-3b
+OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default)
+USE_RAPIDOCR=true                        # false = ข้าม sidecar ใช้ Tesseract เลย
 PORT=3001
 ```
 
@@ -78,6 +88,7 @@ backend/src/
     └── coa/                           ★ หัวใจของระบบ ★
         ├── coa-pipeline.ts            orchestrator (3 steps)
         ├── pdf-text-extractor.ts      ดูด text-layer จาก PDF (ฟรี, ไม่ต้อง OCR)
+        ├── rapidocr.service.ts        ★ ยิง OCR sidecar (:8765) + จัด tokens เป็นแถว ★
         ├── ollama-coa.service.ts      เรียก Ollama gemma3 → JSON (prompt อยู่ที่นี่)
         ├── coa-evaluator.ts           PASS/FAIL/SKIP + summary
         ├── spec-normalizer.ts         parse spec format (range, ±, ≤≥, …)
@@ -91,13 +102,19 @@ frontend/
 └── lib/
     ├── axios.ts                baseURL → localhost:3001
     └── types.ts                CoaRow, UploadResponse
+
+ocr-py/                         ★ Python OCR sidecar ★
+├── ocr_server.py              HTTP daemon (:8765) — RapidOCR loaded once, POST /ocr {path}→tokens
+├── render_and_test.py         standalone test: render 8 scanned PDFs + OCR + dump _scan_test/
+├── requirements.txt           rapidocr-onnxruntime, opencv-python-headless, pymupdf
+└── venv/                      (gitignored)
 ```
 
 ## COA pipeline (สิ่งที่ต้องอ่านก่อนแก้)
 
 **3 ขั้น** (อยู่ใน `backend/src/services/coa/coa-pipeline.ts`):
 
-1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → fallback ไป `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → `image-processing.service.processImage` (sharp preprocess) → Tesseract `eng+tha`
+1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → ถ้า daemon ล่ม fall back Tesseract `eng+tha` (multi-rotation)
 2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama gemma3, `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
 3. **Deterministic evaluator** (`coa/coa-evaluator.ts`) → status `PASS`/`FAIL`/`SKIP` ต่อ row พร้อม `reason` + summary
 
@@ -119,7 +136,8 @@ frontend/
 | LLM parse ผิด / เพิ่ม field | `coa/ollama-coa.service.ts` (prompt ใน `parseCoa`) |
 | spec format ใหม่ที่ pipeline อ่านไม่เข้าใจ | `coa/spec-normalizer.ts` + เพิ่ม fixture ที่ `evaluator.test.ts` |
 | result column รูปแบบใหม่ | `coa/result-normalizer.ts` |
-| OCR อ่านไม่ออก | `coa/pdf-text-extractor.ts` (threshold 100 chars) หรือ `image-processing.service.ts` (sharp config) |
+| OCR อ่านไม่ออก (scan) | start daemon ก่อน (`npm run ocr:daemon`) · ปรับ row-grouping ที่ `coa/rapidocr.service.ts` · daemon settings `ocr-py/ocr_server.py` · text-layer threshold `coa/pdf-text-extractor.ts` |
+| spec อ่านถูกแต่ PASS/FAIL กลับด้าน | `coa/spec-normalizer.ts` (`normalizeSpecFromCandidate` เคารพ operator ≥/≤ ในค่า ไม่ยึดทิศ column) |
 | เพิ่ม endpoint / รับ field เพิ่ม | `routes/coa.routes.ts` |
 | UI ตาราง / สี / column | `frontend/app/page.tsx` (`ResultTable`, `StatusPill`) |
 | เปิด persist DB | (1) เติม `ENABLE_DB=true` + `DB_PASSWORD=...` ใน `.env` (2) uncomment `entities` ใน `data-source.ts` (3) uncomment block ใต้ `// TODO: persist ลง DB` ใน `routes/coa.routes.ts` |

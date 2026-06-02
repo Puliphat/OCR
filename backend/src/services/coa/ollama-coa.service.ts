@@ -44,7 +44,7 @@ export class OllamaCoaService {
     process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
   private readonly chatUrl =
     process.env.OLLAMA_CHAT_URL || "http://localhost:11434/v1";
-  private readonly model = process.env.OLLAMA_MODEL || "gemma3";
+  private readonly model = process.env.OLLAMA_MODEL || "qwen2.5:3b-instruct";
   private readonly ocrModel =
     process.env.OLLAMA_OCR_MODEL || "scb10x/typhoon-ocr-3b";
 
@@ -111,6 +111,7 @@ Rules:
 - Items are test-table rows only. Skip headers, addresses, signatures, notes, stamps (ACCEPT/REJECT/"By: ...").
 - "X Max" / "X Min" (e.g. "3 Max", "99 Min") is a SPEC → put the whole phrase in specRaw, never in unit.
 - result and spec are DIFFERENT columns — never put the result number inside specRaw.
+- NEVER build a spec range out of the result. specMin/specMax/specRaw hold ONLY the printed limit(s). If a limit is missing, leave it null — do not fill it with the measured value (e.g. result 69.11 with limit 80.0 is "≤80.0" or specMax 80.0, NEVER "69.11~80.0").
 - NEVER use a lot/batch/PO number (usually 6+ digits, no decimal) as a spec or result value.
 - Numbers separated by spaces are SEPARATE values (OCR artifact): "1 4 23" is 1, 4, 23 — do NOT join into "423". Pick one token; never invent digits.
 - If a result is non-numeric (e.g. "White", a formula), copy it verbatim — do not force a number.
@@ -124,11 +125,17 @@ ${text}
         this.generateUrl,
         {
           model: this.model,
+          // system role: qwen2.5-instruct เชื่อฟัง system message แรงกว่า rule ใน prompt เดี่ยว
+          //   ตอกย้ำ 2 บาปหลักที่เคยเจอ — ปั้นเลข + ย้าย result ไปช่อง spec (fabricated-PASS)
+          system:
+            "You are a precise COA data-extraction engine. Output ONLY valid JSON matching the schema. Copy every value verbatim from its own column. Never invent a number and never move a measured result into a spec column.",
           prompt,
           stream: false,
           format: "json",
           keep_alive: 0,
-          options: { temperature: 0, num_ctx: 4096 },
+          // num_ctx 8192: ตาราง COA ใหญ่ (หลายหน้า/หลายแถว) เกิน 4096 tokens → โมเดล truncate ท้าย = หล่นแถวท้าย
+          //   qwen2.5:3b รองรับ 32k, 8192 ราคาถูกบน 3b — กัน silent truncation. temp 0 = deterministic
+          options: { temperature: 0, num_ctx: 8192 },
         },
         { timeout: 300_000 }
       );

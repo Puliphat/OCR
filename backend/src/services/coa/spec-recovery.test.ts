@@ -1,7 +1,7 @@
 // Print-based regression test (ไม่มี runner) — รัน: npx ts-node src/services/coa/spec-recovery.test.ts
 // ยืนยัน: spec-recovery กู้ spec จาก OCR จริงของ Lot240521 ได้ครบ 5 + evaluator คืน 4P/1F (baseline ดี)
 // และ row ที่ FAIL (423 = 42.3 ทศนิยมหาย) ถูกตั้งธง needsReview
-import { recoverSpecsFromOcr } from "./spec-recovery";
+import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
 import { evaluateCoa } from "./coa-evaluator";
 import { RawCoaItem } from "./ollama-coa.service";
 
@@ -83,6 +83,42 @@ check("fabricated PASS (result==min) → SKIP", fab.rows[0].status === "SKIP", `
 check("fabricated PASS (result==max) → SKIP", fab.rows[1].status === "SKIP", `(got ${fab.rows[1].status})`);
 check("range ปกติยัง PASS", fab.rows[2].status === "PASS", `(got ${fab.rows[2].status})`);
 check("FAIL จริงยัง FAIL (guard ไม่แตะ)", fab.rows[3].status === "FAIL", `(got ${fab.rows[3].status})`);
+
+// ★ spec-direction correction ★ — LLM ทิ้ง "Max/Min" ใส่เป็น bare specMin/specMax ผิดทิศ → fabricated FAIL
+//   layout จริง = "Item | Spec | Result" → result อยู่ tail; anchor ที่ค่า V กัน grab result column
+const sodaOcr = [
+  "Sodium chloride(NaCl)  |  0.5 Max.  |  0.28",
+  "Insoluble matter in water  |  0.01 Max.  |  0.001 Max.",
+  "Assay (Na2CO3)  |  99.2 Min.  |  99.5",
+].join("\n");
+const sodaItems: RawCoaItem[] = [
+  // LLM ทิ้ง "Max" → ใส่ 0.01 เป็น specMin (bare) → เดิม ge 0.01 → 0.001 FAIL ปลอม
+  { name: "Insoluble matter in water", specRaw: null, specMin: "0.01", specMax: null, result: "0.001" },
+  // LLM ทิ้ง "Min" → ใส่ 99.2 เป็น specMax (bare) → เดิม le 99.2 → 99.5 FAIL ปลอม
+  { name: "Assay (Na2CO3)", specRaw: null, specMin: null, specMax: "99.2", result: "99.5" },
+  // ถูกแล้ว (มี specRaw) → ห้ามแตะ
+  { name: "Sodium chloride (NaCl)", specRaw: "0.5 Max.", specMin: null, specMax: null, result: "0.28" },
+];
+const nFixed = correctSpecDirectionFromOcr(sodaItems, sodaOcr);
+check("direction: แก้ 2 row", nFixed === 2, `(got ${nFixed})`);
+check("Insoluble → '0.01 Max.'", (sodaItems[0].specRaw ?? "") === "0.01 Max.", `(got "${sodaItems[0].specRaw}")`);
+check("Assay → '99.2 Min.'", (sodaItems[1].specRaw ?? "") === "99.2 Min.", `(got "${sodaItems[1].specRaw}")`);
+check("row ที่มี specRaw อยู่แล้วไม่โดนแตะ", sodaItems[2].specRaw === "0.5 Max.");
+
+const sodaReport = evaluateCoa({ filename: "soda", items: sodaItems });
+check("Insoluble 0.001 ≤ 0.01 → PASS (ไม่ FAIL ปลอม)", sodaReport.rows[0].status === "PASS", `(got ${sodaReport.rows[0].status})`);
+check("Assay 99.5 ≥ 99.2 → PASS", sodaReport.rows[1].status === "PASS", `(got ${sodaReport.rows[1].status})`);
+
+// guard: range (min+max ครบ) = ทิศชัด → ห้ามแตะ
+const rangeItems: RawCoaItem[] = [{ name: "Bulk Density", specRaw: null, specMin: "270", specMax: "350", result: "329" }];
+const rf = correctSpecDirectionFromOcr(rangeItems, "Bulk Density  270 ~ 350  329");
+check("range (min+max) ไม่โดนแก้ทิศ", rf === 0 && rangeItems[0].specMin === "270", `(fixed=${rf})`);
+
+// guard: LLM ถูกอยู่แล้ว (specMax bare 0.2, OCR "0.2 Max") → no-op ในผล (le 0.2 เท่าเดิม)
+const okItems: RawCoaItem[] = [{ name: "Moisture content", specRaw: null, specMin: null, specMax: "0.2", result: "0.09" }];
+correctSpecDirectionFromOcr(okItems, "Moisture content  |  0.2 Max  |  0.09");
+const okReport = evaluateCoa({ filename: "ok", items: okItems });
+check("LLM ถูกอยู่แล้ว → ยัง PASS (le 0.2)", okReport.rows[0].status === "PASS", `(got ${okReport.rows[0].status})`);
 
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);
