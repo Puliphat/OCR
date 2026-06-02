@@ -62,6 +62,7 @@ router.post(
       const safeFilename = path.basename(req.file.path);
       const logBasename = `${Date.now()}-${safeFilename}.json`;
       const logPath = path.join(LOG_DIR, logBasename);
+      // เขียน log ฉบับเต็ม (รวม debug: ocrText/llmRaw) ไว้ diagnose ว่าพังที่ model ไหน
       fs.writeFileSync(logPath, JSON.stringify(report, null, 2), "utf8");
 
       // TODO: persist ลง DB เมื่อเปิดใช้ CoaReportEntity / CoaItemEntity
@@ -90,7 +91,9 @@ router.post(
       // });
       // return res.json({ report, logFile: logBasename, id: saved.id });
 
-      return res.json({ report, logFile: logBasename });
+      // HTTP response: ตัด debug ออก (ocrText/llmRaw ใหญ่และ FE ไม่ใช้) — อยู่ใน log file แล้ว
+      const { debug: _debug, ...reportForClient } = report;
+      return res.json({ report: reportForClient, logFile: logBasename });
     } catch (e) {
       console.error("[coa-route] pipeline error:", (e as Error).message);
       return res.status(500).json({ error: (e as Error).message });

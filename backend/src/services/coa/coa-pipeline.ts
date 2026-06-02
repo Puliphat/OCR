@@ -10,7 +10,11 @@ import { RapidOcrService } from "./rapidocr.service";
 import { evaluateCoa, summarize, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
 import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
-import { dropUngroundedItems, downgradeUngroundedFails } from "./coa-grounding";
+import {
+  dropUngroundedItems,
+  downgradeUngroundedFails,
+  downgradeUngroundedPasses,
+} from "./coa-grounding";
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
 // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
@@ -26,7 +30,11 @@ function dumpDebug(name: string, content: string) {
 
 // Step 1 — ดึงข้อความออกจากไฟล์
 // RapidOCR = default OCR (แม่นกว่า Tesseract มากบนตาราง COA, CPU ~300MB) — ปิดด้วย USE_RAPIDOCR=false
-export async function extractText(filePath: string): Promise<string> {
+// คืน engine ที่อ่านสำเร็จด้วย (text-layer/rapidocr/tesseract) → แนบ CoaReport.debug ให้รู้ว่าพังขั้นไหน
+export type OcrEngine = "text-layer" | "rapidocr" | "tesseract";
+export async function extractText(
+  filePath: string
+): Promise<{ text: string; engine: OcrEngine }> {
   const ext = path.extname(filePath).toLowerCase();
 
   // 1. For PDFs: try text layer first — free, no OCR needed if it works
@@ -35,7 +43,7 @@ export async function extractText(filePath: string): Promise<string> {
       const { text, hasUsableText } = await extractPdfText(filePath);
       if (hasUsableText) {
         console.log(`  [text-layer] ${text.length} chars`);
-        return text;
+        return { text, engine: "text-layer" };
       }
       console.log(`  [text-layer] empty/scanned — falling back to OCR`);
     } catch (e) {
@@ -58,7 +66,7 @@ export async function extractText(filePath: string): Promise<string> {
     const text = await new RapidOcrService().extractText(imagePath);
     if (text && text.replace(/\s/g, "").length >= 50) {
       console.log(`  [rapidocr] ${text.length} chars`);
-      return text;
+      return { text, engine: "rapidocr" };
     }
     console.warn(`  [rapidocr] empty/unreachable — falling back to Tesseract`);
   }
@@ -93,13 +101,13 @@ export async function extractText(filePath: string): Promise<string> {
     }
     if (data.confidence >= 75) {
       console.log(`  [tesseract] picked ${angle}° (conf ≥ 75)`);
-      return data.text;
+      return { text: data.text, engine: "tesseract" };
     }
   }
   console.log(
     `  [tesseract] best rotation: ${best.angle}° (conf ${best.confidence.toFixed(1)})`
   );
-  return best.text;
+  return { text: best.text, engine: "tesseract" };
 }
 
 // Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
@@ -108,7 +116,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   const filename = path.basename(filePath);
   const ollama = new OllamaCoaService();
 
-  const text = await extractText(filePath);
+  const { text, engine } = await extractText(filePath);
   dumpDebug("_last-ocr.txt", text);
   if (!text.trim()) {
     return {
@@ -117,6 +125,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
       lotNo: null,
       rows: [],
       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
+      debug: { ocrEngine: engine, ocrText: text, llmModel: ollama.modelName, llmRaw: null },
     };
   }
 
@@ -130,6 +139,12 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
       lotNo: null,
       rows: [],
       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
+      debug: {
+        ocrEngine: engine,
+        ocrText: text,
+        llmModel: ollama.modelName,
+        llmRaw: ollama.lastRawResponse,
+      },
     };
   }
   console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items`);
@@ -175,8 +190,32 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
         .map((d) => d.name)
         .join(", ")}`
     );
+  }
+
+  // ★ Anti-deceptive-PASS ★ — downgrade PASS ที่ spec/result ไม่อยู่บรรทัดชื่อ row เดียวกันใน OCR
+  //   (column collapse ฝั่ง PASS: LLM ดึงเลขข้ามแถว → ค่าผิดแต่บังเอิญเข้า spec) → SKIP+needsReview
+  //   กัน false-PASS (บาปหนักสุด): บอก "ผ่าน" จาก spec/result ที่ไม่ใช่ของแถวนั้นจริง
+  const passGuard = downgradeUngroundedPasses(evaluated.rows, text);
+  if (passGuard.downgraded.length > 0) {
+    console.warn(
+      `  [pass-guard] downgrade ${passGuard.downgraded.length} PASS→SKIP (column collapse): ${passGuard.downgraded
+        .map((d) => d.name)
+        .join(", ")}`
+    );
+  }
+
+  // re-summarize ครั้งเดียวหลัง guard ทั้งสองตัว (fail + pass) แก้ status เสร็จ
+  if (failGuard.downgraded.length > 0 || passGuard.downgraded.length > 0) {
     evaluated.summary = summarize(evaluated.rows);
   }
+
+  // แนบหลักฐานดิบ — เปิด coa-log JSON ดูได้ว่า OCR อ่านอะไร vs LLM parse อะไร (พังที่ model ไหน)
+  evaluated.debug = {
+    ocrEngine: engine,
+    ocrText: text,
+    llmModel: ollama.modelName,
+    llmRaw: ollama.lastRawResponse,
+  };
 
   // Log ทุก row ที่ evaluate ได้ (รวม SKIP เพื่อ debug ว่าทำไมถูก skip)
   for (const r of evaluated.rows) {

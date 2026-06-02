@@ -44,6 +44,12 @@ export class OllamaCoaService {
     process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
   private readonly model = process.env.OLLAMA_MODEL || "qwen2.5:3b-instruct";
 
+  // debug: raw JSON ของ run ล่าสุด (pipeline หยิบไปแนบ CoaReport.debug.llmRaw)
+  public lastRawResponse: string | null = null;
+  public get modelName(): string {
+    return this.model;
+  }
+
   // ส่ง text COA ให้ LLM → คืน JSON shape { product, lotNo, items[] }
   // ปรับ prompt เมื่อเจอใบแบบใหม่ที่ parse ไม่เข้า / เพิ่ม field — temperature=0, format=json บังคับให้ deterministic
   async parseCoa(text: string): Promise<RawCoa | null> {
@@ -72,6 +78,9 @@ Schema:
 
 Rules:
 - Output EVERY test row that has a specification. Never skip or merge rows. Copy specRaw and result VERBATIM — do not reformat or compute.
+- ★ ONE LINE = ONE ROW ★ Each line of COA Text is a single test row. A row's specRaw and result MUST come ONLY from numbers on that SAME line. NEVER borrow a number from a different line into this row — that is the most common and most dangerous error.
+- specRaw is a SINGLE spec token only (e.g. "3 Max", "15~45", "≤0.2", "270~350"). Do NOT concatenate other cells, other rows' numbers, or words like "Success"/"Pass" into specRaw.
+- If a row lists several measurement numbers followed by an Average/Mean (often the number just BEFORE the spec), use that Average as result — not an individual measurement.
 - Items are test-table rows only. Skip headers, addresses, signatures, notes, stamps (ACCEPT/REJECT/"By: ...").
 - "X Max" / "X Min" (e.g. "3 Max", "99 Min") is a SPEC → put the whole phrase in specRaw, never in unit.
 - result and spec are DIFFERENT columns — never put the result number inside specRaw.
@@ -104,7 +113,9 @@ ${text}
         { timeout: 300_000 }
       );
       const raw = response.data.response;
-      dumpOllamaRaw(typeof raw === "string" ? raw : JSON.stringify(raw, null, 2));
+      const rawStr = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+      this.lastRawResponse = rawStr;
+      dumpOllamaRaw(rawStr);
       const parsed = JSON.parse(raw);
       if (!parsed || !Array.isArray(parsed.items)) return null;
       return parsed as RawCoa;

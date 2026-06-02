@@ -47,7 +47,7 @@ async function main() {
     const filename = path.basename(f);
     let text = "";
     try {
-      text = await extractText(f); // ★ ครั้งเดียว ★
+      ({ text } = await extractText(f)); // ★ ครั้งเดียว ★ (extractText คืน {text, engine})
     } catch (e) {
       console.log(`${filename.slice(0, 37).padEnd(38)} extractText FAILED: ${(e as Error).message}`);
       continue;
