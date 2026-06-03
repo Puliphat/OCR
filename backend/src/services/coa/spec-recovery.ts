@@ -12,6 +12,7 @@
 //      ถ้า count ไม่ตรง → จับคู่ตามชื่อแบบ unique เท่านั้น กำกวมเมื่อไร ปล่อย SKIP (ดีกว่าทายผิดแถว)
 import { RawCoaItem } from "./ollama-coa.service";
 import { normalizeSpec } from "./spec-normalizer";
+import { DirectionHint } from "./header-direction";
 
 // คำตัดสิน/ผลรวมท้ายแถวที่ต้องตัดทิ้งก่อนมองหา spec (spec อยู่ก่อนคำพวกนี้เสมอบน COA)
 const JUDGMENT =
@@ -187,4 +188,64 @@ export function correctSpecDirectionFromOcr(
     corrected++;
   }
   return corrected;
+}
+
+// ★ ใช้ direction hint จาก header geometry (header-direction.ts) แก้ทิศ bare-eq spec ★
+//   ต่างจาก correctSpecDirectionFromOcr (หาทิศจาก operator inline ในข้อความ) — อันนี้ใช้
+//   "ตำแหน่ง X ของ bound เทียบ header Min.Spec/Max.Spec" ที่ flat text ทำหาย (เคสจริง Barimite:
+//   Moisture 0.20 ใต้คอลัมน์ Max → ≤0.20, D50 11.0 ใต้ Max → ≤11.0, 325Mesh 95 ใต้ Min → ≥95)
+//
+// กติกาปลอดภัย (เหมือน corrector ตัวอื่น):
+//   1. แตะเฉพาะ item ที่ spec ปัจจุบัน normalize เป็น "bare eq" (เลขเดี่ยวไม่มีทิศ) — range/มี operator ไม่แตะ
+//   2. match hint แบบ unique: ชื่อ overlap ≥60% + ค่าตรง (tolerance) — กำกวม/ไม่ match → ไม่แตะ (คง SKIP)
+//   3. set specRaw = "<v> Min." / "<v> Max." → spec-normalizer ได้ ge/le ถูกทิศ
+//   → upgrade bare-eq (ที่ symmetric guard จะ SKIP) เป็น verdict ที่เชื่อได้ เฉพาะเมื่อ geometry ชัด
+function bareEqValue(it: RawCoaItem): number | null {
+  const blank = (v: unknown) => v == null || String(v).trim() === "";
+  // หา candidate spec string เดียวที่เป็น bare number (op=eq)
+  const cands: string[] = [];
+  if (!blank(it.specRaw)) cands.push(String(it.specRaw).trim());
+  else {
+    if (!blank(it.specMin)) cands.push(String(it.specMin).trim());
+    if (!blank(it.specMax)) cands.push(String(it.specMax).trim());
+  }
+  if (cands.length !== 1) return null; // ต้องมี bound เดียว (range = 2 → ไม่ใช่ bare-eq)
+  const parsed = normalizeSpec(cands[0]);
+  if (!parsed || parsed.op !== "eq" || parsed.value == null) return null;
+  return parsed.value;
+}
+
+export function applyHeaderDirectionHints(
+  items: RawCoaItem[],
+  hints: DirectionHint[]
+): number {
+  if (!items?.length || !hints?.length) return 0;
+  let applied = 0;
+  for (const it of items) {
+    const v = bareEqValue(it);
+    if (v == null) continue;
+    const nameSig = sig(it.name ?? "");
+    if (!nameSig.length) continue;
+
+    // หา hint ที่ match: ★ ค่าตรงเป๊ะ (tolerance 1e-4) ★ + ชื่อ overlap ≥60% (อย่างน้อย 1 token)
+    //   exact-value + hint มาจาก geometry เอกสารเดียวกัน (ค่าไม่ซ้ำกันในใบ) → 1-token พอ
+    //   (ชื่อ token เดียวอย่าง "moisture" / เลข "100" ใน "D 100" จะได้ถูกกู้)
+    const matches = hints.filter((h) => {
+      if (Math.abs(h.value - v) > Math.max(1e-9, Math.abs(v) * 1e-4)) return false;
+      const hSig = sig(h.name);
+      if (!hSig.length) return false;
+      const overlap = nameSig.filter((t) => hSig.includes(t)).length;
+      return overlap >= Math.max(1, Math.ceil(nameSig.length * 0.6));
+    });
+    // unique direction เท่านั้น (ถ้า hint ขัดกัน → ไม่แตะ)
+    const dirs = new Set(matches.map((m) => m.direction));
+    if (dirs.size !== 1) continue;
+
+    const direction = [...dirs][0];
+    it.specRaw = `${v} ${direction === "min" ? "Min." : "Max."}`;
+    it.specMin = null;
+    it.specMax = null;
+    applied++;
+  }
+  return applied;
 }

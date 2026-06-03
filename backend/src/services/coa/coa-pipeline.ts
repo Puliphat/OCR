@@ -9,7 +9,12 @@ import { OllamaCoaService } from "./ollama-coa.service";
 import { RapidOcrService } from "./rapidocr.service";
 import { evaluateCoa, summarize, CoaReport } from "./coa-evaluator";
 import { extractPdfText } from "./pdf-text-extractor";
-import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
+import {
+  recoverSpecsFromOcr,
+  correctSpecDirectionFromOcr,
+  applyHeaderDirectionHints,
+} from "./spec-recovery";
+import { extractHeaderDirectionHints } from "./header-direction";
 import {
   dropUngroundedItems,
   downgradeUngroundedFails,
@@ -188,6 +193,22 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   const fixed = correctSpecDirectionFromOcr(raw.items ?? [], text);
   if (fixed > 0) {
     console.log(`  [spec-direction] แก้ทิศ spec จาก OCR ${fixed} รายการ`);
+  }
+
+  // ★ Header-anchored direction (text-layer only) ★ — กู้ทิศ bare-eq จาก "ตำแหน่ง X ของ bound เทียบ
+  //   header Min.Spec/Max.Spec" ที่ flat text ทำหาย (Barimite: 0.20 ใต้ Max → ≤0.20, 95 ใต้ Min → ≥95).
+  //   ★ post-LLM, อ่าน geometry ดิบจาก PDF ใหม่ — ไม่แตะ text ที่ป้อน LLM → กัน lever-1 regression ★
+  //   text-layer เท่านั้น (scan ไม่มี geometry เชื่อถือได้). fail-safe: error/ไม่เจอ header → ปล่อย SKIP เดิม
+  if (engine === "text-layer") {
+    try {
+      const hints = await extractHeaderDirectionHints(filePath);
+      const applied = applyHeaderDirectionHints(raw.items ?? [], hints);
+      if (applied > 0) {
+        console.log(`  [header-direction] กู้ทิศ bare-eq จาก header geometry ${applied} รายการ`);
+      }
+    } catch (e) {
+      console.warn(`  [header-direction] skipped:`, (e as Error).message);
+    }
   }
 
   const evaluated = evaluateCoa({
