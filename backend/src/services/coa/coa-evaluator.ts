@@ -129,6 +129,29 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     };
   }
 
+  // ★ Anti-deceptive guard (bare-eq, symmetric) ★ — op=eq/approx = spec เป็น "เลขเดี่ยวไม่มีทิศ"
+  //   (ไม่มี range / ≤≥ / Max Min). โมเดลเล็กที่อ่าน spec column ไม่ออกทำ 2 บาป:
+  //     (ก) copy ค่าผลมาเป็น spec → r === value → PASS ลม (PR1950W_4064 ทุกแถว, SODA, 4A metadata)
+  //     (ข) หยิบ bound เดียวมาทิ้งทิศ → r !== value → FAIL ลม (Barimite "0.20%"=Max จริง→PASS, "95%"=Min จริง→PASS)
+  //   ทั้งคู่ "ทิศไม่รู้ = verdict เชื่อไม่ได้" → SKIP+needsReview (Priority #1: honest SKIP > confident wrong)
+  //   ★ cost ★ bare-eq ที่ FAIL จริง (Barimite D50 Min 11.0/actual 10.414) ก็โดน SKIP ด้วย —
+  //     กู้ทิศจาก flat text ไม่ได้ (lever-1 column-placeholder ลองแล้ว regress: column position เชื่อไม่ได้
+  //     เมื่อ Min/Max header merge/ค่าตกผิด slot) → จะได้ auto-FAIL คืนต้องพึ่ง structural extractor (Docling)
+  //   ปลอดภัยกับ test: fixture จริงเป็น range/bound หมด ไม่มี eq → ไม่ regress (evaluator.test ยัง 4P/0F)
+  if ((spec.op === "eq" || spec.op === "approx") && spec.value != null) {
+    return {
+      ...base,
+      min,
+      max,
+      result: r,
+      status: "SKIP",
+      reason: pass
+        ? "spec = ค่าผลพอดี (bare-eq) — น่าจะโมเดล copy result มาเป็น spec (อ่าน spec column ไม่ออก) ตรวจใบจริง"
+        : "spec เป็นเลขเดี่ยวไม่มีทิศ (Min/Max/≤/≥ หาย) — verdict เชื่อไม่ได้ ตรวจใบจริง",
+      needsReview: true,
+    };
+  }
+
   const review = detectDecimalRisk(r, spec, pass);
   const reason = pass
     ? review ?? ""

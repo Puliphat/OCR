@@ -51,10 +51,12 @@ export function resetGpuState(): void {
 export class OllamaCoaService {
   private readonly generateUrl =
     process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
-  // default = 7b: bake-off บน Lot240521 (5-row ground truth) ได้ 3/5 correct & stable
-  //   vs 3b ได้แค่ 1/5 (column-collapse หนัก). 7b ~4.7GB RAM, ช้ากว่า 3b เล็กน้อย แต่แม่นกว่าชัด
-  //   (vision qwen2.5vl:3b รันไม่ได้บนเครื่องนี้ — OOM ต้อง ~8.5GiB). override ด้วย OLLAMA_MODEL ได้
-  private readonly model = process.env.OLLAMA_MODEL || "qwen2.5:7b-instruct";
+  // default = qwen3:4b: pilot บน 16-file corpus (_validate/_pilot-qwen3.log) — เร็วกว่า 7b 2.6x
+  //   (10s vs 27s/file) เพราะ ~2.8GB fit GPU จริง (7b 4.7GB ตก CPU-fallback บนเครื่องนี้),
+  //   abstain มากกว่า (honest SKIP > confident-wrong ตาม Priority #1), StructEval สูงกว่า 7b.
+  //   raw 4b ยัง mis-associate บางแถว → guard เต็ม pipeline (drop/fail/pass-guard) จับเป็น SKIP.
+  //   qwen3 = reasoning model → ต้อง think:false (ดู makeBody). override ด้วย OLLAMA_MODEL ได้
+  private readonly model = process.env.OLLAMA_MODEL || "qwen3:4b";
 
   // debug: raw JSON ของ run ล่าสุด (pipeline หยิบไปแนบ CoaReport.debug.llmRaw)
   public lastRawResponse: string | null = null;
@@ -83,7 +85,7 @@ Schema:
       "specRaw": "<spec verbatim if in ONE cell: 275-425, 40~70, 26 ± 2, ≤0.2, 3 Max, 99 Min — else null>",
       "specMin": "<lower limit if a SEPARATE Min/Lower column exists, else null>",
       "specMax": "<upper limit if a SEPARATE Max/Upper column exists, else null>",
-      "result":  "<measured value; if an Avg/Mean column exists use THAT number>"
+      "result":  "<measured value; if an Avg/Mean column exists use THAT number; null if you cannot read it confidently>"
     }
   ]
 }
@@ -100,11 +102,16 @@ Rules:
 - NEVER use a lot/batch/PO number (usually 6+ digits, no decimal) as a spec or result value.
 - Numbers separated by spaces are SEPARATE values (OCR artifact): "1 4 23" is 1, 4, 23 — do NOT join into "423". Pick one token; never invent digits.
 - If a result is non-numeric (e.g. "White", a formula), copy it verbatim — do not force a number.
+- ★ ABSTAIN, NEVER GUESS ★ If a cell is blank, unreadable, or you are not sure which number belongs to THIS row, output null for that field. Do NOT guess and do NOT copy a value from a neighbouring row or column. A null (which becomes an honest SKIP) is ALWAYS better than a confident wrong number — wrong numbers that happen to land inside a spec produce deceptive PASS/FAIL, the single worst failure of this system.
 
 COA Text:
 ${text}
 `.trim();
 
+    // qwen3 = reasoning model: default thinking ON → ช้า + เปลือง ctx. งาน extraction ตรงๆ ไม่ต้อง reason
+    //   → ปิด think (เฉพาะ qwen3*; qwen2.5 ไม่มี param นี้ ถ้าใส่อาจ error). format:"json" ไม่ใช่ json-schema
+    //   → เลี่ยง Ollama bug #15260 (think=false + json-schema = drop format เงียบๆ)
+    const isQwen3 = /qwen3/i.test(this.model);
     const makeBody = (extra: Record<string, unknown>) => ({
       model: this.model,
       // system role: qwen2.5-instruct เชื่อฟัง system message แรงกว่า rule ใน prompt เดี่ยว
@@ -115,6 +122,7 @@ ${text}
       stream: false,
       format: "json",
       keep_alive: 0,
+      ...(isQwen3 ? { think: false } : {}),
       // num_ctx 8192: ตาราง COA ใหญ่ (หลายหน้า/หลายแถว) เกิน 4096 tokens → โมเดล truncate ท้าย = หล่นแถวท้าย
       //   8192 กัน silent truncation. temp 0 = deterministic. ...extra = ใส่ num_gpu:0 ตอน fallback CPU
       options: { temperature: 0, num_ctx: 8192, ...extra },
