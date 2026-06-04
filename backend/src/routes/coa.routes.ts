@@ -37,7 +37,7 @@ router.get("/health", (_req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// รับไฟล์ → save → runCoaPipeline → เขียน JSON log → return report
+// รับไฟล์ → save → runCoaPipeline → เขียน JSON log → return reports
 // อยากเปิด persist DB: uncomment block "TODO: persist ลง DB" ข้างใน
 router.post(
   "/upload",
@@ -57,13 +57,13 @@ router.post(
     try {
       fs.mkdirSync(LOG_DIR, { recursive: true });
 
-      const report = await runCoaPipeline(req.file.path);
+      const reports = await runCoaPipeline(req.file.path);
 
       const safeFilename = path.basename(req.file.path);
       const logBasename = `${Date.now()}-${safeFilename}.json`;
       const logPath = path.join(LOG_DIR, logBasename);
       // เขียน log ฉบับเต็ม (รวม debug: ocrText/llmRaw) ไว้ diagnose ว่าพังที่ model ไหน
-      fs.writeFileSync(logPath, JSON.stringify(report, null, 2), "utf8");
+      fs.writeFileSync(logPath, JSON.stringify(reports, null, 2), "utf8");
 
       // TODO: persist ลง DB เมื่อเปิดใช้ CoaReportEntity / CoaItemEntity
       // (uncomment imports + entities ใน data-source.ts ก่อน)
@@ -91,9 +91,9 @@ router.post(
       // });
       // return res.json({ report, logFile: logBasename, id: saved.id });
 
-      // HTTP response: ตัด debug ออก (ocrText/llmRaw ใหญ่และ FE ไม่ใช้) — อยู่ใน log file แล้ว
-      const { debug: _debug, ...reportForClient } = report;
-      return res.json({ report: reportForClient, logFile: logBasename });
+      // HTTP response: ตัด debug ออกต่อ report (ocrText/llmRaw ใหญ่และ FE ไม่ใช้) — อยู่ใน log file แล้ว
+      const reportsForClient = reports.map(({ debug: _debug, ...r }) => r);
+      return res.json({ reports: reportsForClient, logFile: logBasename });
     } catch (e) {
       console.error("[coa-route] pipeline error:", (e as Error).message);
       return res.status(500).json({ error: (e as Error).message });

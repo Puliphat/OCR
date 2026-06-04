@@ -1,23 +1,33 @@
 // การ์ดผลลัพธ์ — หัว (ไฟล์ + verdict) + StatStrip + ตาราง + footer meta
-import type { UploadResponse } from "@/lib/types";
+import type { CoaReport } from "@/lib/types";
 import { nowIctString } from "@/lib/format";
 import { IconCheck, IconClose, IconClock, IconResultDoc } from "./icons";
 import StatStrip from "./StatStrip";
 import ResultRow from "./ResultRow";
 
 export default function ResultsCard({
-  data,
+  report,
+  logFile,
   elapsedMs,
+  index,
+  total,
 }: {
-  data: UploadResponse;
+  report: CoaReport;
+  logFile: string;
   elapsedMs: number | null;
+  index: number;
+  total: number;
 }) {
-  const { report, logFile } = data;
   const { summary, rows, filename, product } = report;
   const reviewCount = rows.filter((r) => r.needsReview === true).length;
   const cleanPass = summary.fail === 0 && summary.total > 0 && reviewCount === 0;
   const warnPass = summary.fail === 0 && summary.total > 0 && reviewCount > 0;
   const elapsedSec = elapsedMs ? (elapsedMs / 1000).toFixed(1) : null;
+
+  // lot/page badge label — shown only when total > 1
+  const lotLabel = total > 1
+    ? (report.lotNo ? `Lot ${report.lotNo}` : `Page ${report.page ?? index + 1}`)
+    : null;
 
   return (
     <div className="card results">
@@ -28,7 +38,26 @@ export default function ResultsCard({
             <IconResultDoc />
           </div>
           <div className="result-meta">
-            <div className="result-product">{filename}</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: "10px", flexWrap: "wrap" }}>
+              <div className="result-product">{filename}</div>
+              {lotLabel && (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    color: "var(--ink-3)",
+                    border: "1px solid var(--line)",
+                    borderRadius: "999px",
+                    padding: "2px 9px",
+                    whiteSpace: "nowrap",
+                    lineHeight: "1.6",
+                    flexShrink: 0,
+                  }}
+                >
+                  {lotLabel}
+                </span>
+              )}
+            </div>
             {product && <div className="result-product-sub">{product}</div>}
           </div>
         </div>

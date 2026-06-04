@@ -18,11 +18,12 @@ export interface CoaReport {
   filename: string;
   product: string | null;
   lotNo: string | null;
+  page?: number;
   rows: CoaRow[];
   summary: { pass: number; fail: number; skip: number; total: number };
 }
 
 export interface UploadResponse {
-  report: CoaReport;
+  reports: CoaReport[];
   logFile: string;
 }

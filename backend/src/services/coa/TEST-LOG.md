@@ -271,3 +271,29 @@ baseline (R3) 53P/0F/37S → **54P/0F/36S** (Lot240521 350μ SKIP→**clean PASS
 **test:** `coa-pass-guard.test.ts` +2 fixture (glue-name 350μ คง PASS · foreign blob ยกค่ายืม **ยัง downgrade**). ครบ 19 checks ✅ — deceptive item1/borrowed-spec/digit-collision ยังจับครบ. tsc 0.
 
 **เหลือ Lot240521:** 150μ = OCR `45 ~T5` (spec not parseable, recognition-level) → 1S เดียว, defer (ไม่ใช่ downstream). ground truth 5P, ได้ 4P.
+
+---
+
+## FIX ROUND 5 (2026-06-04, Task #4 multi-page — per-page process → report per lot)
+
+**ปัญหา:** pipeline render หน้า 1 อย่างเดียว (`pdf.service.convertToImage` hardcode `getPage(1)`) + text-layer รวมทุกหน้าเป็น blob เดียว (`extractPdfText`) → ไฟล์หลายหน้า/หลาย lot เสียหน้า 2+ หมด หรือ LLM งง (header+item ซ้ำคนละ lot).
+
+**แก้ (structure-preserving refactor):** contract `runCoaPipeline` คืน **`CoaReport[]`** (1 report ต่อหน้า) แทน `CoaReport` เดียว. logic guard/recovery chain ย้ายเข้า `processPage()` **verbatim** (พฤติกรรม single-page ไม่เปลี่ยน).
+- `pdf.service.convertToImage` → loop ทุกหน้า, render `<file>.p{N}.png`, คืน `string[]`. destroy ใน `finally` (กัน leak ถ้า render หน้ากลาง throw).
+- `pdf-text-extractor.ts` → เพิ่ม `extractPdfTextPerPage` (per-page text-layer, `hasUsableText` ≥300 chars/หน้า), `extractPdfText` เป็น join wrapper (backward-compat).
+- `header-direction.ts` → `extractHeaderDirectionHints(filePath, pageNum?)` page-aware (★ ลบ cross-page contamination: เดิม scan ทุกหน้า match by name → hint หน้า N อาจ apply row หน้า 1).
+- `coa-pipeline.ts` → split เป็น `ocrImage()` / `extractTextPerPage()` / `processPage()` / `runCoaPipeline()`. fresh `OllamaCoaService` ต่อหน้า (debug.llmRaw แยก). **หน้าว่าง (text.trim()==="") → ข้าม** (pinned); ทุกหน้าว่าง → 1 empty report.
+- route → `{ reports: CoaReport[], logFile }` (strip debug ต่อ report). `test-coa.ts` + `_validate/verify-4b-only.ts` loop reports.
+- `CoaReport` เพิ่ม `page?: number`.
+- **frontend:** `UploadResponse.reports[]`, `page.tsx` map → ResultsCard ต่อ report + header "พบ N lot/หน้า", `ResultsCard` prop `report`+`logFile`+`index`+`total` + lot/page badge (total>1). ★ needsReview amber + warnPass headline คงไว้ per-card.
+
+**Gate (per-file diff vs baseline, ไม่ใช่ตัวเลขรวม — corpus dir มี multi-page อยู่):** baseline **54P/0F/36S** → after **68P/0F/44S**.
+- single-page 13 ไฟล์: **parity เป๊ะทุกไฟล์** (Barimite header-direction page-aware ยังได้ 5P/2S เท่าเดิม).
+- **0 FAIL ทั้ง corpus** คงไว้.
+- multi-page ได้ N report: PR1950W_4063 = 2 (page1 4P/4S **เท่าเดิม** + page2 ใหม่ 3P/4S), PR1950W_4064 = 2 (เดิม blob รวม 0P/7S → 2P/4S + 1P/6S), **1F1710 = 4 หน้า (bonus เจอใหม่ — เดิมเสียหน้า 2-4 เงียบ → 0P → 8P/1S)**.
+
+**Opus review (Tier B, merged diff):** 0 BLOCKER / 0 HIGH. Lens deceptive-PASS + needsReview-UI + contract-seam = clean (per-page split strictly safer สำหรับ header-direction). แก้ 2 MEDIUM ก่อนปิด: (1) `imgs[i] ?? imgs[last]` mask page-misalignment เงียบ → **throw + warn** (anti-deceptive); (2) `pdfDocument.destroy()` ย้ายเข้า `finally` (resource-safety). tsc 0 (BE+FE).
+
+**Live UI (Playwright MCP):** upload PR1950W_4063 → render **2 card แยก lot** (badge Lot 4063-01 / 4063-02, stats + amber needsReview แยกต่อ card, ค่าหน้า 2 ต่างจริง Moisture 0.2 vs 0.4 / Residue 500μm 0.02 vs 0.01). ✅
+
+**เหลือ (defer):** ตารางยาวข้ามหน้า (header หน้า 2 ซ้ำ → merge rows) ยังไม่ทำ (หายาก). PR1950W Softening LLM spec-shift (เดิม). all-blank report โชว์ badge แดง "0 parameters" (cosmetic, pre-existing).

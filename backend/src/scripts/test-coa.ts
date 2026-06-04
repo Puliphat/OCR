@@ -23,21 +23,23 @@ async function main() {
   for (const f of targets) {
     console.log(`\n>>> processing ${path.basename(f)}`);
     try {
-      const report = await runCoaPipeline(f);
-      const block = formatReport(report);
-      console.log(block);
-      fs.appendFileSync(path.join(LOG_DIR, "run.log"), block + "\n");
+      const reports = await runCoaPipeline(f);
 
-      // Write JSON log — same format as the HTTP route
+      for (const report of reports) {
+        const block = formatReport(report);
+        console.log(block);
+        fs.appendFileSync(path.join(LOG_DIR, "run.log"), block + "\n");
+        all.push(report);
+      }
+
+      // Write JSON log — same format as the HTTP route (array)
       const safeFilename = path.basename(f).replace(/\s+/g, "_");
       const logBasename = `${Date.now()}-${safeFilename}.json`;
       fs.writeFileSync(
         path.join(LOG_DIR, logBasename),
-        JSON.stringify(report, null, 2),
+        JSON.stringify(reports, null, 2),
         "utf8"
       );
-
-      all.push(report);
     } catch (e) {
       console.error(`[${path.basename(f)}] FAILED:`, (e as Error).message);
     }

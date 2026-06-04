@@ -8,7 +8,7 @@ import { ImageProcessingService } from "../image-processing.service";
 import { OllamaCoaService } from "./ollama-coa.service";
 import { RapidOcrService } from "./rapidocr.service";
 import { evaluateCoa, summarize, CoaReport } from "./coa-evaluator";
-import { extractPdfText } from "./pdf-text-extractor";
+import { extractPdfText, extractPdfTextPerPage } from "./pdf-text-extractor";
 import {
   recoverSpecsFromOcr,
   correctSpecDirectionFromOcr,
@@ -40,32 +40,12 @@ function dumpDebug(name: string, content: string) {
 // RapidOCR = default OCR (แม่นกว่า Tesseract มากบนตาราง COA, CPU ~300MB) — ปิดด้วย USE_RAPIDOCR=false
 // คืน engine ที่อ่านสำเร็จด้วย (text-layer/rapidocr/tesseract) → แนบ CoaReport.debug ให้รู้ว่าพังขั้นไหน
 export type OcrEngine = "text-layer" | "rapidocr" | "tesseract";
-export async function extractText(
-  filePath: string
+
+// OCR portion only — รับ path รูปที่ render ไว้แล้ว คืน {text, engine}
+// (RapidOCR sidecar + Tesseract multi-rotation fallback — logic เดิมทั้งหมด)
+async function ocrImage(
+  imagePath: string
 ): Promise<{ text: string; engine: OcrEngine }> {
-  const ext = path.extname(filePath).toLowerCase();
-
-  // 1. For PDFs: try text layer first — free, no OCR needed if it works
-  if (ext === ".pdf") {
-    try {
-      const { text, hasUsableText } = await extractPdfText(filePath);
-      if (hasUsableText) {
-        console.log(`  [text-layer] ${text.length} chars`);
-        return { text, engine: "text-layer" };
-      }
-      console.log(`  [text-layer] empty/scanned — falling back to OCR`);
-    } catch (e) {
-      console.warn(`  [text-layer] failed:`, (e as Error).message);
-    }
-  }
-
-  // render PDF → PNG
-  let imagePath = filePath;
-  if (ext === ".pdf") {
-    const imgs = await new PdfService().convertToImage(filePath);
-    imagePath = imgs[0];
-  }
-
   // 2. RapidOCR sidecar (primary OCR) — Python daemon, แม่นกว่า Tesseract มากบนตาราง COA scan
   //    ต้อง start daemon ก่อน: `npm run ocr:daemon` (หรือ ocr-py/ocr_server.py). ปิดด้วย USE_RAPIDOCR=false
   //    daemon ล่ม/unreachable → คืน null → fall through ไป Tesseract อัตโนมัติ
@@ -135,19 +115,96 @@ export async function extractText(
   return { text: best.text, engine: "tesseract" };
 }
 
-// Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
-// คืน CoaReport ที่ evaluate เสร็จแล้ว พร้อม summary PASS/FAIL/SKIP
-export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
-  const filename = path.basename(filePath);
-  const ollama = new OllamaCoaService();
+// Extract text per page — คืน array [{text, engine, page}] หนึ่งตัวต่อหน้า
+// image file (png/jpg) → คืน 1 entry, page=1
+// pdf → ลอง text-layer ต่อหน้า; หน้าที่ไม่มี usable text → render + OCR
+async function extractTextPerPage(
+  filePath: string
+): Promise<{ text: string; engine: OcrEngine; page: number }[]> {
+  const ext = path.extname(filePath).toLowerCase();
 
-  const { text, engine } = await extractText(filePath);
-  dumpDebug("_last-ocr.txt", text);
+  // ไฟล์รูป → OCR เดียว, page=1
+  if (ext !== ".pdf") {
+    const result = await ocrImage(filePath);
+    return [{ ...result, page: 1 }];
+  }
+
+  // PDF: ลอง text-layer ต่อหน้าก่อน
+  let pages: { text: string; hasUsableText: boolean }[] = [];
+  try {
+    const extracted = await extractPdfTextPerPage(filePath);
+    pages = extracted.pages;
+  } catch (e) {
+    console.warn(`  [text-layer] extractPdfTextPerPage failed:`, (e as Error).message);
+    pages = []; // fallback: ถือว่าทุกหน้าต้อง OCR
+  }
+
+  // ตรวจว่ามีหน้าไหนต้องการ render+OCR บ้าง
+  const needRender = pages.length === 0 || pages.some((p) => !p.hasUsableText);
+
+  let imgs: string[] = [];
+  if (needRender) {
+    imgs = await new PdfService().convertToImage(filePath);
+  }
+
+  // ถ้า extractPdfTextPerPage ล้มทั้งหมด → OCR ทุก rendered page
+  if (pages.length === 0) {
+    const results: { text: string; engine: OcrEngine; page: number }[] = [];
+    for (let i = 0; i < imgs.length; i++) {
+      const ocr = await ocrImage(imgs[i]);
+      results.push({ ...ocr, page: i + 1 });
+    }
+    return results;
+  }
+
+  // มี text-layer data: ต่อหน้าดูว่า hasUsableText หรือเปล่า
+  // ★ page alignment: imgs (convertToImage) กับ pages (extractPdfTextPerPage) วน p=1..numPages
+  //   บน doc เดียวกัน → ต้องยาวเท่ากันเสมอ. ไม่เท่า = สมมุติฐาน page-index พัง → warn ดังๆ
+  //   (อย่า OCR หน้าผิดแล้วป้ายเป็นหน้าอื่นเงียบๆ = deceptive result)
+  if (needRender && imgs.length !== pages.length) {
+    console.warn(
+      `  [extract] ⚠ page-count mismatch: text-layer ${pages.length} vs rendered ${imgs.length} — page alignment unreliable`
+    );
+  }
+  const results: { text: string; engine: OcrEngine; page: number }[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    const pg = pages[i];
+    if (pg.hasUsableText) {
+      console.log(`  [text-layer] page ${i + 1}: ${pg.text.length} chars`);
+      results.push({ text: pg.text, engine: "text-layer", page: i + 1 });
+    } else {
+      console.log(`  [text-layer] page ${i + 1}: empty/scanned — falling back to OCR`);
+      const imgPath = imgs[i];
+      // ★ ไม่มี rendered image ตรง index → throw แทน fallback เงียบ (กัน OCR หน้าผิดแล้วป้ายเป็นหน้า i+1)
+      if (!imgPath) {
+        throw new Error(
+          `No rendered image for page ${i + 1} (rendered ${imgs.length} of ${pages.length} pages) — refusing to OCR a misaligned page`
+        );
+      }
+      const ocr = await ocrImage(imgPath);
+      results.push({ ...ocr, page: i + 1 });
+    }
+  }
+  return results;
+}
+
+// processPage — ทำ LLM parse + evaluate ต่อ 1 หน้า
+// รับ text + engine + page ที่ extract มาแล้ว; คืน CoaReport สมบูรณ์ (มี .page set แล้ว)
+async function processPage(
+  filename: string,
+  filePath: string,
+  text: string,
+  engine: OcrEngine,
+  page: number
+): Promise<CoaReport> {
+  const ollama = new OllamaCoaService(); // fresh per page → debug.llmRaw แยกกัน
+
   if (!text.trim()) {
     return {
       filename,
       product: null,
       lotNo: null,
+      page,
       rows: [],
       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
       debug: { ocrEngine: engine, ocrText: text, llmModel: ollama.modelName, llmRaw: null },
@@ -162,6 +219,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
       filename,
       product: null,
       lotNo: null,
+      page,
       rows: [],
       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
       debug: {
@@ -211,7 +269,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   //   text-layer เท่านั้น (scan ไม่มี geometry เชื่อถือได้). fail-safe: error/ไม่เจอ header → ปล่อย SKIP เดิม
   if (engine === "text-layer") {
     try {
-      const hints = await extractHeaderDirectionHints(filePath);
+      const hints = await extractHeaderDirectionHints(filePath, page);
       const applied = applyHeaderDirectionHints(raw.items ?? [], hints);
       if (applied > 0) {
         console.log(`  [header-direction] กู้ทิศ bare-eq จาก header geometry ${applied} รายการ`);
@@ -306,6 +364,9 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     llmRaw: ollama.lastRawResponse,
   };
 
+  // set page number on the report
+  evaluated.page = page;
+
   // Log ทุก row ที่ evaluate ได้ (รวม SKIP เพื่อ debug ว่าทำไมถูก skip)
   for (const r of evaluated.rows) {
     const min = r.min == null ? "-" : String(r.min);
@@ -318,6 +379,51 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
 
   // ช่วง test: เก็บ SKIP ไว้ดูด้วย (เดิม filter ออก) — กลับมา filter ทีหลัง
   return evaluated;
+}
+
+// Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
+// คืน CoaReport[] หนึ่งตัวต่อหน้า PDF (single-page/image = [1 report])
+export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
+  const filename = path.basename(filePath);
+  const pages = await extractTextPerPage(filePath);
+  const reports: CoaReport[] = [];
+  for (const pg of pages) {
+    dumpDebug("_last-ocr.txt", pg.text); // debug, overwrite per page
+    if (!pg.text.trim()) continue;        // skip blank pages (pinned)
+    reports.push(await processPage(filename, filePath, pg.text, pg.engine, pg.page));
+  }
+  if (reports.length === 0) {
+    // all pages blank → one empty report so route/UI still render
+    reports.push({
+      filename,
+      product: null,
+      lotNo: null,
+      page: 1,
+      rows: [],
+      summary: { pass: 0, fail: 0, skip: 0, total: 0 },
+      debug: {
+        ocrEngine: pages[0]?.engine ?? "rapidocr",
+        ocrText: "",
+        llmModel: new OllamaCoaService().modelName,
+        llmRaw: null,
+      },
+    });
+  }
+  return reports;
+}
+
+// backward-compat: เรียกจาก _validate/ scripts และ ab-models.ts
+// คืน {text, engine} ของหน้าแรกที่มีข้อความ (หรือหน้าแรกถ้าว่างทั้งหมด)
+export async function extractText(
+  filePath: string
+): Promise<{ text: string; engine: OcrEngine }> {
+  const pages = await extractTextPerPage(filePath);
+  const first = pages.find((p) => p.text.trim()) ?? pages[0];
+  if (!first) {
+    // ไม่มีหน้าเลย (ไม่ควรเกิด) → fallback
+    return { text: "", engine: "rapidocr" };
+  }
+  return { text: first.text, engine: first.engine };
 }
 
 function truncForLog(s: string, n: number): string {

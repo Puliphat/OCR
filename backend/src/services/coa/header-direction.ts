@@ -79,8 +79,10 @@ function findHeaderX(rowSorted: RawTok[], re: RegExp): number | null {
 
 // อ่าน PDF → คืน hint ทิศของแถวที่มี "bound เดียวในโซน spec" ใต้ header Min/Max
 // คืน [] ถ้าไม่เจอ header Min/Max (= ไม่ใช่ตารางแบบนี้ → ไม่ทำอะไร) — fail-safe
+// pageNum: ถ้าระบุ scan เฉพาะหน้านั้น ถ้าไม่ระบุ scan ทุกหน้า (backward-compat)
 export async function extractHeaderDirectionHints(
-  filePath: string
+  filePath: string,
+  pageNum?: number
 ): Promise<DirectionHint[]> {
   if (path.extname(filePath).toLowerCase() !== ".pdf") return [];
   let doc: any;
@@ -99,8 +101,10 @@ export async function extractHeaderDirectionHints(
   }
 
   const hints: DirectionHint[] = [];
+  const startP = pageNum ?? 1;
+  const endP = pageNum ?? doc.numPages;
   try {
-    for (let p = 1; p <= doc.numPages; p++) {
+    for (let p = startP; p <= endP; p++) {
       const page = await doc.getPage(p);
       const tc = await page.getTextContent();
       const toks: RawTok[] = [];

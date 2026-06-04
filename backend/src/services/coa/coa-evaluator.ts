@@ -289,6 +289,7 @@ export interface CoaReport {
   filename: string;
   product: string | null;
   lotNo: string | null;
+  page?: number; // 1-indexed PDF page; single-page/image = 1
   rows: EvaluatedItem[];
   summary: { pass: number; fail: number; skip: number; total: number };
   debug?: CoaDebug; // optional — แนบเฉพาะตอนรันจริง (route/test-coa), unit test ไม่ต้องมี

@@ -113,7 +113,31 @@ export default function Home() {
       {/* results */}
       {mode === "done" && data && (
         <>
-          <ResultsCard data={data} elapsedMs={elapsedMs} />
+          {data.reports.length > 1 && (
+            <div
+              style={{
+                marginTop: 20,
+                fontSize: 12,
+                color: "var(--ink-3)",
+                fontFamily: "var(--font-mono), 'JetBrains Mono', ui-monospace, monospace",
+                letterSpacing: "0.04em",
+              }}
+            >
+              พบ {data.reports.length} lot/หน้า
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: data.reports.length > 1 ? 12 : 0 }}>
+            {data.reports.map((rep, i) => (
+              <ResultsCard
+                key={i}
+                report={rep}
+                logFile={data.logFile}
+                elapsedMs={i === 0 ? elapsedMs : null}
+                index={i}
+                total={data.reports.length}
+              />
+            ))}
+          </div>
           <HelperBar variant="tip">
             Tip — failing parameters get a red pill, rows needing human review get an amber{" "}
             <strong>⚠ ต้องตรวจ</strong> pill, and rows that couldn&apos;t be evaluated get a muted SKIP pill. Hover a status pill for details.
