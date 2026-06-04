@@ -111,8 +111,12 @@ export function downgradeColumnShiftedResults(
       }
       if (specIdx < 1) continue;
 
-      // (3) หลัง spec มี cell ตัวเลขเดี่ยวที่ยังไม่ถูกจอง (≠ result, ≠ spec) = "result จริงน่าจะอยู่ตรงนี้"
-      const claimed = [...(resVal != null ? [resVal] : []), ...specNums];
+      // (3) หลัง spec มี cell ตัวเลขเดี่ยว = "result จริงน่าจะอยู่ตรงนี้"
+      //   ★ จอง "result ปัจจุบัน (aperture/ป้าย)" เท่านั้น — ไม่จอง spec bounds ★
+      //   เพราะ result จริงในตาราง sieve มักเท่าขอบ spec (เช่น 0.0% retained ใน spec 0.0-1.0):
+      //   `0.850 | 0.0 - 1.0 | 0.0` → result จริง 0.0 = spec.min พอดี. ถ้าจอง specNums จะเห็น 0.0
+      //   เป็น "spec spillover" แล้วไม่ fire → ปล่อย aperture 0.85 (∈0-1) เป็น PASS ปลอม.
+      const claimed = resVal != null ? [resVal] : [];
       const after: number[] = [];
       for (let i = specIdx + 1; i < cells.length; i++) {
         const n = singleNumberCell(cells[i]);

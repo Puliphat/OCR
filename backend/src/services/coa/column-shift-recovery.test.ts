@@ -59,12 +59,22 @@ function row(p: Partial<EvaluatedItem>): EvaluatedItem {
   check("normal layout untouched", rows[0].status === "PASS" && downgraded.length === 0, rows[0].status);
 }
 
-// result==cell[0] แต่ไม่มีเลข unclaimed หลัง spec (0.0 ถูกจองโดย spec 0-1) → ไม่แตะ
+// ★ sieve 0% row (deceptive PASS) ★ — aperture 0.85 ∈ spec 0-1 → PASS ปลอม; result จริง 0.0 (เท่า spec.min)
+//   เดิม "claimed" จอง 0.0 ว่าเป็น spec → ไม่ fire. ตอนนี้จองแค่ aperture → suspect=0.0 → downgrade SKIP
 {
   const ocr = "0.850  |  0.0 - 1.0  |  0.0";
   const rows = [row({ name: "S", status: "PASS", result: 0.85, resultRaw: "0.85", specRaw: "0.0 - 1.0", min: 0, max: 1 })];
   const { downgraded } = downgradeColumnShiftedResults(rows, ocr);
-  check("no unclaimed-after untouched", rows[0].status === "PASS" && downgraded.length === 0, rows[0].status);
+  check("sieve 0% deceptive PASS → SKIP", rows[0].status === "SKIP" && downgraded.length === 1, rows[0].status);
+  check("suspect = 0", downgraded[0]?.suspectAfterSpec === "0", downgraded[0]);
+}
+
+// ไม่มีคอลัมน์ result หลัง spec (cells < 3 / ป้าย+spec เฉยๆ) → ไม่แตะ (ยังไม่มีหลักฐาน result อยู่ที่อื่น)
+{
+  const ocr = "0.850  |  0.0 - 1.0";
+  const rows = [row({ name: "S", status: "PASS", result: 0.85, resultRaw: "0.85", specRaw: "0.0 - 1.0", min: 0, max: 1 })];
+  const { downgraded } = downgradeColumnShiftedResults(rows, ocr);
+  check("no result-column untouched", rows[0].status === "PASS" && downgraded.length === 0, rows[0].status);
 }
 
 // SKIP row ไม่แตะ
