@@ -14,6 +14,8 @@ import {
   correctSpecDirectionFromOcr,
   applyHeaderDirectionHints,
 } from "./spec-recovery";
+import { recoverResultsFromOcr } from "./result-recovery";
+import { downgradeColumnShiftedResults } from "./column-shift-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
 import {
   dropUngroundedItems,
@@ -189,6 +191,13 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     console.log(`  [spec-recovery] เติม spec จาก OCR ${rec.recovered} รายการ (${rec.mode})`);
   }
 
+  // กู้ result ที่ LLM หล่นทิ้ง (OCR มีค่าครบ) — เฉพาะ row ที่ result ว่าง + spec มี + เจอ cell ตัวเลข
+  //   เดี่ยวตัวเดียวบนบรรทัด row นั้น (ตัด spec/method/unit/ชื่อแล้ว) ★ ไม่ทับของเดิม ★ (เคส ZP10)
+  const recRes = recoverResultsFromOcr(raw.items ?? [], text);
+  if (recRes.recovered > 0) {
+    console.log(`  [result-recovery] เติม result จาก OCR ${recRes.recovered} รายการ`);
+  }
+
   // แก้ทิศ spec ที่ LLM ใส่ผิดช่อง (bare bound) โดยยึด operator ใน OCR (X Max/Min, ≤/≥) — กัน fabricated FAIL
   const fixed = correctSpecDirectionFromOcr(raw.items ?? [], text);
   if (fixed > 0) {
@@ -242,8 +251,34 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     );
   }
 
-  // re-summarize ครั้งเดียวหลัง guard ทั้งสองตัว (fail + pass) แก้ status เสร็จ
-  if (failGuard.downgraded.length > 0 || passGuard.downgraded.length > 0) {
+  // ★ Anti-deceptive (column-shift) ★ — PASS/FAIL ที่ result = คอลัมน์ป้ายซ้ายของ spec (ตาราง
+  //   transposed/rotated เช่น RI-015 sieve: LLM เอา aperture เป็น result) → SKIP+needsReview.
+  //   ★ downgrade ไม่ overwrite ★ — บนบรรทัดเดียวแยก "ป้าย" กับ "result จริงที่อยู่ซ้าย spec" ไม่ออก →
+  //   เลือกเลขหลัง spec มาเป็น result = เสี่ยง deceptive PASS → honest SKIP ปลอดภัยกว่า (review เจอ)
+  const colShift = downgradeColumnShiftedResults(evaluated.rows, text);
+  if (colShift.downgraded.length > 0) {
+    console.warn(
+      `  [column-shift] downgrade ${colShift.downgraded.length} → SKIP (result = คอลัมน์ป้าย): ${colShift.downgraded
+        .map((d) => `${d.name}(${d.result}|after-spec≈${d.suspectAfterSpec})`)
+        .join(", ")}`
+    );
+  }
+
+  // result ที่กู้มาจาก OCR (result-recovery): ถ้ายังเป็น PASS/FAIL → ตั้ง needsReview (อย่าให้ verdict
+  //   จากค่าที่เติมเองเงียบ ๆ มั่นใจ — กันเคส OCR มีเลข stray ตัวเดียวบนบรรทัดแล้วถูกหยิบเป็น result)
+  if (recRes.names.length > 0) {
+    const recSet = new Set(recRes.names.map((n) => n.trim()));
+    for (const r of evaluated.rows) {
+      if (recSet.has(r.name.trim()) && r.status !== "SKIP") r.needsReview = true;
+    }
+  }
+
+  // re-summarize ครั้งเดียวหลัง guard ทุกตัว (fail + pass + column-shift) แก้ status เสร็จ
+  if (
+    failGuard.downgraded.length > 0 ||
+    passGuard.downgraded.length > 0 ||
+    colShift.downgraded.length > 0
+  ) {
     evaluated.summary = summarize(evaluated.rows);
   }
 

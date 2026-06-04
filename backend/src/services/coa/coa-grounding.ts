@@ -54,7 +54,11 @@ function numberTokens(v: unknown): string[] {
 const digitsOnly = (s: string) => s.replace(/[^\d]/g, "");
 
 function parseNumTokens(text: string): NumToken[] {
-  return (text.match(/-?\d+(?:[.,]\d+)?/g) ?? []).map((t) => ({
+  // OCR แทรก space ในเลขทศนิยม ("1. 09" → 1.09, "0. 70" → 0.70) — รวมก่อน tokenize
+  //   ไม่งั้น guard เห็น "1. 09" เป็น {1, 9} → คิดว่า result ไม่อยู่บรรทัด → downgrade PASS ที่ถูกต้องผิด ๆ
+  //   (ZP10: result-recovery เติม 1.09 ถูกแล้ว แต่ pass-guard มองไม่เห็นบนบรรทัดเพราะ space artifact)
+  const norm = text.replace(/(\d)\.\s+(\d)/g, "$1.$2");
+  return (norm.match(/-?\d+(?:[.,]\d+)?/g) ?? []).map((t) => ({
     val: Number(t.replace(/,/g, ".")),
     digits: digitsOnly(t),
   }));

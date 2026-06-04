@@ -79,7 +79,7 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
   // Range: "275-425", "0.6~0.8", "40.0 ~ 70.0", "105〜115"
   {
     const m = cleaned.match(
-      new RegExp(`^(${NUM})\\s*[~\\-–—]\\s*(${NUM})$`)
+      new RegExp(`^(${NUM})\\s*(?:[~\\-–—]\\s*)+(${NUM})$`)
     );
     if (m) {
       const a = toNum(m[1]);

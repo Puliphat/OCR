@@ -13,6 +13,7 @@ export interface NormalizedResult {
   source: "avg" | "single" | "all_values";
   values?: number[];
   raw: string;
+  bound?: { op: "lt" | "le" | "gt" | "ge"; value: number };
 }
 
 const NUM_RE = /-?\d+(?:[.,]\d+)?/g;
@@ -63,6 +64,21 @@ export function normalizeResult(raw: unknown): NormalizedResult | null {
 
   const s = String(raw).trim();
   if (!s) return null;
+
+  // Bound-expression result: "<15", "≤0.01", "≦ 0.2", ">50", "≥ 95"
+  // The WHOLE string must be comparator + number (no trailing units — strict).
+  {
+    const m = s.match(/^\s*(<=|≤|≦|<|>=|≥|≧|>)\s*(-?\d+(?:[.,]\d+)?)\s*$/);
+    if (m) {
+      const sym = m[1];
+      const num = toNum(m[2]);
+      const op: "lt" | "le" | "gt" | "ge" =
+        sym === "<" ? "lt" :
+        sym === "<=" || sym === "≤" || sym === "≦" ? "le" :
+        sym === ">" ? "gt" : "ge";
+      return { value: num, source: "single", raw: s, bound: { op, value: num } };
+    }
+  }
 
   // Reject text-like values (chemical formulas, "White", "GOOD", "Pass", "Light Yellow"...).
   // A real numeric result starts with a digit, sign, or decimal point.

@@ -75,6 +75,26 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     };
   }
 
+  // ★ Bound-expression result (e.g. "<15", "≤0.01") ★ — result is one-sided, not a point value.
+  //   PASS only when EVERY value in the bound provably satisfies the spec (logically sound — cannot
+  //   be a deceptive PASS regardless of the true measured value). Otherwise SKIP (indeterminate).
+  //   Never FAIL from a bound result (a mangled/one-sided result must not produce a scary verdict).
+  if (result.bound) {
+    const verdict = evalBoundResult(result.bound, spec); // "PASS" | "SKIP"
+    return {
+      ...base,
+      min: spec.min ?? (spec.op === "ge" || spec.op === "gt" ? spec.value ?? null : null),
+      max: spec.max ?? (spec.op === "le" || spec.op === "lt" ? spec.value ?? null : null),
+      result: null, // no single numeric value — resultRaw carries the "<15" text
+      status: verdict,
+      reason:
+        verdict === "PASS"
+          ? `bound result ${result.raw} satisfies spec ${spec.raw}`
+          : `bound result ${result.raw} — cannot confirm against spec ${spec.raw} (indeterminate)`,
+      needsReview: verdict === "SKIP",
+    };
+  }
+
   const { value: r } = result;
   let pass = false;
   let min: number | null = null;
@@ -166,6 +186,39 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     reason,
     needsReview: !!review,
   };
+}
+
+// Bound result vs spec — return PASS only when the ENTIRE bound is guaranteed inside the spec.
+// b = result bound (lt/le/gt/ge X). Logic per direction; spec between/eq → indeterminate (SKIP).
+function evalBoundResult(
+  b: { op: "lt" | "le" | "gt" | "ge"; value: number },
+  spec: ParsedSpec
+): "PASS" | "SKIP" {
+  const X = b.value;
+  const upper = b.op === "lt" || b.op === "le"; // result says value is BELOW X
+  if (upper) {
+    // value < X (lt) or value <= X (le). Spec must be an upper bound too.
+    if (spec.op === "le" && spec.value != null) {
+      // need all v<=X (or <X) to be <= Y  ⟺  X <= Y
+      return X <= spec.value ? "PASS" : "SKIP";
+    }
+    if (spec.op === "lt" && spec.value != null) {
+      // lt-result vs lt-spec: X<=Y ok.  le-result vs lt-spec: need X<Y (X==Y leaves v==X==Y not < Y)
+      const ok = b.op === "lt" ? X <= spec.value : X < spec.value;
+      return ok ? "PASS" : "SKIP";
+    }
+    return "SKIP"; // ge/gt/between/eq spec → indeterminate
+  } else {
+    // value > X (gt) or value >= X (ge). Spec must be a lower bound too.
+    if (spec.op === "ge" && spec.value != null) {
+      return X >= spec.value ? "PASS" : "SKIP";
+    }
+    if (spec.op === "gt" && spec.value != null) {
+      const ok = b.op === "gt" ? X >= spec.value : X > spec.value;
+      return ok ? "PASS" : "SKIP";
+    }
+    return "SKIP"; // le/lt/between/eq spec → indeterminate
+  }
 }
 
 // ตรวจความเสี่ยง "OCR ทศนิยมหาย" — ★ ไม่เปลี่ยน PASS/FAIL ★ แค่ตั้งธงให้คนตรวจใบจริง
