@@ -85,7 +85,7 @@ OCR ดิบเลขถูกหมด **ยกเว้น `45 ~T5` ควร
 | พารามิเตอร์ | spec พิมพ์จริง | result จริง | ระบบให้ | ควรเป็น | ตรง? | สาเหตุถ้าผิด |
 |---|---|---|---|---|---|---|
 | Sieve Residue on 500 μ | 3 Max | 0.3 | PASS | PASS | ✅ | — |
-| Sieve Residue on 350 μ | 15~45 | 42.3 | SKIP | PASS | ❌ | pass-guard column-collapse downgrade ผิด (ค่าถูกอยู่แล้ว) |
+| Sieve Residue on 350 μ | 15~45 | 42.3 | ✅ PASS (R4) | PASS | ✅ | (เคย SKIP) pass-guard anchor ผิดเพราะ OCR glue ชื่อ → glue-anchor R4 แก้แล้ว |
 | Sieve Residue on 150 μ | 45~75 | **56** (avg 56.0) | SKIP | PASS | ❌ | (a) LLM ยก result=58 แทน Average 56.0 (b) OCR `T5` → spec ไม่ parse |
 | Sieve Residue under 150 | 20 Max | 1.3 | PASS | PASS | ✅ | — |
 | Bulk Density (kg/L) | 270~350 | 329 | SKIP | PASS | ❌ | spec-normalizer ไม่รับ `270 -~350` (`-~` ติดกัน) |
@@ -255,3 +255,19 @@ baseline (R2) 50P/0F/40S → **53P/0F/37S** (RI-015 +4, ที่เหลือ
 - frontend: pill amber "⚠ ต้องตรวจ" สำหรับ needsReview ทุก status + headline "ผ่าน — แต่มี N รายการต้องตรวจ" (กัน needsReview ออกจาก clean pass). ★ load-bearing — ห้ามแก้ให้ needsReview PASS โชว์เขียวล้วน.
 
 **เหลือ (defer):** RI-015 Sb/As (OCR `≤→A`), Cu/Zn grounding-dropped, 2.000 sieve LLM-dropped (→ ground truth ~9P, ได้ 8P). PR1950W Softening LLM spec-shift. multi-page. auto→PASS ไม่ต้อง review = ต้อง Docling.
+
+---
+
+## FIX ROUND 4 (2026-06-04, guard-loosen Lot240521 350μ — Task #3)
+
+baseline (R3) 53P/0F/37S → **54P/0F/36S** (Lot240521 350μ SKIP→**clean PASS**, ที่เหลือ parity, 0 FAIL, 0 deceptive). commit `87b5242`.
+
+**bug:** `downgradeUngroundedPasses` (pass-guard) anchor PASS row ไปบรรทัด data ของชื่อตัวเอง (token overlap) แล้วเช็คว่า result อยู่บรรทัดนั้นไหม. เคสจริง 350μ: **OCR อ่านชื่อแถวติดกันเป็น token เดียว** `SieveResidueon350ur%)` → token overlap = 0 → anchor หลุดไป **บรรทัด 500μ** (แชร์ `sieve residue on` 3 token) ที่ไม่มี result 42.3 → downgrade PASS ที่ถูก (42.3 ∈ 15~45) ทิ้งเป็น SKIP.
+
+**fix (glue-anchor):** บรรทัดที่มี **cell = ชื่อเต็ม (token ต่อกัน)** → ให้ full anchor credit. ★ match แบบ **exact-cell** ไม่ใช่ substring ทั้งบรรทัด ★.
+
+**★ Opus review (HIGH, แก้ก่อน commit):** เวอร์ชันแรกใช้ `lineAlnum.includes(joinedName)` (substring ทั้ง blob) → reviewer สร้าง repro: บรรทัดแปลก (`xx_sieveresidueon500u_blob 42 45`) ที่ชื่อโผล่เป็น substring + แบกค่ายืม จะได้ full credit แล้ว validate ค่ายืม = **deceptive PASS รอด** (substring ไม่ผูก boundary, tie ขยาย validation-line set). → เปลี่ยนเป็น **exact-cell** (`cell === joinedName`): ชื่อแถว sieve มีเลข aperture ฝัง (350/500/150) เป็น cell เต็มเฉพาะบรรทัดตัวเอง → foreign blob ไม่ match → ปิดช่อง. ถ้าชื่อ glue ปนขยะ → glue ไม่ติด → fall back เดิม (false SKIP = honest, ไม่ใช่ deceptive PASS).
+
+**test:** `coa-pass-guard.test.ts` +2 fixture (glue-name 350μ คง PASS · foreign blob ยกค่ายืม **ยัง downgrade**). ครบ 19 checks ✅ — deceptive item1/borrowed-spec/digit-collision ยังจับครบ. tsc 0.
+
+**เหลือ Lot240521:** 150μ = OCR `45 ~T5` (spec not parseable, recognition-level) → 1S เดียว, defer (ไม่ใช่ downstream). ground truth 5P, ได้ 4P.
