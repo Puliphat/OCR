@@ -237,3 +237,21 @@ OCR แข็งแรง. error ที่เหลือ = (ก) digit-confusio
 - **OCR** Sb/As `<→A`, Lot240521 `T5` — recognition-level, ไม่ fix แบบเดา.
 
 ยังไม่ commit — diff ค้างให้ user รีวิว.
+
+---
+
+## FIX ROUND 3 (2026-06-04, sieve table → PASS — user เลือก "ต้องเป็น PASS เพราะมันถูก")
+
+baseline (R2) 50P/0F/40S → **53P/0F/37S** (RI-015 +4, ที่เหลือ parity, 0 FAIL, no deceptive). 2 commit:
+
+**(a) commit 8cee093 — column-shift ผ่อน claimed filter (ship-safe, pure downgrade):**
+- bug: แถว `0.850 | 0.0-1.0 | 0.0` LLM เอา aperture 0.85 (∈0-1) เป็น result → **PASS ปลอม** (ค่าจริง 0.0). guard เดิมพลาดเพราะ result จริง 0.0 = ขอบ spec → ถูก mark "claimed" → ไม่ fire.
+- fix: จองแค่ resVal (aperture) ไม่จอง spec bounds → จับได้ → honest SKIP. corpus 50P→49P (ลบ deceptive PASS 1).
+
+**(b) commit 2173cf4 — sieve-table-recovery (gated → PASS) + frontend surface needsReview:**
+- `sieve-table-recovery.ts`: SKIP sieve row ที่ result=aperture → overwrite result=หลัง spec → re-eval → promote เฉพาะ PASS. **QUAD GATE**: (1) sieve header (2) ชื่อ row sieve (3) โครง aperture|spec|result (4) ★ aperture ของ candidate เป็น series ลดหลั่น ≥3 ค่าไม่ซ้ำ ★.
+- RI-015: 0.425→36, 0.150→60, <0.150→4, 0.850→0 ทั้งหมด PASS (ตรง paper) + needsReview. → 8P/0F/3S.
+- ★ Opus review 2 รอบ: รอบแรกเจอ BLOCKER (overwrite version เดิม name-gate กันไม่อยู่ — แถวจริง "Residue on sieve(106μm)" ผ่าน gate ชื่อ → deceptive PASS) → revert + เพิ่ม gate(4). รอบ 2: BLOCKER 1/2/3 (single-row) CLOSED. **residual Finding B**: ตาราง residue หลายแถว layout result-ซ้าย-spec + result เรียงลด ยังเจาะ gate(4) ได้ (uncommon) — แต่ **needsReview amber ดักทุกเคส = surfaced ไม่ใช่เขียวเงียบ** (reviewer สร้าง clean-green deceptive ไม่ได้).
+- frontend: pill amber "⚠ ต้องตรวจ" สำหรับ needsReview ทุก status + headline "ผ่าน — แต่มี N รายการต้องตรวจ" (กัน needsReview ออกจาก clean pass). ★ load-bearing — ห้ามแก้ให้ needsReview PASS โชว์เขียวล้วน.
+
+**เหลือ (defer):** RI-015 Sb/As (OCR `≤→A`), Cu/Zn grounding-dropped, 2.000 sieve LLM-dropped (→ ground truth ~9P, ได้ 8P). PR1950W Softening LLM spec-shift. multi-page. auto→PASS ไม่ต้อง review = ต้อง Docling.
