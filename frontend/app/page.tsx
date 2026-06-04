@@ -115,7 +115,8 @@ export default function Home() {
         <>
           <ResultsCard data={data} elapsedMs={elapsedMs} />
           <HelperBar variant="tip">
-            Tip — failing parameters get a red pill, and rows we couldn&apos;t evaluate get a muted SKIP pill. Hover a row for the reason.
+            Tip — failing parameters get a red pill, rows needing human review get an amber{" "}
+            <strong>⚠ ต้องตรวจ</strong> pill, and rows that couldn&apos;t be evaluated get a muted SKIP pill. Hover a status pill for details.
           </HelperBar>
         </>
       )}

@@ -16,6 +16,7 @@ import {
 } from "./spec-recovery";
 import { recoverResultsFromOcr } from "./result-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
+import { recoverSieveTableResults } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
 import {
   dropUngroundedItems,
@@ -264,6 +265,20 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
     );
   }
 
+  // ★ Sieve/particle-size recovery (gated → PASS) ★ — รันหลัง column-shift (ทำงานบน honest SKIP):
+  //   ตาราง sieve ที่ LLM เอา aperture เป็น result → overwrite result จริง (หลัง spec) → re-eval →
+  //   promote เฉพาะ PASS, needsReview=true. QUAD GATE: sieve table + ชื่อ row sieve + โครง aperture +
+  //   ★ aperture column เป็น series ลดหลั่น ≥3 (positive evidence) ★ — kill deceptive PASS แบบ single-row
+  //   ที่ Opus review เจอ. ปิดโมดูล = fall back honest SKIP (ไม่แย่ลง)
+  const sieveRec = recoverSieveTableResults(evaluated.rows, text);
+  if (sieveRec.recovered.length > 0) {
+    console.log(
+      `  [sieve-recovery] promote ${sieveRec.recovered.length} → PASS (result หลัง spec): ${sieveRec.recovered
+        .map((s) => `${s.name}(${s.from}→${s.to})`)
+        .join(", ")}`
+    );
+  }
+
   // result ที่กู้มาจาก OCR (result-recovery): ถ้ายังเป็น PASS/FAIL → ตั้ง needsReview (อย่าให้ verdict
   //   จากค่าที่เติมเองเงียบ ๆ มั่นใจ — กันเคส OCR มีเลข stray ตัวเดียวบนบรรทัดแล้วถูกหยิบเป็น result)
   if (recRes.names.length > 0) {
@@ -277,7 +292,8 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
   if (
     failGuard.downgraded.length > 0 ||
     passGuard.downgraded.length > 0 ||
-    colShift.downgraded.length > 0
+    colShift.downgraded.length > 0 ||
+    sieveRec.recovered.length > 0
   ) {
     evaluated.summary = summarize(evaluated.rows);
   }

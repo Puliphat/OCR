@@ -60,6 +60,11 @@
   background: var(--bad-soft);
   color: var(--bad);
 }
+.verdict-badge.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.verdict-badge.warn .verdict-check { background: var(--warn); }
 .verdict-check {
   width: 20px;
   height: 20px;
@@ -213,6 +218,10 @@
 .row-status.skip {
   background: var(--skip-soft);
   color: var(--ink-3);
+}
+.row-status.review {
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 .row-status::before {
   content: "";

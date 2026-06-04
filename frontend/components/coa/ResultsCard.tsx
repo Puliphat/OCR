@@ -14,7 +14,9 @@ export default function ResultsCard({
 }) {
   const { report, logFile } = data;
   const { summary, rows, filename, product } = report;
-  const overall = summary.fail === 0 && summary.total > 0;
+  const reviewCount = rows.filter((r) => r.needsReview === true).length;
+  const cleanPass = summary.fail === 0 && summary.total > 0 && reviewCount === 0;
+  const warnPass = summary.fail === 0 && summary.total > 0 && reviewCount > 0;
   const elapsedSec = elapsedMs ? (elapsedMs / 1000).toFixed(1) : null;
 
   return (
@@ -31,12 +33,23 @@ export default function ResultsCard({
           </div>
         </div>
         <div className="verdict">
-          <div className={"verdict-badge" + (overall ? "" : " fail")}>
+          <div
+            className={
+              "verdict-badge" +
+              (cleanPass ? "" : warnPass ? " warn" : " fail")
+            }
+          >
             <span className="verdict-check">
-              {overall ? <IconCheck size={11} /> : <IconClose size={11} />}
+              {cleanPass || warnPass ? (
+                <IconCheck size={11} />
+              ) : (
+                <IconClose size={11} />
+              )}
             </span>
-            {overall
+            {cleanPass
               ? "COA passes spec"
+              : warnPass
+              ? `ผ่าน — แต่มี ${reviewCount} รายการต้องตรวจ`
               : `${summary.fail} parameter${summary.fail === 1 ? "" : "s"} out of spec`}
           </div>
           <div className="ai-note">

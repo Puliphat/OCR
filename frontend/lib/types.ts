@@ -9,6 +9,7 @@ export interface CoaRow {
   result: number | null;
   status: CoaStatus;
   reason: string;
+  needsReview?: boolean;
   specRaw: string | null;
   resultRaw: string | null;
 }

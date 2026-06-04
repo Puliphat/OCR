@@ -30,13 +30,13 @@ function toNum(s: string): number {
 }
 
 // แยก cell: "|" ก่อน (reconstructText join), ไม่มีก็ ≥2 space
-function splitCells(line: string): string[] {
+export function splitCells(line: string): string[] {
   const parts = line.includes("|") ? line.split("|") : line.split(/\s{2,}/);
   return parts.map((p) => p.trim()).filter((p) => p.length > 0);
 }
 
 // cell เป็นตัวเลขเดี่ยวล้วนไหม (ตัด space ใน "1. 09" → 1.09) — range/text → null
-function singleNumberCell(cell: string): number | null {
+export function singleNumberCell(cell: string): number | null {
   const t = cell.replace(/\s+/g, "");
   if (!/^[-+]?\d+(?:[.,]\d+)?$/.test(t)) return null;
   const n = toNum(t);
@@ -45,7 +45,7 @@ function singleNumberCell(cell: string): number | null {
 
 // เลขทุกตัวใน cell (รับ range "10.0 - 45.0" → [10,45]) — แยก range/± ด้วย separator ชัดเจน
 //   ★ ไม่ปล่อยให้ "-" ใน range ถูกกินเป็นเครื่องหมายลบ ★ (10.0-45.0 → [10,45] ไม่ใช่ [10,-45])
-function cellNumbers(cell: string): number[] {
+export function cellNumbers(cell: string): number[] {
   const norm = cell
     .replace(/(\d)\.\s+(\d)/g, "$1.$2")
     .replace(/[~–—〜～∼±]/g, " ")
@@ -66,6 +66,61 @@ function specNumbersOf(r: EvaluatedItem): number[] {
   return nums;
 }
 
+// ★ core detection (status-agnostic, ไม่ mutate) ★ — row นี้ result = คอลัมน์ป้าย (ซ้ายของ spec) ไหม:
+//   ถ้าเข้าโครง `aperture(=result ปัจจุบัน) | spec | result-จริง` บนบรรทัด OCR เดียว → คืนเลข "result จริง
+//   หลัง spec" (suspect); ไม่เข้าโครง → null. ใช้ทั้ง downgrade (ฝั่งนี้) และ sieve-recovery (overwrite→PASS).
+export function findColumnShiftSuspect(
+  r: EvaluatedItem,
+  lines: string[]
+): number | null {
+  const resRaw = (r.resultRaw ?? (r.result == null ? "" : String(r.result))).trim();
+  if (!resRaw) return null;
+
+  const specNums = specNumbersOf(r);
+  if (!specNums.length) return null;
+
+  const resVal = singleNumberCell(resRaw); // null ถ้า result เป็น bound-text ("<0.150")
+  const resNorm = normTxt(resRaw);
+
+  for (const line of lines) {
+    const cells = splitCells(line);
+    if (cells.length < 3) continue; // ต้องมี ป้าย|spec|result อย่างน้อย
+
+    // (1) cell[0] = result ปัจจุบัน (คอลัมน์ป้ายซ้ายสุด)
+    const c0 = cells[0];
+    const c0num = singleNumberCell(c0);
+    const c0match =
+      (resVal != null && c0num != null && near(c0num, resVal)) ||
+      normTxt(c0) === resNorm;
+    if (!c0match) continue;
+
+    // (2) spec cell ถัดไป (index ≥1) ที่มีเลข spec ครบ
+    let specIdx = -1;
+    for (let i = 1; i < cells.length; i++) {
+      const cn = cellNumbers(cells[i]);
+      if (specNums.every((s) => cn.some((x) => near(x, s)))) {
+        specIdx = i;
+        break;
+      }
+    }
+    if (specIdx < 1) continue;
+
+    // (3) หลัง spec มี cell ตัวเลขเดี่ยว = "result จริงน่าจะอยู่ตรงนี้"
+    //   ★ จอง "result ปัจจุบัน (aperture/ป้าย)" เท่านั้น — ไม่จอง spec bounds ★
+    //   เพราะ result จริงในตาราง sieve มักเท่าขอบ spec (เช่น 0.0% retained ใน spec 0.0-1.0):
+    //   `0.850 | 0.0 - 1.0 | 0.0` → result จริง 0.0 = spec.min พอดี. ถ้าจอง specNums จะเห็น 0.0
+    //   เป็น "spec spillover" แล้วไม่ fire → ปล่อย aperture 0.85 (∈0-1) เป็น PASS ปลอม.
+    const claimed = resVal != null ? [resVal] : [];
+    for (let i = specIdx + 1; i < cells.length; i++) {
+      const n = singleNumberCell(cells[i]);
+      if (n == null) continue;
+      if (claimed.some((c) => near(c, n))) continue;
+      return n; // first unclaimed number after spec = suspect
+    }
+  }
+  return null;
+}
+
 // mutate rows in place: PASS/FAIL ที่ result = คอลัมน์ป้าย (ซ้าย spec) + มีเลข result จริงหลัง spec → SKIP
 export function downgradeColumnShiftedResults(
   rows: EvaluatedItem[],
@@ -78,60 +133,10 @@ export function downgradeColumnShiftedResults(
 
   for (const r of rows) {
     if (r.status !== "PASS" && r.status !== "FAIL") continue;
-    const resRaw = (r.resultRaw ?? (r.result == null ? "" : String(r.result))).trim();
-    if (!resRaw) continue;
-
-    const specNums = specNumbersOf(r);
-    if (!specNums.length) continue;
-
-    const resVal = singleNumberCell(resRaw); // null ถ้า result เป็น bound-text
-    const resNorm = normTxt(resRaw);
-
-    let suspect: number | null = null;
-    for (const line of lines) {
-      const cells = splitCells(line);
-      if (cells.length < 3) continue; // ต้องมี ป้าย|spec|result อย่างน้อย
-
-      // (1) cell[0] = result ปัจจุบัน (คอลัมน์ป้ายซ้ายสุด)
-      const c0 = cells[0];
-      const c0num = singleNumberCell(c0);
-      const c0match =
-        (resVal != null && c0num != null && near(c0num, resVal)) ||
-        normTxt(c0) === resNorm;
-      if (!c0match) continue;
-
-      // (2) spec cell ถัดไป (index ≥1) ที่มีเลข spec ครบ
-      let specIdx = -1;
-      for (let i = 1; i < cells.length; i++) {
-        const cn = cellNumbers(cells[i]);
-        if (specNums.every((s) => cn.some((x) => near(x, s)))) {
-          specIdx = i;
-          break;
-        }
-      }
-      if (specIdx < 1) continue;
-
-      // (3) หลัง spec มี cell ตัวเลขเดี่ยว = "result จริงน่าจะอยู่ตรงนี้"
-      //   ★ จอง "result ปัจจุบัน (aperture/ป้าย)" เท่านั้น — ไม่จอง spec bounds ★
-      //   เพราะ result จริงในตาราง sieve มักเท่าขอบ spec (เช่น 0.0% retained ใน spec 0.0-1.0):
-      //   `0.850 | 0.0 - 1.0 | 0.0` → result จริง 0.0 = spec.min พอดี. ถ้าจอง specNums จะเห็น 0.0
-      //   เป็น "spec spillover" แล้วไม่ fire → ปล่อย aperture 0.85 (∈0-1) เป็น PASS ปลอม.
-      const claimed = resVal != null ? [resVal] : [];
-      const after: number[] = [];
-      for (let i = specIdx + 1; i < cells.length; i++) {
-        const n = singleNumberCell(cells[i]);
-        if (n == null) continue;
-        if (claimed.some((c) => near(c, n))) continue;
-        if (!after.some((a) => near(a, n))) after.push(n);
-      }
-      if (after.length >= 1) {
-        suspect = after[0];
-        break;
-      }
-    }
-
+    const suspect = findColumnShiftSuspect(r, lines);
     if (suspect == null) continue;
 
+    const resRaw = (r.resultRaw ?? (r.result == null ? "" : String(r.result))).trim();
     r.status = "SKIP";
     r.needsReview = true;
     r.reason = COLUMN_SHIFT_REASON;
