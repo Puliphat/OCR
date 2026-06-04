@@ -83,6 +83,39 @@ check(
   rBulk5.downgraded.length === 0 && bulk5[0].status === "PASS"
 );
 
+// ★ glue-name regression (เคสจริง Lot240521 350μ) ★ — OCR อ่านชื่อแถวติดกัน "SieveResidueon350ur%)"
+//   result 42.3 ∈ 15~45 = PASS จริง. แถวจริง (บรรทัด 2) มี 42.3 + 15~45 co-located ครบ แต่ชื่อติดกัน
+//   → token-anchor พลาด ไป anchor บรรทัด 500μ (แชร์ "sieve residue on") → เคย downgrade ผิด.
+//   glue-match ชี้บรรทัดจริง (ชื่อเต็มเป็น substring) → คง PASS
+const glue350 = [
+  row({ name: "Sieve Residue on 350ur%)", specRaw: "15 ~45", min: 15, max: 45, result: 42.3, resultRaw: "42.3" }),
+];
+const rGlue = downgradeUngroundedPasses(glue350, LOT_OCR);
+check(
+  "glue-name 350μ (ชื่อ OCR ติดกัน) result/spec อยู่บรรทัดจริง → คง PASS (glue-anchor)",
+  rGlue.downgraded.length === 0 && glue350[0].status === "PASS",
+  `(downgraded=${rGlue.downgraded.length})`
+);
+
+// ★ glue exact-cell (Opus review HIGH) ★ — glue ต้อง match "ทั้ง cell" ไม่ใช่ substring ที่ไหนก็ได้
+//   ของจริง 500u = 0.3/≤3 (บรรทัด true). LLM ยก 42/45 จากแถวอื่น (deceptive). มี foreign blob line
+//   ที่ชื่อโผล่เป็น "substring" (xx_sieveresidueon500u_blob) + แบก 42/45 → ถ้า glue ใช้ substring จะ
+//   ยก foreign line เข้า anchor set แล้ว validate ค่ายืม = PASS ปลอมรอด. exact-cell → foreign blob
+//   ไม่ match (cell = "xxsieveresidueon500ublob" ≠ "sieveresidueon500u") → anchor บรรทัดจริง → downgrade
+const GLUE_DECEPTIVE_OCR = [
+  "Sieve Residue on 500u  |  0.3  |  3 Max.  |  Success",
+  "xx_sieveresidueon500u_blob  42  45 Max  borrowed",
+].join("\n");
+const glueDeceptive = [
+  row({ name: "Sieve Residue on 500u", specRaw: "45 Max", max: 45, result: 42, resultRaw: "42" }),
+];
+const rGlueDec = downgradeUngroundedPasses(glueDeceptive, GLUE_DECEPTIVE_OCR);
+check(
+  "glue exact-cell: foreign blob (ชื่อเป็น substring) ยกค่ายืม → ยัง downgrade PASS→SKIP (HIGH fixed)",
+  rGlueDec.downgraded.length === 1 && glueDeceptive[0].status === "SKIP",
+  `(downgraded=${rGlueDec.downgraded.length})`
+);
+
 // ★ ตารางปกติ name|spec|result บรรทัดเดียว → คง PASS ★
 const CLEAN_OCR = "Moisture Content (%)  |  0.5 Max  |  0.2";
 const clean = [

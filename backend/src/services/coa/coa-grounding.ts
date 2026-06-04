@@ -272,6 +272,12 @@ export function downgradeUngroundedPasses(
   const lines = ocrText.split(/\r?\n/);
   const lineSigs = lines.map((l) => new Set(anchorTokens(l)));
   const lineNums = lines.map(parseNumTokens);
+  // cells ของแต่ละบรรทัด normalize เป็น alnum ล้วน — ใช้ glue-match (ชื่อแถวติดกันเป็น cell เดียว)
+  const lineCells = lines.map((l) =>
+    (l.includes("|") ? l.split("|") : l.split(/\s{2,}/)).map((c) =>
+      c.toLowerCase().replace(/[^a-z0-9]+/g, "")
+    )
+  );
 
   for (const r of rows) {
     if (r.status !== "PASS") continue;
@@ -281,7 +287,24 @@ export function downgradeUngroundedPasses(
 
     // หาบรรทัด overlap สูงสุด (= บรรทัดของ row นี้). threshold เดียวกับ spec-recovery
     const need = Math.max(2, Math.ceil(nameSig.length * 0.6));
-    const scores = lineSigs.map((ls) => nameSig.filter((t) => ls.has(t)).length);
+    // ★ glue-tolerant anchor ★ — เคสจริง Lot240521 350μ: OCR อ่านชื่อแถวติดกันเป็น token เดียว
+    //   "SieveResidueon350ur%)" → token-match (sieve/residue/on/350ur) พลาดหมด → anchor ไป
+    //   ดึง "บรรทัด 500μ" ที่แชร์ "sieve residue on" 3 token → result 42.3 ไม่อยู่บรรทัดนั้น →
+    //   downgrade PASS ที่ถูกต้องทิ้ง.
+    //   กัน: ถ้าชื่อเต็ม (token ต่อกัน) = "ทั้ง cell" ของบรรทัดไหน → บรรทัดนั้นคือบรรทัดจริงของ row → full credit.
+    //   ★ ต้อง exact-cell ไม่ใช่ substring ทั้งบรรทัด (Opus review HIGH) ★ — substring หลวมไป: บรรทัดแปลก
+    //   ที่บังเอิญมีชื่อเป็น substring + ยกค่ายืมมาบนบรรทัดเดียวกัน จะได้ full credit แล้ว validate ค่ายืม
+    //   = deceptive PASS รอด. ชื่อแถวจริงมีเลข aperture ฝัง (350/500/150) → เป็น cell เต็มเฉพาะบรรทัดตัวเอง
+    //   เท่านั้น. ถ้าชื่อ glue ปนขยะ (ไม่ใช่ cell เต็ม) → glue ไม่ติด → fall back เดิม (false SKIP = honest)
+    const joinedName = nameSig.join("");
+    const scores = lineSigs.map((ls, i) => {
+      const tok = nameSig.filter((t) => ls.has(t)).length;
+      const glue =
+        joinedName.length >= 6 && lineCells[i].some((c) => c === joinedName)
+          ? nameSig.length
+          : 0;
+      return tok > glue ? tok : glue;
+    });
     const bestScore = scores.reduce((a, b) => (b > a ? b : a), 0);
     if (bestScore < need) continue; // หาบรรทัดของ row นี้ไม่เจอ → พิสูจน์ collapse ไม่ได้ → ปล่อย
 
