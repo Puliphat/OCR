@@ -58,7 +58,7 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       max: null,
       result: result?.value ?? null,
       status: "SKIP",
-      reason: "spec not parseable (text/formula/empty)",
+      reason: "อ่านเกณฑ์ (spec) เป็นตัวเลขไม่ได้ — ข้ามรายการนี้",
       needsReview: false,
     };
   }
@@ -70,7 +70,7 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       max: spec.max ?? null,
       result: null,
       status: "SKIP",
-      reason: "result not numeric",
+      reason: "ค่าผลไม่ใช่ตัวเลข — ข้ามรายการนี้",
       needsReview: false,
     };
   }
@@ -144,7 +144,7 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       max,
       result: r,
       status: "SKIP",
-      reason: "ขอบช่วง spec = ค่าผลพอดี — อาจเป็น spec ปลอม (โมเดลเอาค่าผลมาเป็นขอบ) ตรวจใบจริง",
+      reason: "ค่าผลตรงขอบเกณฑ์พอดี — ระบบอาจอ่านเกณฑ์เพี้ยน เทียบกับใบจริง",
       needsReview: true,
     };
   }
@@ -166,8 +166,8 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
       result: r,
       status: "SKIP",
       reason: pass
-        ? "spec = ค่าผลพอดี (bare-eq) — น่าจะโมเดล copy result มาเป็น spec (อ่าน spec column ไม่ออก) ตรวจใบจริง"
-        : "spec เป็นเลขเดี่ยวไม่มีทิศ (Min/Max/≤/≥ หาย) — verdict เชื่อไม่ได้ ตรวจใบจริง",
+        ? "ระบบอาจอ่านค่าผลสลับมาเป็นเกณฑ์ (spec) — เทียบกับใบจริง"
+        : "เกณฑ์เป็นเลขเดี่ยว ระบบไม่รู้ว่าเป็นค่าต่ำสุดหรือสูงสุด (ทิศหาย) — เทียบกับใบจริง",
       needsReview: true,
     };
   }
@@ -254,7 +254,7 @@ function detectDecimalRisk(
   if (!pass) {
     for (const a of alts) {
       if (specContains(spec, a))
-        return `อาจเป็น OCR ทศนิยมหาย (${r}→${a} เข้า spec) ตรวจใบจริง`;
+        return `อาจมีจุดทศนิยมหาย (เช่น ${r} จริง ๆ คือ ${a} แล้วเข้าเกณฑ์) — เทียบกับใบจริง`;
     }
     return null;
   }
@@ -262,7 +262,7 @@ function detectDecimalRisk(
   if (spec.op === "ge" || spec.op === "gt") {
     for (const a of alts) {
       if (!specContains(spec, a))
-        return `ผ่านแบบเสี่ยง: ถ้าจริงคือ ${a} (ทศนิยมหาย) จะตก spec`;
+        return `ผ่านแบบเสี่ยง — ถ้าค่าจริงคือ ${a} (จุดทศนิยมหาย) จะไม่ผ่านเกณฑ์ — เทียบกับใบจริง`;
     }
   }
   return null;

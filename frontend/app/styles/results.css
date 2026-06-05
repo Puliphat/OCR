@@ -230,6 +230,27 @@
   border-radius: 50%;
   background: currentColor;
 }
+/* needsReview PASS — เขียว (ผ่าน) + flag ⚠ amber pulse · ไม่ใช่เขียวล้วน (edge + icon เหลือง + header เหลือง + นับ reviewCount) */
+.row-status.review-pass {
+  background: var(--good-soft);
+  color: var(--good);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+.row-status.review-pass::before { display: none; }
+.rev-icon {
+  color: #f59e0b;          /* ⚠ สว่างจี๊ดให้เด่น (สว่างกว่า --warn) */
+  font-size: 13px;
+  line-height: 1;
+  display: inline-block;
+  animation: revpulse 1.5s ease-in-out infinite;
+}
+@keyframes revpulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.18); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rev-icon { animation: none; }
+}
 
 /* ─── footer meta ─────────────────────────────────────────────────────────── */
 .footer-meta {

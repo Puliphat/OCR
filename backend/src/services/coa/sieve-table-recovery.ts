@@ -35,7 +35,7 @@ import { EvaluatedItem, evaluateItem } from "./coa-evaluator";
 import { findColumnShiftSuspect, singleNumberCell } from "./column-shift-recovery";
 
 export const SIEVE_RECOVERY_REASON =
-  "result กู้จากคอลัมน์หลัง spec (ตาราง sieve/particle-size: คอลัมน์แรก = ขนาดตะแกรง/ป้าย, result อยู่หลัง spec) — ตรวจใบจริง";
+  "ค่าผลนี้ระบบอ่านจากตารางร่อนตะแกรง (sieve) ให้เอง — เทียบกับใบจริง";
 
 export interface SieveRecoveryResult {
   recovered: { name: string; from: string; to: string }[];

@@ -19,8 +19,8 @@
   --bad: #c4554d;         /* fail red */
   --bad-soft: #fbecec;
   --skip-soft: #f1f1ef;   /* skip muted bg */
-  --warn: #b45309;        /* needs-review amber */
-  --warn-soft: #fef3c7;
+  --warn: #e0820e;        /* needs-review amber — สว่างขึ้น (เดิม #b45309 มืดไป) */
+  --warn-soft: #fff6da;
   --info: #337ea9;        /* total blue */
   --info-soft: #e7f1f6;
   --btn: #191918;         /* primary CTA (near-black) */

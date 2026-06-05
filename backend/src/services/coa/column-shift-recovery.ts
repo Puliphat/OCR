@@ -19,8 +19,9 @@ export interface ColumnShiftResult {
   downgraded: { name: string; result: string; suspectAfterSpec: string }[];
 }
 
+// ★ คำว่า "สลับ" ใน reason นี้ load-bearing — coa-pipeline COLLAPSE_SKIP_RE ใช้ trigger grid challenger ★
 export const COLUMN_SHIFT_REASON =
-  "result ตรงกับคอลัมน์ป้าย (ซ้ายของ spec) ใน OCR — column mapping กำกวม (อาจยกเลขผิดคอลัมน์) ตรวจใบจริง";
+  "ระบบอาจอ่านสลับคอลัมน์ (เอาค่าป้าย/ขนาดมาเป็นค่าผล) — เทียบกับใบจริง";
 
 function toNum(s: string): number {
   let c = s.trim();

@@ -4,17 +4,18 @@ import { fmtNum } from "@/lib/format";
 
 export default function ResultRow({ row }: { row: CoaRow }) {
   const isReview = row.needsReview === true;
-
-  // needsReview rows always get the amber "review" pill regardless of status
-  const statusClass = isReview
+  // ★ needsReview PASS → เขียว (อ่านออกว่า "ผ่าน") + flag ⚠ amber pulse — ลด "ความตกใจ" ให้คนเหลือบยืนยันเร็ว
+  //   review ที่ยังไม่ผ่าน (SKIP/FAIL ต้องตรวจ) → amber เต็มเดิม. ★ ไม่ใช่เขียวล้วน: ⚠+edge เหลือง + header เหลือง + ยังนับ reviewCount ★
+  const isReviewPass = isReview && row.status === "PASS";
+  const statusClass = isReviewPass
+    ? " review-pass"
+    : isReview
     ? " review"
     : row.status === "FAIL"
     ? " fail"
     : row.status === "SKIP"
     ? " skip"
     : "";
-
-  const statusLabel = isReview ? "⚠ ต้องตรวจ" : row.status;
 
   return (
     <div className="row">
@@ -31,8 +32,20 @@ export default function ResultRow({ row }: { row: CoaRow }) {
       <div className="row-bound">{fmtNum(row.min)}</div>
       <div className="row-bound">{fmtNum(row.max)}</div>
       <div className="row-result">{row.resultRaw ?? fmtNum(row.result)}</div>
-      <div className={"row-status" + statusClass} title={row.reason}>
-        {statusLabel}
+      <div
+        className={"row-status" + statusClass}
+        title={row.reason || "ต้องตรวจ — ค่ามาจากการกู้/อ่านคอลัมน์ใหม่ ยืนยันกับใบจริง"}
+      >
+        {isReviewPass ? (
+          <>
+            <span className="rev-icon" aria-hidden="true">⚠</span>
+            PASS
+          </>
+        ) : isReview ? (
+          "⚠ ต้องตรวจ"
+        ) : (
+          row.status
+        )}
       </div>
     </div>
   );

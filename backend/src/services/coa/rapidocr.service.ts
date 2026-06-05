@@ -164,11 +164,94 @@ export class RapidOcrService {
     return best.toks;
   }
 
-  // convenience: รูป → text block; null ถ้า daemon ล่ม
-  async extractText(imagePath: string): Promise<string | null> {
+  // post-rotation tokens (public — ใช้ทั้ง extractText และ dev harness เทียบ reconstruct)
+  async getProcessedTokens(imagePath: string): Promise<OcrToken[] | null> {
     const toks = await this.ocrTokens(imagePath);
     if (toks == null) return null;
-    const best = await this.correctRotation(imagePath, toks);
+    return this.correctRotation(imagePath, toks);
+  }
+
+  // convenience: รูป → text block; null ถ้า daemon ล่ม
+  async extractText(imagePath: string): Promise<string | null> {
+    const best = await this.getProcessedTokens(imagePath);
+    if (best == null) return null;
     return this.reconstructText(best);
+  }
+
+  // ★ grid→LLM (A/B-gated) ★ — คืนทั้ง flat (เดิม, ป้อน guard) + grid (column-aware, ป้อน LLM)
+  //   จาก OCR pass เดียว (getProcessedTokens ครั้งเดียว → ไม่ OCR ซ้ำ). null ถ้า daemon ล่ม
+  async extractTextBoth(
+    imagePath: string
+  ): Promise<{ flat: string; grid: string } | null> {
+    const best = await this.getProcessedTokens(imagePath);
+    if (best == null) return null;
+    return {
+      flat: this.reconstructText(best),
+      grid: this.reconstructTextGrid(best),
+    };
+  }
+
+  // ★ column-aware reconstruct (experimental) ★ — cluster token left-edge (x) เป็น column band
+  //   ทั้งหน้า แล้ววางแต่ละ token ลง column ของมัน → row ที่ cell หาย (sparse) คงตำแหน่ง column
+  //   (เติม cell ว่าง) → LLM map spec/result/ป้าย ไม่กำกวม. ยังไม่ใช้ใน production จนกว่า A/B ผ่าน corpus
+  reconstructTextGrid(tokens: OcrToken[], opts?: { colGapMul?: number }): string {
+    if (!tokens.length) return "";
+    const colGapMul = opts?.colGapMul ?? 1.5;
+
+    const heights = tokens.map((t) => t.y2 - t.y1).filter((h) => h > 0).sort((a, b) => a - b);
+    const medianH = heights.length ? heights[Math.floor(heights.length / 2)] : 20;
+    const rowGap = Math.max(8, 0.6 * medianH);
+
+    // 1) group เป็นแถวตาม y
+    const sorted = [...tokens].sort((a, b) => a.y - b.y);
+    const rows: OcrToken[][] = [];
+    let cur: OcrToken[] = [sorted[0]];
+    let lastY = sorted[0].y;
+    for (const t of sorted.slice(1)) {
+      if (Math.abs(t.y - lastY) > rowGap) {
+        rows.push(cur);
+        cur = [];
+      }
+      cur.push(t);
+      lastY = t.y;
+    }
+    if (cur.length) rows.push(cur);
+
+    // 2) column bands: cluster left-edge (x) ทั้งหน้า — เริ่ม band ใหม่เมื่อ x ห่าง > colGap
+    const colGap = Math.max(medianH * colGapMul, 16);
+    const xs = tokens.map((t) => t.x).sort((a, b) => a - b);
+    const bandEdges: number[] = [xs[0]];
+    let prev = xs[0];
+    for (const x of xs.slice(1)) {
+      if (x - prev > colGap) bandEdges.push(x);
+      prev = x;
+    }
+
+    const assignCol = (x: number): number => {
+      let best = 0;
+      let bd = Infinity;
+      for (let i = 0; i < bandEdges.length; i++) {
+        const d = Math.abs(x - bandEdges[i]);
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      return best;
+    };
+
+    // 3) วาง token ลง column, เติม cell ว่าง, ตัด trailing empty
+    return rows
+      .map((r) => {
+        const cells: string[] = bandEdges.map(() => "");
+        for (const t of [...r].sort((a, b) => a.x - b.x)) {
+          const c = assignCol(t.x);
+          cells[c] = cells[c] ? `${cells[c]} ${t.text}` : t.text;
+        }
+        let last = cells.length - 1;
+        while (last >= 0 && cells[last] === "") last--;
+        return cells.slice(0, last + 1).join("  |  ");
+      })
+      .join("\n");
   }
 }

@@ -53,7 +53,7 @@ items.forEach((it, i) => {
 const report = evaluateCoa({ filename: "test", items });
 check(
   "ทุก row ไม่เป็น SKIP-เพราะ-spec-หาย แล้ว",
-  report.rows.every((r) => r.reason.indexOf("spec not parseable") === -1),
+  report.rows.every((r) => r.reason.indexOf("อ่านเกณฑ์ (spec) เป็นตัวเลขไม่ได้") === -1),
   `(skip=${report.summary.skip})`
 );
 

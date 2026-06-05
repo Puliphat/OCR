@@ -154,8 +154,9 @@ export interface FailGuardResult {
   downgraded: { name: string; reason: string }[];
 }
 
+// ★ คำว่า "สลับ" ใน reason นี้ load-bearing — coa-pipeline COLLAPSE_SKIP_RE ใช้ trigger grid challenger ★
 export const FAIL_DOWNGRADE_REASON =
-  "spec กับ result อยู่คนละบรรทัด OCR — น่าจะ column collapse (spec ยกมาจากแถวอื่น) ตรวจใบจริง";
+  "เกณฑ์กับค่าผลอยู่คนละจุดในเอกสาร ระบบอาจอ่านสลับแถว — เทียบกับใบจริง";
 
 // mutate rows in place: FAIL ที่ spec+result ไม่ co-locate → SKIP. คืนรายการที่ downgrade
 export function downgradeUngroundedFails(
@@ -236,8 +237,9 @@ export interface PassGuardResult {
   downgraded: { name: string; reason: string }[];
 }
 
+// (ห้ามใส่คำ "สลับ"/"ทิศหาย" — ไม่งั้นจะ trigger grid challenger โดยไม่ตั้งใจ ดู coa-pipeline COLLAPSE_SKIP_RE)
 export const PASS_DOWNGRADE_REASON =
-  "PASS แต่ค่า result ไม่อยู่บรรทัดข้อมูลของชื่อ row ใน OCR — น่าจะ column collapse (LLM ยกเลขมาจากแถวอื่น) ตรวจใบจริง";
+  "ค่าผลอาจมาจากแถวอื่น (ไม่ตรงกับชื่อรายการในเอกสาร) — เทียบกับใบจริง";
 
 // token ของชื่อสำหรับ anchor — เก็บเลขไว้ (500/350/150 คือตัวแยกแถว sieve), lower-case latin+digit
 function anchorTokens(s: string): string[] {
