@@ -5,10 +5,12 @@ import * as path from "path";
 import * as Tesseract from "tesseract.js";
 import { PdfService } from "../pdf.service";
 import { ImageProcessingService } from "../image-processing.service";
-import { OllamaCoaService } from "./ollama-coa.service";
+import { OllamaCoaService, RawCoa } from "./ollama-coa.service";
 import { RapidOcrService } from "./rapidocr.service";
 import { evaluateCoa, summarize, CoaReport, EvaluatedItem } from "./coa-evaluator";
 import { extractPdfText, extractPdfTextPerPage } from "./pdf-text-extractor";
+import { extractPdfGridPerPage } from "./pdf-grid-extractor";
+import { parseStructuralGrid, GridOrient } from "./parse-structural-grid";
 import {
   recoverSpecsFromOcr,
   correctSpecDirectionFromOcr,
@@ -31,6 +33,23 @@ import {
 //   rapidocr engine เท่านั้น (text-layer/tesseract ไม่มี token bbox ที่เชื่อถือได้)
 //   toggle: COA_GRID_LLM=false ปิด grid challenger (กลับ flat ล้วน). default เปิด
 const GRID_LLM_ENABLED = process.env.COA_GRID_LLM !== "false";
+
+// grid provenance — how the column-aware gridText was recovered:
+//   "structural" = pdfplumber ruling-line geometry (text-layer PDFs) → columns verified by real geometry.
+//                  grid-won PASS may go clean-green when the value sits mid-range of a two-sided spec
+//                  (balanced amber) — geometry confirms the column, so a between-spec value is trustworthy.
+//   "spatial"    = rapidocr token-bbox clustering (scanned) → columns INFERRED, not verified.
+//                  grid-won PASS stays amber ("ต้องตรวจ") always — can't prove the column mapping.
+//   ★ this distinction is the anti-deceptive lever: never let an inferred-column PASS show clean-green ★
+type GridSource = "structural" | "spatial";
+type PageExtract = {
+  text: string;
+  engine: OcrEngine;
+  page: number;
+  gridText?: string;
+  gridSource?: GridSource;
+  gridOrient?: GridOrient; // pdf_table.py orientation (transposed COAs already rotated to rows)
+};
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
 // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
@@ -132,13 +151,15 @@ async function ocrImage(
 // pdf → ลอง text-layer ต่อหน้า; หน้าที่ไม่มี usable text → render + OCR
 async function extractTextPerPage(
   filePath: string
-): Promise<{ text: string; engine: OcrEngine; page: number; gridText?: string }[]> {
+): Promise<PageExtract[]> {
   const ext = path.extname(filePath).toLowerCase();
 
   // ไฟล์รูป → OCR เดียว, page=1
   if (ext !== ".pdf") {
     const result = await ocrImage(filePath);
-    return [{ ...result, page: 1 }];
+    return [
+      { ...result, page: 1, gridSource: result.gridText ? "spatial" : undefined },
+    ];
   }
 
   // PDF: ลอง text-layer ต่อหน้าก่อน
@@ -161,10 +182,14 @@ async function extractTextPerPage(
 
   // ถ้า extractPdfTextPerPage ล้มทั้งหมด → OCR ทุก rendered page
   if (pages.length === 0) {
-    const results: { text: string; engine: OcrEngine; page: number; gridText?: string }[] = [];
+    const results: PageExtract[] = [];
     for (let i = 0; i < imgs.length; i++) {
       const ocr = await ocrImage(imgs[i]);
-      results.push({ ...ocr, page: i + 1 });
+      results.push({
+        ...ocr,
+        page: i + 1,
+        gridSource: ocr.gridText ? "spatial" : undefined,
+      });
     }
     return results;
   }
@@ -178,7 +203,7 @@ async function extractTextPerPage(
       `  [extract] ⚠ page-count mismatch: text-layer ${pages.length} vs rendered ${imgs.length} — page alignment unreliable`
     );
   }
-  const results: { text: string; engine: OcrEngine; page: number; gridText?: string }[] = [];
+  const results: PageExtract[] = [];
   for (let i = 0; i < pages.length; i++) {
     const pg = pages[i];
     if (pg.hasUsableText) {
@@ -194,9 +219,36 @@ async function extractTextPerPage(
         );
       }
       const ocr = await ocrImage(imgPath);
-      results.push({ ...ocr, page: i + 1 });
+      results.push({
+        ...ocr,
+        page: i + 1,
+        gridSource: ocr.gridText ? "spatial" : undefined,
+      });
     }
   }
+
+  // ★ structural grid (text-layer root fix) ★ — recover the true 2D cell-grid from the PDF's
+  //   ruling lines via pdfplumber (no torch) and attach as gridText to text-layer pages. flatten
+  //   throws away column geometry (transposed COAs, over-flagging) — this restores it. keep-best
+  //   in processPage decides if it actually wins; flat stays the floor → 0 regression.
+  //   gridSource="structural" = columns verified by real geometry (vs rapidocr "spatial" = inferred).
+  if (GRID_LLM_ENABLED && results.some((r) => r.engine === "text-layer")) {
+    const grids = extractPdfGridPerPage(filePath);
+    const gridByPage = new Map(grids.map((g) => [g.page, g]));
+    for (const r of results) {
+      if (r.engine !== "text-layer") continue;
+      const g = gridByPage.get(r.page);
+      if (g && g.source !== "none" && g.grid.trim()) {
+        r.gridText = g.grid;
+        r.gridSource = "structural";
+        r.gridOrient = g.orient ?? "normal";
+        console.log(
+          `  [pdf-grid] page ${r.page}: structural grid (${g.source}, ${g.orient ?? "normal"}, ${g.grid.length} chars)`
+        );
+      }
+    }
+  }
+
   return results;
 }
 
@@ -281,10 +333,29 @@ async function runExtractionPass(
   engine: OcrEngine,
   page: number,
   ollama: OllamaCoaService,
-  variant: string
+  variant: string,
+  gridSource?: GridSource,
+  gridOrient?: GridOrient
 ): Promise<CoaReport> {
-  console.log(`  [ollama] parsing (${variant})…`);
-  const raw = await ollama.parseCoa(llmInput);
+  // ★ structural grid → DETERMINISTIC parse (no LLM) ★ — pdfplumber recovered geometry-verified
+  //   columns; a 4B model still mis-maps roles on merged-header/ragged grids (shifts result→spec).
+  //   parseStructuralGrid classifies cells by CONTENT, so the variable result-column index dissolves.
+  //   Still gated by keep-best below → can only help. Spatial (rapidocr) grids stay on the LLM path.
+  let raw: RawCoa | null;
+  let llmModelLabel: string;
+  let llmRawLabel: string | null;
+  if (variant === "grid" && gridSource === "structural") {
+    console.log(`  [grid-parser] parsing (deterministic structural, ${gridOrient ?? "normal"})…`);
+    raw = parseStructuralGrid(llmInput, gridOrient ?? "normal");
+    llmModelLabel = "deterministic-grid-parser";
+    llmRawLabel = JSON.stringify(raw, null, 2);
+    console.log(`  [grid-parser] parsed ${raw.items?.length ?? 0} items (structural)`);
+  } else {
+    console.log(`  [ollama] parsing (${variant})…`);
+    raw = await ollama.parseCoa(llmInput);
+    llmModelLabel = ollama.modelName;
+    llmRawLabel = ollama.lastRawResponse;
+  }
   if (!raw) {
     console.log(`  [ollama] parse failed / no items (${variant})`);
     return {
@@ -297,12 +368,15 @@ async function runExtractionPass(
       debug: {
         ocrEngine: engine,
         ocrText: text,
-        llmModel: ollama.modelName,
-        llmRaw: ollama.lastRawResponse,
+        llmModel: llmModelLabel,
+        llmRaw: llmRawLabel,
       },
     };
   }
-  console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items (${variant})`);
+  // deterministic path already logged its count; only the LLM path needs the parsed-count line here
+  if (!(variant === "grid" && gridSource === "structural")) {
+    console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items (${variant})`);
+  }
 
   // ★ Anti-hallucination ★ — ตัด row ที่ชื่อ+ค่าไม่มีใน OCR เลย (LLM ปั้นทั้งใบเมื่อ OCR เป็นขยะ)
   //   กัน false-PASS อันตรายสุด: ส่งงานบอก "ผ่าน" จากข้อมูลที่ไม่มีอยู่จริงในเอกสาร
@@ -433,12 +507,12 @@ async function runExtractionPass(
     evaluated.summary = summarize(evaluated.rows);
   }
 
-  // แนบหลักฐานดิบ — เปิด coa-log JSON ดูได้ว่า OCR อ่านอะไร vs LLM parse อะไร (พังที่ model ไหน)
+  // แนบหลักฐานดิบ — เปิด coa-log JSON ดูได้ว่า OCR อ่านอะไร vs parser/LLM parse อะไร (พังที่ขั้นไหน)
   evaluated.debug = {
     ocrEngine: engine,
     ocrText: text,
-    llmModel: ollama.modelName,
-    llmRaw: ollama.lastRawResponse,
+    llmModel: llmModelLabel,
+    llmRaw: llmRawLabel,
   };
 
   // set page number on the report
@@ -468,7 +542,9 @@ async function processPage(
   text: string,
   engine: OcrEngine,
   page: number,
-  gridText?: string
+  gridText?: string,
+  gridSource?: GridSource,
+  gridOrient?: GridOrient
 ): Promise<CoaReport> {
   if (!text.trim()) {
     return {
@@ -492,30 +568,56 @@ async function processPage(
     filename, filePath, text, text, engine, page, new OllamaCoaService(), "flat"
   );
 
-  // 2) grid challenger — เฉพาะมี gridText (rapidocr + flag) + flat โชว์ collapse-SKIP จริง
-  if (gridText && hasCollapseSymptom(flatReport)) {
-    console.log(`  [keep-best] flat โชว์ collapse-SKIP → ลอง grid challenger (${gridText.length} chars)`);
-    dumpDebug("_last-ocr-grid.txt", gridText);
+  // 2) grid challenger — ยิงเมื่อมี gridText และ flat ยังไม่สมบูรณ์:
+  //   • spatial (rapidocr): flat โชว์ collapse-SKIP keyword (column-shift จริง เช่น SODA/PR1950W)
+  //   • structural (pdfplumber text-layer): flat มี SKIP ใดๆ → grid อาจ recover ได้ (transposed COA
+  //     เช่น Suzorite ให้ SKIP "ค่าผลไม่ใช่ตัวเลข" ที่ไม่ match collapse keyword) ★ ไม่ยิงเมื่อ flat
+  //     สะอาดแล้ว (skip=0) — ไม่เสีย LLM call เปล่า. ★ ไม่ยิงเพื่อพลิก FAIL→PASS (FAIL จริงต้องคง honest)
+  const isStructural = gridSource === "structural";
+  const triggerGrid =
+    !!gridText &&
+    (hasCollapseSymptom(flatReport) ||
+      (isStructural && flatReport.summary.skip > 0));
+  if (triggerGrid) {
+    console.log(
+      `  [keep-best] flat ยังไม่สมบูรณ์ (${gridSource ?? "spatial"} grid) → ลอง grid challenger (${gridText!.length} chars)`
+    );
+    dumpDebug("_last-ocr-grid.txt", gridText!);
     const gridReport = await runExtractionPass(
-      filename, filePath, gridText, text, engine, page, new OllamaCoaService(), "grid"
+      filename, filePath, gridText!, text, engine, page, new OllamaCoaService(), "grid", gridSource, gridOrient
     );
     if (gridBeatsFlat(gridReport, flatReport)) {
+      // grid won → carry product/lotNo from flat when the grid pass didn't recover them (the
+      //   structural parser doesn't see prose like "GRADE: …" that the flat LLM read) — cosmetic.
+      if (!gridReport.product && flatReport.product) gridReport.product = flatReport.product;
+      if (!gridReport.lotNo && flatReport.lotNo) gridReport.lotNo = flatReport.lotNo;
       // ★ Anti-deceptive (BLOCKER fix) ★ — pass-guard เป็น column-blind → พิสูจน์ column ของ grid ไม่ได้.
-      //   grid PASS ที่ "flat ยืนยันไม่ได้" (row ใหม่ หรือ name/spec/result ต่างจาก flat PASS) → needsReview
-      //   = ห้าม grid PASS เป็นเขียวเงียบ (เหมือน sieve-recovery: ค่าจาก column re-map → คนตรวจใบจริง).
-      //   frontend แสดง amber "ต้องตรวจ" อยู่แล้ว → กัน deceptive PASS เป็น clean-green
+      //   grid PASS ที่ "flat ยืนยันไม่ได้" (row ใหม่ หรือ name/spec/result ต่างจาก flat PASS) ต้องไม่เป็น
+      //   เขียวเงียบ. ขึ้นกับ provenance ของ column:
+      //   • spatial (rapidocr): column INFERRED → amber เสมอ (พิสูจน์ mapping ไม่ได้)
+      //   • structural (pdfplumber ruling-line): column geometry-VERIFIED → balanced amber — clean-green
+      //     เฉพาะค่าอยู่กลางช่วง spec 2 ด้าน (ห่างขอบ); one-sided/ใกล้ขอบ/อ่านไม่ได้ → amber.
+      //     = แก้ over-flag ที่ราก: column เชื่อได้แล้ว ค่าปลอดภัยจริง → ไม่ต้อง "ต้องตรวจ" ทุกแถว
       const flatPassKeys = new Set(
         flatReport.rows.filter((r) => r.status === "PASS").map(passKey)
       );
       let surfaced = 0;
+      let greenlit = 0;
       for (const r of gridReport.rows) {
         if (r.status === "PASS" && !flatPassKeys.has(passKey(r))) {
-          r.needsReview = true;
-          surfaced++;
+          const amber = isStructural ? isNearSpecBoundary(r) : true;
+          if (amber) {
+            r.needsReview = true;
+            surfaced++;
+          } else {
+            greenlit++;
+          }
         }
       }
       console.log(
-        `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${surfaced} (grid-won PASS)`
+        `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${surfaced}${
+          isStructural ? ` · clean-green +${greenlit} (structural mid-range)` : ""
+        }`
       );
       return gridReport;
     }
@@ -535,7 +637,9 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
   for (const pg of pages) {
     dumpDebug("_last-ocr.txt", pg.text); // debug, overwrite per page
     if (!pg.text.trim()) continue;        // skip blank pages (pinned)
-    reports.push(await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText));
+    reports.push(
+      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient)
+    );
   }
   if (reports.length === 0) {
     // all pages blank → one empty report so route/UI still render
