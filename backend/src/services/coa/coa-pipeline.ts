@@ -17,6 +17,8 @@ import {
   applyHeaderDirectionHints,
 } from "./spec-recovery";
 import { recoverResultsFromOcr } from "./result-recovery";
+import { recoverAverageColumn } from "./avg-column-recovery";
+import { recoverSpecificationColumn } from "./spec-column-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
 import { recoverSieveTableResults } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
@@ -33,6 +35,14 @@ import {
 //   rapidocr engine เท่านั้น (text-layer/tesseract ไม่มี token bbox ที่เชื่อถือได้)
 //   toggle: COA_GRID_LLM=false ปิด grid challenger (กลับ flat ล้วน). default เปิด
 const GRID_LLM_ENABLED = process.env.COA_GRID_LLM !== "false";
+
+// ★ avg-column recovery toggle ★ — ดึงคอลัมน์ Average/Mean เป็น result (deterministic). default เปิด
+//   COA_AVG_COLUMN=false ปิด (กลับไปใช้ result ที่ LLM อ่าน). ใช้ A/B baseline vs after
+const AVG_COLUMN_ENABLED = process.env.COA_AVG_COLUMN !== "false";
+
+// ★ spec-column recovery toggle ★ — DuPont "double Min/Max": correct the Specification range from grid
+//   geometry (deterministic, header-anchored). default เปิด. COA_SPEC_COLUMN=false ปิด (กลับไป LLM spec)
+const SPEC_COLUMN_ENABLED = process.env.COA_SPEC_COLUMN !== "false";
 
 // grid provenance — how the column-aware gridText was recovered:
 //   "structural" = pdfplumber ruling-line geometry (text-layer PDFs) → columns verified by real geometry.
@@ -335,7 +345,8 @@ async function runExtractionPass(
   ollama: OllamaCoaService,
   variant: string,
   gridSource?: GridSource,
-  gridOrient?: GridOrient
+  gridOrient?: GridOrient,
+  avgGrid?: string
 ): Promise<CoaReport> {
   // ★ structural grid → DETERMINISTIC parse (no LLM) ★ — pdfplumber recovered geometry-verified
   //   columns; a 4B model still mis-maps roles on merged-header/ragged grids (shifts result→spec).
@@ -403,6 +414,24 @@ async function runExtractionPass(
     console.log(`  [result-recovery] เติม result จาก OCR ${recRes.recovered} รายการ`);
   }
 
+  // ★ Average/Mean-column recovery (deterministic, column-aware grid) ★ — บาง COA ลงค่าวัดหลายตัวแล้ว
+  //   ตามด้วยคอลัมน์ Average; spec เทียบกับ "ค่าเฉลี่ย" ไม่ใช่ค่าวัดเดี่ยว. qwen3:4b บางรันหยิบค่าวัดตัวเดียว
+  //   (Lot240521 150μ: หยิบ 58 ทั้งที่ค่าเฉลี่ยจริง 56.0) → override result จาก band คอลัมน์ Average.
+  //   ★ ABSTAIN ถ้าไม่เจอ header "Average/Mean" ที่ชัด → ไฟล์ที่ไม่มีคอลัมน์นี้ไม่ถูกแตะ (no-op) ★
+  //   รันหลัง result-recovery (avg = ค่าทางการ ทับค่าวัดเดี่ยวที่เพิ่งเติมได้)
+  const avgOverridden = new Set<string>();
+  if (AVG_COLUMN_ENABLED && avgGrid && avgGrid.trim()) {
+    const avg = recoverAverageColumn(raw.items ?? [], avgGrid);
+    for (const o of avg.overridden) avgOverridden.add(o.name.trim());
+    if (avg.overridden.length > 0) {
+      console.log(
+        `  [avg-column] override result จากคอลัมน์ Average ${avg.overridden.length} รายการ: ${avg.overridden
+          .map((o) => `${o.name}(${o.from ?? "∅"}→${o.to})`)
+          .join(", ")}`
+      );
+    }
+  }
+
   // แก้ทิศ spec ที่ LLM ใส่ผิดช่อง (bare bound) โดยยึด operator ใน OCR (X Max/Min, ≤/≥) — กัน fabricated FAIL
   const fixed = correctSpecDirectionFromOcr(raw.items ?? [], text);
   if (fixed > 0) {
@@ -422,6 +451,23 @@ async function runExtractionPass(
       }
     } catch (e) {
       console.warn(`  [header-direction] skipped:`, (e as Error).message);
+    }
+  }
+
+  // ★ Specification-column recovery (DuPont double Min/Max) ★ — runs LAST before eval so no later pass
+  //   overrides the corrected spec. Header-anchored: picks the rightmost (Specification) Min/Max pair,
+  //   rejects OCR-mangled cells, asserts only on ≥2-block agreement. ABSTAINS off-layout (no-op).
+  //   ★ flag EVERY detected DuPont row needsReview (spatial = inferred columns) — corrected or not ★
+  const specDupontNames = new Set<string>();
+  if (SPEC_COLUMN_ENABLED && avgGrid && avgGrid.trim()) {
+    const spec = recoverSpecificationColumn(raw.items ?? [], avgGrid);
+    for (const n of spec.dupontNames) specDupontNames.add(n.trim());
+    if (spec.overridden.length > 0) {
+      console.log(
+        `  [spec-column] แก้ spec จากคอลัมน์ Specification ${spec.overridden.length} รายการ: ${spec.overridden
+          .map((o) => `${o.name}(${o.from}→${o.to})`)
+          .join(", ")}`
+      );
     }
   }
 
@@ -497,6 +543,25 @@ async function runExtractionPass(
     }
   }
 
+  // ★ avg-column override → surface PASS rows (re-read the result column = ควรให้คนเหลือบยืนยัน) ★
+  //   provenance ตัดสิน amber vs green เหมือน grid-won: spatial (rapidocr คอลัมน์ inferred) → amber เสมอ ·
+  //   structural (pdfplumber geometry-verified) → balanced (clean-green เฉพาะค่ากลางช่วง 2 ด้าน).
+  if (avgOverridden.size > 0) {
+    for (const r of evaluated.rows) {
+      if (!avgOverridden.has(r.name.trim()) || r.status !== "PASS") continue;
+      const amber = gridSource === "structural" ? isNearSpecBoundary(r) : true;
+      if (amber) r.needsReview = true;
+    }
+  }
+
+  // ★ spec-column (DuPont) → surface ALL detected rows ★ — the spec was re-sourced from an inferred
+  //   (spatial) grid; even a corrected/unchanged spec must be human-verified, never silent clean-green.
+  if (specDupontNames.size > 0) {
+    for (const r of evaluated.rows) {
+      if (specDupontNames.has(r.name.trim()) && r.status === "PASS") r.needsReview = true;
+    }
+  }
+
   // re-summarize ครั้งเดียวหลัง guard ทุกตัว (fail + pass + column-shift) แก้ status เสร็จ
   if (
     failGuard.downgraded.length > 0 ||
@@ -564,8 +629,11 @@ async function processPage(
   }
 
   // 1) flat variant — รันเสมอ (floor, พฤติกรรมเดิมเป๊ะ)
+  //    ★ ส่ง gridText ให้ avg-column recovery (deterministic, abstain ถ้าไม่มี header Average) ★
+  //    gridSource ใช้กำหนด needsReview policy ของ avg-override (spatial=amber, structural=balanced)
   const flatReport = await runExtractionPass(
-    filename, filePath, text, text, engine, page, new OllamaCoaService(), "flat"
+    filename, filePath, text, text, engine, page, new OllamaCoaService(), "flat",
+    gridSource, gridOrient, gridText
   );
 
   // 2) grid challenger — ยิงเมื่อมี gridText และ flat ยังไม่สมบูรณ์:

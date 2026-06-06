@@ -420,3 +420,53 @@ baseline (R3) 53P/0F/37S → **54P/0F/36S** (Lot240521 350μ SKIP→**clean PASS
 **Gate:** A/B keep-best **75P/0F/36S · 0 FAIL · decisions เหมือนเดิมเป๊ะ** (SODA 2→6, PR1950W 4→5/3→5, 1 คง flat — keyword regex ไม่ regress) · ZP10 = 4P clean ไม่มี ⚑. unit tests ผ่านหมด (fail/pass-guard, column-shift 10, sieve 23, spec-norm 43, result-recovery 10, evaluator). tsc BE+FE 0.
 
 **ถัดไป (user เลือก):** avg-column extractor — ตารางมีคอลัมน์ Average/Mean (Lot240521: 54/56/58/**56.0**avg, 4b หยิบ 58 มั่ว) → ดึงคอลัมน์ avg deterministic (grid รู้ตำแหน่งคอลัมน์).
+
+---
+
+## FIX ROUND 7 (2026-06-06, avg-column extractor — ดึงคอลัมน์ Average/Mean เป็น result แบบ deterministic)
+
+**baseline (avg OFF) 87P/0F/32S → avg ON 88P/0F/31S** · **+1P · 0 FAIL · 0 regression** · needsReview 35→35. gate = `_validate/verify-4b-only.ts` (real pipeline, corpus 16 ไฟล์ / 21 page-reports). tsc 0. unit tests ครบ (avg 13, struct-grid 20, spec-norm 43, result-rec 10, col-shift 10, sieve 23, result-norm 17, pass/fail/grounding-guard, spec-recovery — ผ่านหมด).
+
+**ปัญหา (root):** บาง COA ลงค่าวัดหลายตัว (per-sample) แล้วตามด้วยคอลัมน์ **Average/Mean** — spec เทียบกับ "ค่าเฉลี่ย" ไม่ใช่ค่าวัดเดี่ยว. qwen3:4b หยิบไม่นิ่ง: Lot240521 row 150μ (วัด 54/56/58, avg **56.0**) โมเดลหยิบ **58** (ตัวสุดท้าย). prompt สั่ง "ใช้ Avg ถ้ามี" อยู่แล้ว (`ollama-coa.service.ts:88,97`) แต่ 4b ไม่เชื่อฟัง → root = structural ไม่ใช่ prompt.
+
+**แก้ (deterministic, 1 module ใหม่ `avg-column-recovery.ts` + wire ใน `coa-pipeline.ts`):**
+- `recoverAverageColumn(items, gridText)` — อ่าน **column-aware grid** (rapidocr `reconstructTextGrid` หรือ pdfplumber, ทั้งคู่ใช้ `|` + global column band): หา header cell ที่ตรง `^(average|mean|avg\.?)$` → band นั้น = result column. อ่าน cell ของแต่ละ data row; ถ้าเป็นเลขเดี่ยว = result จริง. join grid row ↔ LLM item ด้วย **spec text** (cell ขวาถัด avg = distinctive, LLM copy verbatim) + name-key fallback. override เฉพาะตอน avg เป็นเลข **และต่างจาก** ค่า LLM.
+- **★ ABSTAIN by construction ★** — ไม่มี header "Average/Mean" ที่ชัด → no-op (ไฟล์ส่วนใหญ่ไม่โดนแตะ). ต้องมี ≥2 data row ที่ avg-cell เป็นเลข (กัน coincidence). spec-key ชนกัน (สอง row spec เดียว ค่า avg ต่าง) → key นั้น abstain, fall back name-key.
+- **apply ใน flat path** (`processPage` ส่ง `gridText` → `runExtractionPass` หลัง result-recovery, ก่อน evaluate; avg = ค่าทางการ ทับค่าวัดเดี่ยว). toggle `COA_AVG_COLUMN=false` ปิด.
+- **needsReview policy (เหมือน grid-won):** override ที่เปลี่ยนค่า → PASS row ขึ้น **amber เสมอ (spatial = column inferred)** · structural → balanced. กัน corrected value เป็น clean-green เงียบ.
+
+**ผล (2 ไฟล์ trigger — ตามดีไซน์):**
+| ไฟล์ | row | LLM | avg จริง | ผล |
+|---|---|---|---|---|
+| Lot240521 | Sieve 150μ | 58 | **56.0** | result แก้ถูก · ยังคง SKIP (spec OCR `45 ~T5`, คนละเรื่อง — defer) |
+| 1F1710 p3 | Fiber Length | 0.990 | **1.090** | SKIP→**PASS ⚑** (avg จริง, 1.090∈spec) |
+
+**★ ตรวจ deceptive-PASS ของ flip 1F1710 (SKIP→PASS) — พิสูจน์กับใบจริง:** layout DuPont = **double min/max** → `Property|UoM|Avg|Min|Max|Std|Aim||Min|Max` (Batch=`Avg/Min/Max/Std`, Specification=`Min/Max` 2 คอลัมน์ขวาสุด). row จริง: `Fiber Length|mm|1.090|0.990|1.180|0.069|1.170||0.920|1.420`.
+- **bug 1 (result):** LLM หยิบ **Batch-Min 0.990** แทน **Avg 1.090** → avg-recovery แก้ถูก (1.090 = avg จริง). baseline: result 0.990 = specMin 0.990 เป๊ะ → pass-guard "ค่าผลตรงขอบเกณฑ์" → SKIP (guard ถูกที่ระแวง — LLM collapse batch-min ลงทั้ง result+spec). หลัง override result≠bound → guard ไม่ยิง → PASS ถูกต้อง.
+- **safety:** avg-recovery แตะแค่ **result** ไม่แตะ spec → PASS = "avg จริง เทียบ spec-as-read". deception ใดๆ = spec-misread ซึ่ง **pre-existing** (baseline ใช้ spec เดียวกัน) + flag **amber**. ∴ ไม่สร้าง deceptive PASS ใหม่. avg ∈ [batchMin,batchMax] เสมอ (นิยามค่าเฉลี่ย) ⊂ real spec ปกติ → verdict ถูก.
+
+**★ FINDING ใหม่ (pre-existing, แยก fix — flag user):** 1F1710 (DuPont double-min/max) **spec อ่านผิดทั้งใบ** — โชว์ Batch Min/Max แทน Specification จริง: Fiber Length spec `0.990~1.180` (จริง `0.920~1.420`), Canadian Std Freeness `217~248.5` (จริง `160~360`), Percent Moisture `5.4~9.5` (จริง `5.0~11.0`). **result ถูกหมด, spec ผิด** (clean-green PASS แต่ spec ที่โชว์ผิด). ค่า avg ∈ batch ⊂ real spec → verdict ไม่พลิก **แต่เสี่ยง deceptive ถ้า real spec แคบกว่า batch + avg หลุด** (edge). ทิศแก้: structural-grid parser รับ layout 2 คู่ Min/Max (เลือกคู่ใต้ header "Specification") — ROUND ถัดไป.
+
+**เหลือ (defer):** Lot240521 150μ spec OCR `45 ~T5` (7→T, recognition-level). 1F1710 spec double-min/max (FINDING บน). ตารางยาวข้ามหน้า.
+
+---
+
+## FIX ROUND 8 (2026-06-06, Specification-column recovery — DuPont "double Min/Max" spec-misread จาก FINDING ROUND 7)
+
+**baseline (R7 avg-on) 88P/0F/31S → spec-column ON 88P/0F/31S** · **verdict counts เป๊ะเท่าเดิม · 0 FAIL · 0 regression** · gate = real pipeline corpus 16 ไฟล์ / 21 page-reports (`_validate/_spec-on.log` vs `_avg-on.log`). spec-column ยิง **เฉพาะ 1F1710** (3 page-reports) — ไม่มีไฟล์อื่นโดน gate. tsc 0. unit test ใหม่ `spec-column-recovery.test.ts` 17/17 ผ่าน (avg-column 13 คงผ่าน).
+
+**ปัญหา (= FINDING ROUND 7):** 1F1710 (DuPont fiber/freeness) layout มี **2 กลุ่ม Min/Max** ต่อแถว — กลุ่มซ้ายใต้ header **Batch** (`Avg|Min|Max|Std`) + กลุ่มขวาใต้ **Specification** (`Min|Max`). qwen3:4b อ่าน Min/Max **กลุ่มแรกที่เจอ** = Batch → รายงาน batch spread เป็น spec ทั้งใบ (Fiber `0.990~1.180` แทนจริง `0.920~1.420`, Freeness `217~248.5` แทน `160~360`, Moisture `5.4~9.5` แทน `5.0~11.0`). **result ถูก, spec ผิด** → spec ที่โชว์ผิด + latent deceptive-PASS risk ถ้า real spec แคบกว่า batch.
+
+**แก้ (deterministic, module ใหม่ `spec-column-recovery.ts` + wire ใน `coa-pipeline.ts` รันท้ายสุดก่อน evaluate):**
+- `recoverSpecificationColumn(items, gridText)` — header-anchored, **ไม่เดาตำแหน่ง**:
+  - **GATE** — abstain เว้นแต่ grid มีทั้ง keyword `Specification` **และ** header row ที่มี ≥2 `Min` + ≥2 `Max` (signature double-group). ไม่มี layout อื่นใน corpus เข้า gate นี้ → no-op ทุกที่
+  - **BANDS** — Spec pair = `Min`/`Max` **ขวาสุด** (Batch อยู่ซ้าย, Spec อยู่ขวา), บังคับ minCol < maxCol
+  - **READ** — อ่าน band นั้นต่อ data row; cell เพี้ยน (OCR `S.000`) → NaN → **reject ทั้งแถว ไม่ fall-through ไปคอลัมน์ข้าง** (ช่องที่ fabricated spec จะหลุดเข้ามา)
+  - **AGREE** — รวม (min,max) ต่อชื่อข้าม block/หน้า, override เฉพาะ modal pair ที่ ≥2 reads + เสียงข้างมากเด็ดขาด (เสมอ → abstain). fuzzy name-pool ดูดชื่อ OCR garble (`Caadian` ↔ `Canadian`)
+- **★ SAFETY ★** แตะแค่ **spec** (specRaw/specMin/specMax) ไม่แตะ result · assert spec เฉพาะ ≥2-block agreement ไม่งั้นคงค่า LLM · flag **needsReview (amber) ทุกแถว DuPont** ทั้งที่ override และไม่ override (spatial grid = column inferred → ห้าม clean-green). toggle `COA_SPEC_COLUMN=false`.
+
+**ผล 1F1710 (3 data pages):** spec แก้ถูกเมื่อหน้านั้น OCR ให้ ≥2 block (Freeness→`160~360`, Fiber→`0.92~1.42`, Moisture→`5~11`), verdict คง **9P/0F/0S** (ไม่เปลี่ยนจาก R7).
+
+**★ ทำไม spec-misread นี้สร้าง deceptive PASS ไม่ได้ (พิสูจน์):** batch Min/Max = ค่า min/max ของ lot เอง → **avg ∈ [batchMin, batchMax] เสมอ** (นิยามค่าเฉลี่ย). batch มัก **แคบกว่า** real spec (217~248.5 ⊂ 160~360) → ผ่าน batch ก็ผ่าน real spec แน่ → batch-as-spec ให้ได้แค่ false-FAIL (เป็นไปไม่ได้เพราะ avg อยู่ใน batch) ไม่ใช่ false-PASS. ∴ ปลอดภัยกว่าที่กลัวไว้.
+
+**residual (honest abstain, safe):** บางหน้า OCR ให้ block เดียว → module abstain → spec ยังโชว์ batch range (เช่น report 3: Freeness `217~248.5`, Fiber `0.99~1.18`). verdict ยังถูก (avg ∈ batch) + amber flag → คนตรวจเจอ. ไม่ override จากหลักฐาน block เดียว = ดีไซน์ (honest > guess).
