@@ -1,0 +1,338 @@
+warning: in the working copy of 'backend/src/services/coa/coa-grounding.ts', LF will be replaced by CRLF the next time Git touches it
+diff --git a/backend/src/routes/coa.routes.ts b/backend/src/routes/coa.routes.ts
+index b90fcb5..aa39fa2 100644
+--- a/backend/src/routes/coa.routes.ts
++++ b/backend/src/routes/coa.routes.ts
+@@ -62,6 +62,7 @@ router.post(
+       const safeFilename = path.basename(req.file.path);
+       const logBasename = `${Date.now()}-${safeFilename}.json`;
+       const logPath = path.join(LOG_DIR, logBasename);
++      // เขียน log ฉบับเต็ม (รวม debug: ocrText/llmRaw) ไว้ diagnose ว่าพังที่ model ไหน
+       fs.writeFileSync(logPath, JSON.stringify(report, null, 2), "utf8");
+ 
+       // TODO: persist ลง DB เมื่อเปิดใช้ CoaReportEntity / CoaItemEntity
+@@ -90,7 +91,9 @@ router.post(
+       // });
+       // return res.json({ report, logFile: logBasename, id: saved.id });
+ 
+-      return res.json({ report, logFile: logBasename });
++      // HTTP response: ตัด debug ออก (ocrText/llmRaw ใหญ่และ FE ไม่ใช้) — อยู่ใน log file แล้ว
++      const { debug: _debug, ...reportForClient } = report;
++      return res.json({ report: reportForClient, logFile: logBasename });
+     } catch (e) {
+       console.error("[coa-route] pipeline error:", (e as Error).message);
+       return res.status(500).json({ error: (e as Error).message });
+diff --git a/backend/src/scripts/ab-models.ts b/backend/src/scripts/ab-models.ts
+index 336c698..202fd4e 100644
+--- a/backend/src/scripts/ab-models.ts
++++ b/backend/src/scripts/ab-models.ts
+@@ -47,7 +47,7 @@ async function main() {
+     const filename = path.basename(f);
+     let text = "";
+     try {
+-      text = await extractText(f); // ★ ครั้งเดียว ★
++      ({ text } = await extractText(f)); // ★ ครั้งเดียว ★ (extractText คืน {text, engine})
+     } catch (e) {
+       console.log(`${filename.slice(0, 37).padEnd(38)} extractText FAILED: ${(e as Error).message}`);
+       continue;
+diff --git a/backend/src/services/coa/coa-evaluator.ts b/backend/src/services/coa/coa-evaluator.ts
+index e323840..1b9e2e0 100644
+--- a/backend/src/services/coa/coa-evaluator.ts
++++ b/backend/src/services/coa/coa-evaluator.ts
+@@ -199,12 +199,23 @@ export interface CoaInput {
+   items: CoaItemInput[];
+ }
+ 
++// debug: หลักฐานดิบของ run นี้ — เปิดดูใน coa-log JSON ได้ว่า "พังที่ model ไหน"
++//   OCR (rapidocr/tesseract/text-layer) อ่านมาเป็นอะไร vs LLM (ollama) parse ออกมาเป็นอะไร
++//   เคส Lot240521: ocrText อ่าน "0.3 | 3 Max" ถูก แต่ llmRaw ได้ result 42 → ผิดที่ LLM ชัดเจน
++export interface CoaDebug {
++  ocrEngine: string; // "text-layer" | "rapidocr" | "tesseract"
++  ocrText: string; // ข้อความที่ป้อนเข้า LLM (หลัง OCR/text-layer)
++  llmModel: string; // ollama model ที่ใช้ parse
++  llmRaw: string | null; // JSON ดิบที่ LLM คายออกมา (ก่อน guard/normalize)
++}
++
+ export interface CoaReport {
+   filename: string;
+   product: string | null;
+   lotNo: string | null;
+   rows: EvaluatedItem[];
+   summary: { pass: number; fail: number; skip: number; total: number };
++  debug?: CoaDebug; // optional — แนบเฉพาะตอนรันจริง (route/test-coa), unit test ไม่ต้องมี
+ }
+ 
+ // รวม summary จาก rows — แยกออกมาเพื่อให้ post-eval guard (fail-guard) เรียกซ้ำหลังแก้ status ได้
+diff --git a/backend/src/services/coa/coa-grounding.ts b/backend/src/services/coa/coa-grounding.ts
+index ec12697..ce16de3 100644
+--- a/backend/src/services/coa/coa-grounding.ts
++++ b/backend/src/services/coa/coa-grounding.ts
+@@ -202,3 +202,102 @@ export function downgradeUngroundedFails(
+   }
+   return { downgraded };
+ }
++
++// ★ Anti-deceptive-PASS guard (column collapse, PASS side) ★ — คู่แฝดของ downgradeUngroundedFails
++//   แต่ฝั่ง PASS. false-PASS = บาปหนักสุดของ QA (บอก "ผ่าน" จาก spec/result ที่ไม่ใช่ของแถวนั้นจริง)
++//
++// อาการ (เคสจริง Lot240521 item1): ตาราง transposed, OCR อ่านถูก
++//   "Sieve Residue on 500 μ(%) | 0.3 | 3 Max. | Success"  (result จริง 0.3, spec จริง ≤3)
++//   แต่ LLM ดึงเลขข้ามบรรทัด → result 42 / specMax 45 (ยกจากแถว 350μ) → 42 ≤ 45 = PASS ปลอม
++//
++// ★ ทำไม name-anchored (ไม่ใช่ any-line แบบ fail-guard) ★ — เอกสาร number-dense ค่าผิดของ item1
++//   (42, 45) ดันไป co-locate "บรรทัดของ item2" พอดี → เช็คแบบ any-line จะปล่อยผ่าน (false PASS รอด)
++//   ต้อง anchor บรรทัดที่ "เป็นของ row นี้จริง" = บรรทัด OCR ที่ overlap ชื่อมากสุด
++//   (เลข 500/350/150 ในชื่อเป็นตัวแยกแถว sieve → ดึงบรรทัดถูกตัว)
++//
++// กติกา (ปลอดภัย — เช็คเฉพาะ "result co-location" + ต้องเป็น data line จริง เพื่อลด false SKIP):
++//   1. แตะเฉพาะ PASS. FAIL มี fail-guard แล้ว, SKIP ไม่ต้องยุ่ง
++//   2. ต้อง anchor ได้จริง: ชื่อมี ≥2 token (รวมเลข) + เจอบรรทัด OCR ที่ overlap ผ่าน threshold
++//      (เดียวกับ spec-recovery). anchor ไม่ได้ → ปล่อย PASS (พิสูจน์ collapse ไม่ได้ = honest miss)
++//   3. เช็คแค่ RESULT co-locate บน "บรรทัด anchor" (overlap สูงสุด, ties เก็บหมด) — ★ ไม่เช็ค spec ★
++//      เพราะ spec ±/range ถูก normalize เป็น min/max ที่ "คำนวณขึ้น" (เช่น 7±3 → min4 max10) ซึ่งไม่มีตัวอักษรใน OCR
++//      → ถ้าเอา min/max ไปบังคับ co-locate จะ downgrade ผิดทุก ± spec (bug เคยเจอ: Viscosity 6.6 ใน 7±3)
++//   4. ★ บรรทัด anchor ต้องมี "data number" (เลขที่ไม่ใช่เลขฝังในชื่อ เช่น 500/106) ★ ถึงจะถือเป็น "บรรทัด data จริง"
++//      ถ้าบรรทัดชื่อไม่มี data number = ชื่อถูก OCR ตัดมา/เป็น header (เช่น "Canadian Standard" ที่จริงคือ
++//      "Canadian Standard Freeness" ตัด 2 บรรทัด, "pH\n(Aqueous Solution)") → ค่าจริงอยู่บรรทัด continuation
++//      → พิสูจน์ collapse ไม่ได้ → ปล่อย PASS (กัน false SKIP จากชื่อ wrap)
++//   → downgrade เฉพาะเมื่อ "บรรทัดชื่อมีค่า data ของตัวเอง แต่ result ที่ LLM ให้ไม่ใช่ค่านั้น" = ยกเลขมาจากแถวอื่นจริง
++export interface PassGuardResult {
++  downgraded: { name: string; reason: string }[];
++}
++
++export const PASS_DOWNGRADE_REASON =
++  "PASS แต่ค่า result ไม่อยู่บรรทัดข้อมูลของชื่อ row ใน OCR — น่าจะ column collapse (LLM ยกเลขมาจากแถวอื่น) ตรวจใบจริง";
++
++// token ของชื่อสำหรับ anchor — เก็บเลขไว้ (500/350/150 คือตัวแยกแถว sieve), lower-case latin+digit
++function anchorTokens(s: string): string[] {
++  return s
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, " ")
++    .trim()
++    .split(/\s+/)
++    .filter((t) => t.length >= 2 || /\d/.test(t));
++}
++
++// digit-string ของ "เลขที่ฝังในชื่อ" (500/106/350) — กันบรรทัดชื่อ/header ที่มีแต่เลขในชื่อ ไม่ให้นับเป็น data line
++function nameEmbeddedDigits(name: string): Set<string> {
++  return new Set((name.match(/-?\d+(?:[.,]\d+)?/g) ?? []).map(digitsOnly));
++}
++
++// mutate rows in place: PASS ที่ result ไม่อยู่ "บรรทัด data ของชื่อตัวเอง" → SKIP. คืนรายการที่ downgrade
++export function downgradeUngroundedPasses(
++  rows: EvaluatedItem[],
++  ocrText: string
++): PassGuardResult {
++  const downgraded: { name: string; reason: string }[] = [];
++  if (!rows?.length || !ocrText) return { downgraded };
++
++  const lines = ocrText.split(/\r?\n/);
++  const lineSigs = lines.map((l) => new Set(anchorTokens(l)));
++  const lineNums = lines.map(parseNumTokens);
++
++  for (const r of rows) {
++    if (r.status !== "PASS") continue;
++
++    const nameSig = anchorTokens(r.name);
++    if (nameSig.length < 2) continue; // ชื่อสั้น/glued → anchor ไม่ชัด → ปล่อย (conservative)
++
++    // หาบรรทัด overlap สูงสุด (= บรรทัดของ row นี้). threshold เดียวกับ spec-recovery
++    const need = Math.max(2, Math.ceil(nameSig.length * 0.6));
++    const scores = lineSigs.map((ls) => nameSig.filter((t) => ls.has(t)).length);
++    const bestScore = scores.reduce((a, b) => (b > a ? b : a), 0);
++    if (bestScore < need) continue; // หาบรรทัดของ row นี้ไม่เจอ → พิสูจน์ collapse ไม่ได้ → ปล่อย
++
++    const resultNums = [
++      ...numberTokens(r.resultRaw),
++      ...(r.result != null ? [String(r.result)] : []),
++    ];
++    if (!resultNums.length) continue; // ไม่มีเลข result ให้เทียบ → ปล่อย
++
++    const nameNums = nameEmbeddedDigits(r.name);
++    let resultColocated = false; // result อยู่บรรทัด anchor บรรทัดใดบรรทัดหนึ่งไหม
++    let hasDataNumber = false; // บรรทัด anchor มีเลข "นอกเหนือเลขในชื่อ" ไหม (= เป็น data line จริง)
++    for (let i = 0; i < lines.length; i++) {
++      if (scores[i] !== bestScore) continue; // เฉพาะบรรทัด anchor (overlap สูงสุด, รวม ties)
++      const lt = lineNums[i];
++      if (!lt.length) continue;
++      for (const tk of lt) if (!nameNums.has(tk.digits)) hasDataNumber = true;
++      if (resultNums.some((n) => numberMatches(n, lt))) resultColocated = true;
++    }
++
++    if (resultColocated) continue; // result อยู่บรรทัดชื่อจริง → ค่าเป็นของแถวนี้ → คง PASS
++    if (!hasDataNumber) continue; // บรรทัดชื่อไม่มี data number (ชื่อ wrap/header) → พิสูจน์ collapse ไม่ได้ → คง PASS
++
++    // บรรทัดชื่อมี data number ของตัวเอง แต่ result ที่ LLM ให้ไม่ใช่ค่านั้น → result ยกมาจากแถวอื่น (deceptive)
++    r.status = "SKIP";
++    r.needsReview = true;
++    r.reason = PASS_DOWNGRADE_REASON;
++    downgraded.push({ name: r.name, reason: PASS_DOWNGRADE_REASON });
++  }
++  return { downgraded };
++}
+diff --git a/backend/src/services/coa/coa-pipeline.ts b/backend/src/services/coa/coa-pipeline.ts
+index 6990dd8..e555d3a 100644
+--- a/backend/src/services/coa/coa-pipeline.ts
++++ b/backend/src/services/coa/coa-pipeline.ts
+@@ -10,7 +10,11 @@ import { RapidOcrService } from "./rapidocr.service";
+ import { evaluateCoa, summarize, CoaReport } from "./coa-evaluator";
+ import { extractPdfText } from "./pdf-text-extractor";
+ import { recoverSpecsFromOcr, correctSpecDirectionFromOcr } from "./spec-recovery";
+-import { dropUngroundedItems, downgradeUngroundedFails } from "./coa-grounding";
++import {
++  dropUngroundedItems,
++  downgradeUngroundedFails,
++  downgradeUngroundedPasses,
++} from "./coa-grounding";
+ 
+ // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
+ // overwrite ทุก run — เปิดดูได้เมื่อ pipeline คืน rows ว่างเพื่อหาว่าพังขั้นไหน
+@@ -26,7 +30,11 @@ function dumpDebug(name: string, content: string) {
+ 
+ // Step 1 — ดึงข้อความออกจากไฟล์
+ // RapidOCR = default OCR (แม่นกว่า Tesseract มากบนตาราง COA, CPU ~300MB) — ปิดด้วย USE_RAPIDOCR=false
+-export async function extractText(filePath: string): Promise<string> {
++// คืน engine ที่อ่านสำเร็จด้วย (text-layer/rapidocr/tesseract) → แนบ CoaReport.debug ให้รู้ว่าพังขั้นไหน
++export type OcrEngine = "text-layer" | "rapidocr" | "tesseract";
++export async function extractText(
++  filePath: string
++): Promise<{ text: string; engine: OcrEngine }> {
+   const ext = path.extname(filePath).toLowerCase();
+ 
+   // 1. For PDFs: try text layer first — free, no OCR needed if it works
+@@ -35,7 +43,7 @@ export async function extractText(filePath: string): Promise<string> {
+       const { text, hasUsableText } = await extractPdfText(filePath);
+       if (hasUsableText) {
+         console.log(`  [text-layer] ${text.length} chars`);
+-        return text;
++        return { text, engine: "text-layer" };
+       }
+       console.log(`  [text-layer] empty/scanned — falling back to OCR`);
+     } catch (e) {
+@@ -58,7 +66,7 @@ export async function extractText(filePath: string): Promise<string> {
+     const text = await new RapidOcrService().extractText(imagePath);
+     if (text && text.replace(/\s/g, "").length >= 50) {
+       console.log(`  [rapidocr] ${text.length} chars`);
+-      return text;
++      return { text, engine: "rapidocr" };
+     }
+     console.warn(`  [rapidocr] empty/unreachable — falling back to Tesseract`);
+   }
+@@ -93,13 +101,13 @@ export async function extractText(filePath: string): Promise<string> {
+     }
+     if (data.confidence >= 75) {
+       console.log(`  [tesseract] picked ${angle}° (conf ≥ 75)`);
+-      return data.text;
++      return { text: data.text, engine: "tesseract" };
+     }
+   }
+   console.log(
+     `  [tesseract] best rotation: ${best.angle}° (conf ${best.confidence.toFixed(1)})`
+   );
+-  return best.text;
++  return { text: best.text, engine: "tesseract" };
+ }
+ 
+ // Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
+@@ -108,7 +116,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
+   const filename = path.basename(filePath);
+   const ollama = new OllamaCoaService();
+ 
+-  const text = await extractText(filePath);
++  const { text, engine } = await extractText(filePath);
+   dumpDebug("_last-ocr.txt", text);
+   if (!text.trim()) {
+     return {
+@@ -117,6 +125,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
+       lotNo: null,
+       rows: [],
+       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
++      debug: { ocrEngine: engine, ocrText: text, llmModel: ollama.modelName, llmRaw: null },
+     };
+   }
+ 
+@@ -130,6 +139,12 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
+       lotNo: null,
+       rows: [],
+       summary: { pass: 0, fail: 0, skip: 0, total: 0 },
++      debug: {
++        ocrEngine: engine,
++        ocrText: text,
++        llmModel: ollama.modelName,
++        llmRaw: ollama.lastRawResponse,
++      },
+     };
+   }
+   console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items`);
+@@ -175,9 +190,33 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport> {
+         .map((d) => d.name)
+         .join(", ")}`
+     );
++  }
++
++  // ★ Anti-deceptive-PASS ★ — downgrade PASS ที่ spec/result ไม่อยู่บรรทัดชื่อ row เดียวกันใน OCR
++  //   (column collapse ฝั่ง PASS: LLM ดึงเลขข้ามแถว → ค่าผิดแต่บังเอิญเข้า spec) → SKIP+needsReview
++  //   กัน false-PASS (บาปหนักสุด): บอก "ผ่าน" จาก spec/result ที่ไม่ใช่ของแถวนั้นจริง
++  const passGuard = downgradeUngroundedPasses(evaluated.rows, text);
++  if (passGuard.downgraded.length > 0) {
++    console.warn(
++      `  [pass-guard] downgrade ${passGuard.downgraded.length} PASS→SKIP (column collapse): ${passGuard.downgraded
++        .map((d) => d.name)
++        .join(", ")}`
++    );
++  }
++
++  // re-summarize ครั้งเดียวหลัง guard ทั้งสองตัว (fail + pass) แก้ status เสร็จ
++  if (failGuard.downgraded.length > 0 || passGuard.downgraded.length > 0) {
+     evaluated.summary = summarize(evaluated.rows);
+   }
+ 
++  // แนบหลักฐานดิบ — เปิด coa-log JSON ดูได้ว่า OCR อ่านอะไร vs LLM parse อะไร (พังที่ model ไหน)
++  evaluated.debug = {
++    ocrEngine: engine,
++    ocrText: text,
++    llmModel: ollama.modelName,
++    llmRaw: ollama.lastRawResponse,
++  };
++
+   // Log ทุก row ที่ evaluate ได้ (รวม SKIP เพื่อ debug ว่าทำไมถูก skip)
+   for (const r of evaluated.rows) {
+     const min = r.min == null ? "-" : String(r.min);
+diff --git a/backend/src/services/coa/ollama-coa.service.ts b/backend/src/services/coa/ollama-coa.service.ts
+index 384d0b5..7e1c92e 100644
+--- a/backend/src/services/coa/ollama-coa.service.ts
++++ b/backend/src/services/coa/ollama-coa.service.ts
+@@ -44,6 +44,12 @@ export class OllamaCoaService {
+     process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
+   private readonly model = process.env.OLLAMA_MODEL || "qwen2.5:3b-instruct";
+ 
++  // debug: raw JSON ของ run ล่าสุด (pipeline หยิบไปแนบ CoaReport.debug.llmRaw)
++  public lastRawResponse: string | null = null;
++  public get modelName(): string {
++    return this.model;
++  }
++
+   // ส่ง text COA ให้ LLM → คืน JSON shape { product, lotNo, items[] }
+   // ปรับ prompt เมื่อเจอใบแบบใหม่ที่ parse ไม่เข้า / เพิ่ม field — temperature=0, format=json บังคับให้ deterministic
+   async parseCoa(text: string): Promise<RawCoa | null> {
+@@ -72,6 +78,9 @@ Schema:
+ 
+ Rules:
+ - Output EVERY test row that has a specification. Never skip or merge rows. Copy specRaw and result VERBATIM — do not reformat or compute.
++- ★ ONE LINE = ONE ROW ★ Each line of COA Text is a single test row. A row's specRaw and result MUST come ONLY from numbers on that SAME line. NEVER borrow a number from a different line into this row — that is the most common and most dangerous error.
++- specRaw is a SINGLE spec token only (e.g. "3 Max", "15~45", "≤0.2", "270~350"). Do NOT concatenate other cells, other rows' numbers, or words like "Success"/"Pass" into specRaw.
++- If a row lists several measurement numbers followed by an Average/Mean (often the number just BEFORE the spec), use that Average as result — not an individual measurement.
+ - Items are test-table rows only. Skip headers, addresses, signatures, notes, stamps (ACCEPT/REJECT/"By: ...").
+ - "X Max" / "X Min" (e.g. "3 Max", "99 Min") is a SPEC → put the whole phrase in specRaw, never in unit.
+ - result and spec are DIFFERENT columns — never put the result number inside specRaw.
+@@ -104,7 +113,9 @@ ${text}
+         { timeout: 300_000 }
+       );
+       const raw = response.data.response;
+-      dumpOllamaRaw(typeof raw === "string" ? raw : JSON.stringify(raw, null, 2));
++      const rawStr = typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
++      this.lastRawResponse = rawStr;
++      dumpOllamaRaw(rawStr);
+       const parsed = JSON.parse(raw);
+       if (!parsed || !Array.isArray(parsed.items)) return null;
+       return parsed as RawCoa;
