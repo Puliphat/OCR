@@ -105,7 +105,82 @@ def _best(tabs, min_score):
     return best if (best is not None and best_score >= min_score) else None
 
 
+def _merge_slivers(edges, min_col_width):
+    """Remove edges that would create a column narrower than min_col_width.
+    Repeated until stable (slivers can chain)."""
+    merged = list(edges)
+    changed = True
+    while changed:
+        changed = False
+        i = 1
+        while i < len(merged):
+            if merged[i] - merged[i - 1] < min_col_width:
+                merged.pop(i)
+                changed = True
+            else:
+                i += 1
+    return merged
+
+
+def _scanned_vector_geom(page):
+    """Try to extract column geometry from vector ruling lines (for scanned PDFs with no text chars).
+    Returns (geom_dict) or None if not applicable.
+    geom_dict keys: col_edges_pt, page_width, page_height, page_rotation, table_bbox, source="vector-geom"
+    """
+    # Only for pages with very few chars but vector geometry (ruling lines)
+    if len(page.chars) >= 80:
+        return None
+    if len(page.rects) + len(page.curves) < 20:
+        return None
+
+    tables = page.find_tables({
+        "vertical_strategy": "lines",
+        "horizontal_strategy": "lines",
+    })
+    if not tables:
+        return None
+
+    # Pick table with most cells
+    tbl = max(tables, key=lambda t: len([c for c in t.cells if c is not None]))
+    raw_rows = tbl.extract()
+    if not raw_rows or not raw_rows[0] or len(raw_rows[0]) < 3:
+        return None
+
+    # Derive column edges from cell bounding boxes
+    # cells is a list of (x0, top, x1, bottom) tuples; None for merged cells
+    x_set = set()
+    for cell in tbl.cells:
+        if cell is not None:
+            x_set.add(round(float(cell[0]), 2))
+            x_set.add(round(float(cell[2]), 2))
+    if len(x_set) < 4:  # need at least 3 columns = 4 edges
+        return None
+    x_edges = sorted(x_set)
+
+    page_width = float(page.width)
+    min_col_w = page_width * 0.04
+    merged = _merge_slivers(x_edges, min_col_w)
+    if len(merged) < 4:  # still need >=3 columns after merge
+        return None
+
+    bbox = tbl.bbox  # (x0, top, x1, bottom)
+    return {
+        "col_edges_pt": merged,
+        "page_width": page_width,
+        "page_height": float(page.height),
+        "page_rotation": int(page.rotation or 0),
+        "table_bbox": [round(float(v), 2) for v in bbox],
+        "source": "vector-geom",
+    }
+
+
 def extract_page(page):
+    # 0) scanned-vector geometry — for scanned PDFs with vector ruling lines but no text chars
+    #    Returns geometry only (col edges in PDF points); text is filled later by RapidOCR tokens on TS side
+    geom = _scanned_vector_geom(page)
+    if geom is not None:
+        return "", "vector-geom", "normal", geom
+
     # 1) lines-strategy — true ruling-line cell grid (best for bordered COA tables)
     best = _best(page.extract_tables({
         "vertical_strategy": "lines",
@@ -122,11 +197,11 @@ def extract_page(page):
         }), 6)
         source = "text"
     if best is None:
-        return "", "none", "normal"
+        return "", "none", "normal", None
 
     orient = _orient(best)
     tbl = _transpose(best) if orient == "transposed" else best
-    return render_table(tbl), source, orient
+    return render_table(tbl), source, orient, None
 
 
 def main():
@@ -138,10 +213,11 @@ def main():
     out = {"engine": "pdfplumber", "pages": []}
     with pdfplumber.open(path) as pdf:
         for i, page in enumerate(pdf.pages):
-            grid, source, orient = extract_page(page)
-            out["pages"].append(
-                {"page": i + 1, "grid": grid, "source": source, "orient": orient}
-            )
+            grid, source, orient, geom = extract_page(page)
+            page_entry = {"page": i + 1, "grid": grid, "source": source, "orient": orient}
+            if geom is not None:
+                page_entry.update(geom)
+            out["pages"].append(page_entry)
     print(json.dumps(out, ensure_ascii=False))
 
 

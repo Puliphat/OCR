@@ -16,11 +16,17 @@ import { spawnSync } from "child_process";
 export interface PdfGridPage {
   page: number;
   grid: string;
-  source: "lines" | "text" | "none";
+  source: "lines" | "text" | "none" | "vector-geom";
   // pdf_table.py detects items-as-columns COAs and transposes them; "transposed" means it already
   // did so (grid is items-as-rows by here). Informational — the deterministic parser is orientation-
   // agnostic — but plumbed through so the parser/logs know the table was rotated.
   orient?: "normal" | "transposed";
+  // scanned-vector geometry fields (only present when source === "vector-geom")
+  colEdges?: number[];
+  pageWidth?: number;
+  pageHeight?: number;
+  pageRotation?: number;
+  tableBbox?: [number, number, number, number]; // [x0, y0, x1, y1] in PDF points
 }
 
 // locate ocr-py/ robustly under ts-node (src/) or compiled (dist/) — walk up for pdf_table.py
@@ -63,14 +69,25 @@ export function extractPdfGridPerPage(filePath: string): PdfGridPage[] {
       return [];
     }
     const parsed = JSON.parse(res.stdout) as {
-      pages?: PdfGridPage[];
+      pages?: any[];
       error?: string;
     };
     if (parsed.error) {
       console.warn(`  [pdf-grid] ${parsed.error}`);
       return [];
     }
-    return parsed.pages ?? [];
+    // Map Python snake_case fields → TS camelCase (vector-geom fields)
+    return (parsed.pages ?? []).map((p: any): PdfGridPage => ({
+      page: p.page,
+      grid: p.grid ?? "",
+      source: p.source ?? "none",
+      orient: p.orient,
+      colEdges: p.col_edges_pt,
+      pageWidth: p.page_width,
+      pageHeight: p.page_height,
+      pageRotation: p.page_rotation,
+      tableBbox: p.table_bbox,
+    }));
   } catch (e) {
     console.warn(`  [pdf-grid] failed: ${(e as Error).message}`);
     return [];

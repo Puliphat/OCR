@@ -115,10 +115,10 @@ export class RapidOcrService {
   private async correctRotation(
     imagePath: string,
     tokens0: OcrToken[]
-  ): Promise<OcrToken[]> {
+  ): Promise<{ tokens: OcrToken[]; angle: number }> {
     const s0 = this.orientationStats(tokens0);
     // gate แบบ conservative: ต้อง tall มากและเยอะกว่า wide ชัดเจน ถึงจะถือว่าหมุน
-    if (!(s0.tall >= 5 && s0.tall > s0.wide * 1.5)) return tokens0;
+    if (!(s0.tall >= 5 && s0.tall > s0.wide * 1.5)) return { tokens: tokens0, angle: 0 };
 
     const proc = new ImageProcessingService();
     const base = path.basename(imagePath).replace(/[^\w.-]/g, "_");
@@ -161,11 +161,11 @@ export class RapidOcrService {
         `  [rapidocr] rotated scan → corrected ${best.angle}° (wide ${best.wide}↑ vs ${s0.wide}, score ${best.score.toFixed(3)})`
       );
     }
-    return best.toks;
+    return { tokens: best.toks, angle: best.angle };
   }
 
   // post-rotation tokens (public — ใช้ทั้ง extractText และ dev harness เทียบ reconstruct)
-  async getProcessedTokens(imagePath: string): Promise<OcrToken[] | null> {
+  async getProcessedTokens(imagePath: string): Promise<{ tokens: OcrToken[]; angle: number } | null> {
     const toks = await this.ocrTokens(imagePath);
     if (toks == null) return null;
     return this.correctRotation(imagePath, toks);
@@ -173,21 +173,24 @@ export class RapidOcrService {
 
   // convenience: รูป → text block; null ถ้า daemon ล่ม
   async extractText(imagePath: string): Promise<string | null> {
-    const best = await this.getProcessedTokens(imagePath);
-    if (best == null) return null;
-    return this.reconstructText(best);
+    const result = await this.getProcessedTokens(imagePath);
+    if (result == null) return null;
+    return this.reconstructText(result.tokens);
   }
 
   // ★ grid→LLM (A/B-gated) ★ — คืนทั้ง flat (เดิม, ป้อน guard) + grid (column-aware, ป้อน LLM)
   //   จาก OCR pass เดียว (getProcessedTokens ครั้งเดียว → ไม่ OCR ซ้ำ). null ถ้า daemon ล่ม
   async extractTextBoth(
     imagePath: string
-  ): Promise<{ flat: string; grid: string } | null> {
-    const best = await this.getProcessedTokens(imagePath);
-    if (best == null) return null;
+  ): Promise<{ flat: string; grid: string; tokens: OcrToken[]; correctionAngle: number } | null> {
+    const result = await this.getProcessedTokens(imagePath);
+    if (result == null) return null;
+    const { tokens, angle } = result;
     return {
-      flat: this.reconstructText(best),
-      grid: this.reconstructTextGrid(best),
+      flat: this.reconstructText(tokens),
+      grid: this.reconstructTextGrid(tokens),
+      tokens,
+      correctionAngle: angle,
     };
   }
 

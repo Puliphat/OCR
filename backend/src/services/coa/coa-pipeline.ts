@@ -6,7 +6,8 @@ import * as Tesseract from "tesseract.js";
 import { PdfService } from "../pdf.service";
 import { ImageProcessingService } from "../image-processing.service";
 import { OllamaCoaService, RawCoa } from "./ollama-coa.service";
-import { RapidOcrService } from "./rapidocr.service";
+import { RapidOcrService, OcrToken } from "./rapidocr.service";
+import { buildScannedGrid, VectorGeom } from "./scanned-grid-builder";
 import { evaluateCoa, summarize, CoaReport, EvaluatedItem } from "./coa-evaluator";
 import { extractPdfText, extractPdfTextPerPage } from "./pdf-text-extractor";
 import { extractPdfGridPerPage } from "./pdf-grid-extractor";
@@ -52,7 +53,7 @@ const SPEC_COLUMN_ENABLED = process.env.COA_SPEC_COLUMN !== "false";
 //   "spatial"    = rapidocr token-bbox clustering (scanned) → columns INFERRED, not verified.
 //                  grid-won PASS stays amber ("ต้องตรวจ") always — can't prove the column mapping.
 //   ★ this distinction is the anti-deceptive lever: never let an inferred-column PASS show clean-green ★
-type GridSource = "structural" | "spatial";
+type GridSource = "structural" | "spatial" | "scanned-vector";
 type PageExtract = {
   text: string;
   engine: OcrEngine;
@@ -60,6 +61,9 @@ type PageExtract = {
   gridText?: string;
   gridSource?: GridSource;
   gridOrient?: GridOrient; // pdf_table.py orientation (transposed COAs already rotated to rows)
+  tokens?: OcrToken[];           // RapidOCR tokens (for scanned-vector grid building)
+  correctionAngle?: number;      // 0 if upright, 90/270 if rotation-corrected
+  imagePath?: string;            // rendered image path (for scanned pages — needed for imageWidth)
 };
 
 // Debug: dump OCR text + Ollama response ของ run ล่าสุดไว้ที่ coa-logs/_last-*.txt
@@ -83,7 +87,7 @@ export type OcrEngine = "text-layer" | "rapidocr" | "tesseract";
 // (RapidOCR sidecar + Tesseract multi-rotation fallback — logic เดิมทั้งหมด)
 async function ocrImage(
   imagePath: string
-): Promise<{ text: string; engine: OcrEngine; gridText?: string }> {
+): Promise<{ text: string; engine: OcrEngine; gridText?: string; tokens?: OcrToken[]; correctionAngle?: number }> {
   // 2. RapidOCR sidecar (primary OCR) — Python daemon, แม่นกว่า Tesseract มากบนตาราง COA scan
   //    ต้อง start daemon ก่อน: `npm run ocr:daemon` (หรือ ocr-py/ocr_server.py). ปิดด้วย USE_RAPIDOCR=false
   //    daemon ล่ม/unreachable → คืน null → fall through ไป Tesseract อัตโนมัติ
@@ -97,7 +101,7 @@ async function ocrImage(
       console.log(`  [rapidocr] ${text.length} chars`);
       // grid (column-aware) ป้อน LLM เฉพาะเมื่อเปิด flag — guard ยังใช้ flat (text) เสมอ
       const gridText = GRID_LLM_ENABLED ? both?.grid : undefined;
-      return { text, engine: "rapidocr", gridText };
+      return { text, engine: "rapidocr", gridText, tokens: both.tokens, correctionAngle: both.correctionAngle };
     }
     // ★ RapidOCR ล้ม → Tesseract fallback ให้ผล "อ่านได้แต่เลขเพี้ยน" (เคยทำ corpus พังเงียบ)
     //   แยกสาเหตุให้ชัด (อย่าโทษ daemon เมื่อ daemon ขึ้นอยู่ — misdirection แบบเดิม):
@@ -169,7 +173,7 @@ async function extractTextPerPage(
   if (ext !== ".pdf") {
     const result = await ocrImage(filePath);
     return [
-      { ...result, page: 1, gridSource: result.gridText ? "spatial" : undefined },
+      { ...result, page: 1, gridSource: result.gridText ? "spatial" : undefined, imagePath: filePath },
     ];
   }
 
@@ -200,6 +204,7 @@ async function extractTextPerPage(
         ...ocr,
         page: i + 1,
         gridSource: ocr.gridText ? "spatial" : undefined,
+        imagePath: imgs[i],
       });
     }
     return results;
@@ -234,6 +239,7 @@ async function extractTextPerPage(
         ...ocr,
         page: i + 1,
         gridSource: ocr.gridText ? "spatial" : undefined,
+        imagePath: imgPath,
       });
     }
   }
@@ -257,6 +263,45 @@ async function extractTextPerPage(
           `  [pdf-grid] page ${r.page}: structural grid (${g.source}, ${g.orient ?? "normal"}, ${g.grid.length} chars)`
         );
       }
+    }
+  }
+
+  // ★ scanned-vector grid (Track 2) ★ — for scanned PDFs with pdfplumber vector ruling-line geometry.
+  //   Maps RapidOCR tokens into geometry-verified columns → gridSource="scanned-vector" →
+  //   deterministic parseStructuralGrid (no LLM). Only SODA/PR1950W_4063-class PDFs qualify
+  //   (chars=0 but vector rects). 7 pure-raster scanned files stay spatial (no rects → no geom).
+  //   THREE BLOCKERS: (1) correctionAngle≠0 (2) pageRotation≠0 (3) colEdges.length<4
+  if (GRID_LLM_ENABLED && results.some((r) => r.engine === "rapidocr" && r.tokens?.length)) {
+    const svGrids = extractPdfGridPerPage(filePath);
+    const svByPage = new Map(svGrids.map((g) => [g.page, g]));
+    const proc = new ImageProcessingService();
+    for (const r of results) {
+      if (r.engine !== "rapidocr" || !r.tokens?.length || !r.imagePath) continue;
+      const g = svByPage.get(r.page);
+      if (!g || g.source !== "vector-geom" || !g.colEdges?.length) continue;
+      let imgW: number;
+      try {
+        const meta = await proc.metadata(r.imagePath);
+        imgW = meta.width ?? 0;
+        if (!imgW) continue;
+      } catch {
+        continue;
+      }
+      const geom: VectorGeom = {
+        colEdges: g.colEdges!,
+        pageWidth: g.pageWidth!,
+        pageHeight: g.pageHeight!,
+        pageRotation: g.pageRotation ?? 0,
+        tableBbox: g.tableBbox!,
+      };
+      const grid = buildScannedGrid(r.tokens, geom, imgW, r.correctionAngle ?? 0);
+      if (!grid) continue;
+      r.gridText = grid;
+      r.gridSource = "scanned-vector";
+      r.gridOrient = "normal";
+      console.log(
+        `  [scanned-vector] page ${r.page}: geometry-verified grid (${g.colEdges!.length - 1} cols, ${grid.length} chars)`
+      );
     }
   }
 
@@ -323,6 +368,7 @@ function gridBeatsFlat(grid: CoaReport, flat: CoaReport): boolean {
 //   ★ ช่วงยุบ (span ≈ 0, eq-like) → amber ★ — กัน band ยุบเป็น 0 แล้วเข้าใจผิดว่า "ห่างขอบ".
 //   อ่านค่าไม่ได้ / ไม่ใช่ช่วง 2 ด้าน → true (amber). near = ภายใน 5% ของความกว้างช่วง.
 const REL_TOL = 0.05;
+const VALUE_MARGIN_M = 0.30; // margin-green gate: result must be ≥30% of |result| away from the binding spec bound
 function isNearSpecBoundary(r: EvaluatedItem): boolean {
   const res = typeof r.result === "number" ? r.result : Number(r.result);
   if (!Number.isFinite(res)) return true;
@@ -331,6 +377,92 @@ function isNearSpecBoundary(r: EvaluatedItem): boolean {
   if (span <= Math.abs(res) * 1e-3) return true;   // ช่วงยุบ (≈eq) → ทุกค่าถือว่าใกล้ขอบ
   const band = span * REL_TOL;
   return res <= r.min + band || res >= r.max - band;
+}
+
+// ★ Margin-green policy (Track 2 + scanned-vector) ★ — CLEAR-ONLY: sets needsReview=false on PASS
+//   rows that are safely away from spec bounds. Never sets needsReview=true (only guards do that).
+//   Five gates must ALL pass:
+//   G0 column-trust allow-list: structural | scanned-vector | text-layer flat (never spatial)
+//   G1 status=PASS
+//   G2 margin = clearance/|result| >= VALUE_MARGIN_M
+//   G3' integer decimal-shift guard (both directions, mirrors detectDecimalRisk)
+//   G4 decimal-present: if binding bound is fractional, resultRaw must contain a decimal point
+function applyMarginGreen(
+  rows: EvaluatedItem[],
+  engine: OcrEngine,
+  gridSource: GridSource | undefined
+): void {
+  // G0: allow-list — "spatial" columns are inferred, never trust for clean-green
+  const colTrusted =
+    gridSource === "structural" ||
+    gridSource === "scanned-vector" ||
+    (engine === "text-layer" && gridSource == null);
+  if (!colTrusted) return;
+
+  for (const r of rows) {
+    // Only clear amber flags (skip rows that are already clean-green or not PASS)
+    if (!r.needsReview || r.status !== "PASS") continue;
+
+    const res = r.result;
+    if (res == null || !Number.isFinite(res) || res === 0) continue; // G2 needs finite nonzero result
+
+    // Determine clearance and binding bound based on spec operator
+    let clearance: number;
+    let bindingBound: number | null;
+    if (r.min != null && r.max != null) {
+      // between: clearance = distance to nearer bound
+      clearance = Math.min(Math.abs(res - r.min), Math.abs(r.max - res));
+      bindingBound = Math.abs(res - r.min) <= Math.abs(r.max - res) ? r.min : r.max;
+    } else if (r.max != null) {
+      // le/lt: clearance = max - result
+      clearance = r.max - res;
+      bindingBound = r.max;
+    } else if (r.min != null) {
+      // ge/gt: clearance = result - min
+      clearance = res - r.min;
+      bindingBound = r.min;
+    } else {
+      continue; // no bound to compute margin against
+    }
+
+    // G2: margin gate
+    if (clearance / Math.abs(res) < VALUE_MARGIN_M) continue;
+
+    // G3': integer decimal-shift guard (both directions)
+    // If result is an integer, check if multiplying/dividing by 10/100 changes spec satisfaction
+    if (Number.isInteger(res)) {
+      const alts = [res / 10, res * 10, res / 100, res * 100];
+      const baseline = specContainsResult(r); // does current result satisfy spec?
+      let riskFound = false;
+      for (const alt of alts) {
+        if (specContainsResult({ ...r, result: alt }) !== baseline) {
+          riskFound = true;
+          break;
+        }
+      }
+      if (riskFound) continue;
+    }
+
+    // G4: decimal-present guard
+    // If binding bound is fractional, the result raw must also contain a decimal point
+    if (bindingBound != null && !Number.isInteger(bindingBound)) {
+      const raw = r.resultRaw ?? "";
+      if (!/\./.test(raw)) continue;
+    }
+
+    // All gates passed — clear the amber flag
+    r.needsReview = false;
+  }
+}
+
+// Helper for G3': check if a result value satisfies the spec bounds on this row
+function specContainsResult(r: { result: number | null; min: number | null; max: number | null }): boolean {
+  const v = r.result;
+  if (v == null) return false;
+  if (r.min != null && r.max != null) return v >= r.min && v <= r.max;
+  if (r.max != null) return v <= r.max;
+  if (r.min != null) return v >= r.min;
+  return false;
 }
 
 // runExtractionPass — 1 รอบ extract+guard. ★ LLM อ่าน llmInput · guard ทุกตัวอ่าน text (flat) เสมอ ★ (dual-text)
@@ -356,12 +488,12 @@ async function runExtractionPass(
   let raw: RawCoa | null;
   let llmModelLabel: string;
   let llmRawLabel: string | null;
-  if (variant === "grid" && gridSource === "structural") {
-    console.log(`  [grid-parser] parsing (deterministic structural, ${gridOrient ?? "normal"})…`);
+  if (variant === "grid" && (gridSource === "structural" || gridSource === "scanned-vector")) {
+    console.log(`  [grid-parser] parsing (deterministic ${gridSource ?? "structural"}, ${gridOrient ?? "normal"})…`);
     raw = parseStructuralGrid(llmInput, gridOrient ?? "normal");
     llmModelLabel = "deterministic-grid-parser";
     llmRawLabel = JSON.stringify(raw, null, 2);
-    console.log(`  [grid-parser] parsed ${raw.items?.length ?? 0} items (structural)`);
+    console.log(`  [grid-parser] parsed ${raw.items?.length ?? 0} items (${gridSource ?? "structural"})`);
   } else {
     console.log(`  [ollama] parsing (${variant})…`);
     raw = await ollama.parseCoa(llmInput);
@@ -386,7 +518,7 @@ async function runExtractionPass(
     };
   }
   // deterministic path already logged its count; only the LLM path needs the parsed-count line here
-  if (!(variant === "grid" && gridSource === "structural")) {
+  if (!(variant === "grid" && (gridSource === "structural" || gridSource === "scanned-vector"))) {
     console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items (${variant})`);
   }
 
@@ -584,6 +716,10 @@ async function runExtractionPass(
   ) {
     evaluated.summary = summarize(evaluated.rows);
   }
+
+  // ★ Margin-green: clear amber on rows that pass value-trust gate (G0-G4) ★
+  //   CLEAR-ONLY — never sets needsReview=true; purely additive to existing flags.
+  applyMarginGreen(evaluated.rows, engine, gridSource);
 
   // แนบหลักฐานดิบ — เปิด coa-log JSON ดูได้ว่า OCR อ่านอะไร vs parser/LLM parse อะไร (พังที่ขั้นไหน)
   evaluated.debug = {
