@@ -22,7 +22,7 @@ honest **SKIP/needsReview** (หรือ drop row) ดีกว่า PASS/FAIL
 
 ## Pipeline order (`coa-pipeline.ts runCoaPipeline`)
 1. `extractText` — text-layer (`pdf-text-extractor`) → **RapidOCR sidecar :8765** (+ rotation auto-correct) → Tesseract fallback
-2. `ollama.parseCoa` — qwen2.5:3b-instruct (LLM parse → RawCoaItem[])
+2. `ollama.parseCoa` — qwen3:4b (LLM parse → RawCoaItem[])
 3. `dropUngroundedItems` — anti-hallucination (ตัด row ที่ไม่มีใน OCR)
 4. `recoverSpecsFromOcr` — เติม spec ที่ LLM หล่น (เฉพาะ row spec ว่าง)
 5. `correctSpecDirectionFromOcr` — แก้ทิศ bare-bound จาก operator ใน OCR
@@ -74,7 +74,7 @@ cd C:\local-repo\OCR\frontend && npm run dev          # http://localhost:3000
 0c. **scanned Min/Max direction** — guard #9 เป็น text-layer เท่านั้น. ไฟล์ scan (SODA bare-eq Assay/NaCl) ยัง SKIP.
    ทำได้ด้วย box-grid จาก RapidOCR box (รอบหน้า ถ้าจำเป็น) — แต่ scan geometry เชื่อยากกว่า text-layer, ระวัง.
    Docling = ทางสำหรับ shredded layout (PR1950W_4064) แต่ unproven บน COA scan + งานหลายวัน → defer จนกว่าจำเป็น
-1. **LLM mis-association บนแถวหลายเลข** — qwen2.5:3b ประกอบ spec/result มั่วแม้ OCR สะอาด (เช่น Lot240521 500μ แสดง result 42 แทน 0.3 — verdict ยังถูกเพราะทั้งคู่ PASS, แต่เลขที่โชว์ผิด). เพดาน accuracy หลักตอนนี้. ทางแก้: prompt few-shot ตาราง / multi-pass cross-check / model ใหญ่ขึ้น (7b เคยลอง = SKIP เยอะกว่า, reject)
+1. **LLM mis-association บนแถวหลายเลข** — qwen3:4b ประกอบ spec/result มั่วแม้ OCR สะอาด (เช่น Lot240521 500μ แสดง result 42 แทน 0.3 — verdict ยังถูกเพราะทั้งคู่ PASS, แต่เลขที่โชว์ผิด). เพดาน accuracy หลักตอนนี้ = table-STRUCTURE ไม่ใช่ OCR (v4 อ่านสะอาดแล้ว). ทางแก้: table-structure recognizer non-LLM (RapidTable / img2table) → ป้อน parse-structural-grid.ts → bypass LLM. (อย่าเปลี่ยนเป็น chat LLM ใหญ่กว่า — แก้ผิดจุด ยังเดา; 7b เคยลอง = SKIP เยอะกว่า, reject)
 2. **decimal-loss** — OCR ทศนิยมหาย (ZP10/4A: 5.8→58, 0.001→0.01). guard flag needsReview แล้วแต่ยังไม่กู้. ทางแก้: OCR preprocess/DPI tuning (ระวัง: width 2000 validate มาแล้ว, ดู image-processing.service.ts comment)
 3. **RapidOCR model variant** PP-OCRv4/v5 server
 4. **dataset โตฟรีจาก needsReview queue** — honest SKIP ตอนนี้ → user แก้ → labeled data → fine-tune ทีหลัง (ดู ocr-rapidocr-decision)
@@ -88,4 +88,4 @@ cd C:\local-repo\OCR\frontend && npm run dev          # http://localhost:3000
 
 ## Machine deps
 - RapidOCR daemon: `127.0.0.1:8765` (`ocr-py/ocr_server.py`, venv ที่ `ocr-py/venv`)
-- Ollama: `localhost:11434`, model `qwen2.5:3b-instruct`
+- Ollama: `localhost:11434`, model `qwen3:4b`

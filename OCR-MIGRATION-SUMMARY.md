@@ -1,6 +1,10 @@
 # OCR Migration Summary — Tesseract → Python RapidOCR sidecar
 
 > เขียนไว้ 2026-06-02 (Opus session). สรุปสิ่งที่ย้าย/เพิ่ม + code map + ขั้นต่อไป.
+>
+> ⚠ **SUPERSEDED (2026-06-08)** — เอกสารนี้เป็นบันทึก migration รอบแรก (Tesseract→RapidOCR PP-OCRv3). state ปัจจุบันต่างไปแล้ว:
+> **OCR = `rapidocr` 3.x / PP-OCRv4 mobile** (commit c1c9a7c, ไม่ใช่ rapidocr-onnxruntime/PP-OCRv3) · **LLM parse = `qwen3:4b`** (ไม่ใช่ qwen2.5:3b).
+> ของจริงล่าสุดดู `CLAUDE.md` + `backend/src/services/coa/DEV-NOTES.md`. ตารางด้านล่างคงไว้เป็นประวัติ.
 
 ## TL;DR
 

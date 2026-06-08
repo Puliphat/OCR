@@ -17,9 +17,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Backend**: Express + TypeScript + TypeORM + PostgreSQL + pdfjs-dist + axios → Ollama / OCR sidecar
 - **Frontend**: Next.js 16 (app router) + React 19 + Tailwind CSS 4 + @tanstack/react-query + axios
-- **OCR sidecar** (`ocr-py/`): Python **RapidOCR** (CPU onnxruntime, ~300MB) — default OCR engine สำหรับ scanned COA. แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). Tesseract.js เหลือเป็น fallback อย่างเดียวถ้า daemon ล่ม
+- **OCR sidecar** (`ocr-py/`): Python **RapidOCR `rapidocr` 3.x** (PP-OCRv4 **mobile** default, CPU onnxruntime, models ~16MB / venv ~366MB) — default OCR engine สำหรับ scanned COA. v4 (successor ของ `rapidocr-onnxruntime` ที่ค้างที่ PP-OCRv3 เพราะ pin Requires-Python <3.13). แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). Tesseract.js เหลือเป็น fallback อย่างเดียวถ้า daemon ล่ม
+  - Override: `COA_OCR_MODEL_TYPE` (`mobile` default | `server`), `COA_OCR_VERSION` (`PP-OCRv4` default | `PP-OCRv5`) — server/v5 auto-download ModelScope. mobile ชนะ corpus (ZP10/RI-015 ground-truth) + เบากว่า 12x
 - **LLM**: Ollama HTTP API ที่ `localhost:11434`
-  - `qwen2.5:3b-instruct` — parse text → JSON (default; A/B vs โมเดลอื่น ดู `src/scripts/ab-models.ts`)
+  - `qwen3:4b` — parse text → JSON (default; reasoning model → ใส่ `think:false`. A/B vs โมเดลอื่น ดู `src/scripts/ab-models.ts`)
   - Override: `OLLAMA_URL`, `OLLAMA_MODEL`, `OCR_SIDECAR_URL`, `USE_RAPIDOCR`
 
 ## Commands
@@ -59,9 +60,11 @@ npm run build
 ```
 DB_HOST=localhost  DB_PORT=5432  DB_USERNAME=postgres  DB_PASSWORD=postgres  DB_NAME=invoice_db
 OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=qwen2.5:3b-instruct
+OLLAMA_MODEL=qwen3:4b
 OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default)
 USE_RAPIDOCR=true                        # false = ข้าม sidecar ใช้ Tesseract เลย
+COA_OCR_MODEL_TYPE=mobile                # mobile (default) | server  — อ่านโดย ocr-py/ocr_server.py
+COA_OCR_VERSION=PP-OCRv4                 # PP-OCRv4 (default) | PP-OCRv5
 PORT=3001
 ```
 
@@ -86,7 +89,7 @@ backend/src/
         ├── coa-pipeline.ts            orchestrator (3 steps)
         ├── pdf-text-extractor.ts      ดูด text-layer จาก PDF (ฟรี, ไม่ต้อง OCR)
         ├── rapidocr.service.ts        ★ ยิง OCR sidecar (:8765) + จัด tokens เป็นแถว ★
-        ├── ollama-coa.service.ts      เรียก Ollama (qwen2.5:3b) → JSON (prompt อยู่ที่นี่)
+        ├── ollama-coa.service.ts      เรียก Ollama (qwen3:4b) → JSON (prompt อยู่ที่นี่)
         ├── coa-evaluator.ts           PASS/FAIL/SKIP + summary
         ├── spec-normalizer.ts         parse spec format (range, ±, ≤≥, …)
         ├── result-normalizer.ts       parse result (รับ number/string/{avg,min,max})
@@ -103,7 +106,7 @@ frontend/
 ocr-py/                         ★ Python OCR sidecar ★
 ├── ocr_server.py              HTTP daemon (:8765) — RapidOCR loaded once, POST /ocr {path}→tokens
 ├── render_and_test.py         standalone test: render 8 scanned PDFs + OCR + dump _scan_test/
-├── requirements.txt           rapidocr-onnxruntime, opencv-python-headless, pymupdf
+├── requirements.txt           rapidocr (3.x), onnxruntime, opencv-python-headless, pymupdf
 └── venv/                      (gitignored)
 ```
 
@@ -112,7 +115,7 @@ ocr-py/                         ★ Python OCR sidecar ★
 **3 ขั้น** (อยู่ใน `backend/src/services/coa/coa-pipeline.ts`):
 
 1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → ถ้า daemon ล่ม fall back Tesseract `eng+tha` (multi-rotation)
-2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama qwen2.5:3b-instruct, `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
+2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama qwen3:4b (`think:false`), `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
 3. **Deterministic evaluator** (`coa/coa-evaluator.ts`) → status `PASS`/`FAIL`/`SKIP` ต่อ row พร้อม `reason` + summary
 
 **`spec-normalizer.ts`** จัดการ format จริงที่เจอ:
