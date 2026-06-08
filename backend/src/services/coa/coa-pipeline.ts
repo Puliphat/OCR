@@ -26,6 +26,7 @@ import {
   dropUngroundedItems,
   downgradeUngroundedFails,
   downgradeUngroundedPasses,
+  downgradeOcrOutlierFails,
 } from "./coa-grounding";
 
 // ★ grid→LLM (column-aware OCR text → LLM; keep-best) ★
@@ -490,6 +491,17 @@ async function runExtractionPass(
     );
   }
 
+  // ★ OCR digit-scramble outlier ★ — downgrade FAIL ที่ result > specMax×100 (OCR เลขเพี้ยนรุนแรง)
+  //   co-location ยังผ่านแต่ result ห่างจาก spec ผิดปกติ เช่น 1F1710 Fiber Length: "1.090"→"0601"→601
+  const outlierGuard = downgradeOcrOutlierFails(evaluated.rows);
+  if (outlierGuard.downgraded.length > 0) {
+    console.warn(
+      `  [outlier-guard] downgrade ${outlierGuard.downgraded.length} FAIL→SKIP (digit-scramble): ${outlierGuard.downgraded
+        .map((d) => d.name)
+        .join(", ")}`
+    );
+  }
+
   // ★ Anti-deceptive-PASS ★ — downgrade PASS ที่ spec/result ไม่อยู่บรรทัดชื่อ row เดียวกันใน OCR
   //   (column collapse ฝั่ง PASS: LLM ดึงเลขข้ามแถว → ค่าผิดแต่บังเอิญเข้า spec) → SKIP+needsReview
   //   กัน false-PASS (บาปหนักสุด): บอก "ผ่าน" จาก spec/result ที่ไม่ใช่ของแถวนั้นจริง
@@ -562,9 +574,10 @@ async function runExtractionPass(
     }
   }
 
-  // re-summarize ครั้งเดียวหลัง guard ทุกตัว (fail + pass + column-shift) แก้ status เสร็จ
+  // re-summarize ครั้งเดียวหลัง guard ทุกตัว (fail + pass + column-shift + outlier) แก้ status เสร็จ
   if (
     failGuard.downgraded.length > 0 ||
+    outlierGuard.downgraded.length > 0 ||
     passGuard.downgraded.length > 0 ||
     colShift.downgraded.length > 0 ||
     sieveRec.recovered.length > 0

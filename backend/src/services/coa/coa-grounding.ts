@@ -136,6 +136,34 @@ export function dropUngroundedItems(
   return { kept, dropped };
 }
 
+// ★ OCR digit-scramble outlier guard ★ — downgrade FAIL ที่ result ห่างจาก specMax เกิน 100×
+//
+// อาการ (เคสจริง 1F1710 Fiber Length): OCR misread "1.090" → "0601" → qwen parse เป็น 601
+//   → 601 ตกนอก spec 0.920~1.420 → FAIL. แต่ fail-guard ไม่จับเพราะ co-locate ปกติ
+//   (tokens ทั้งหมด—result+spec—อยู่บรรทัดเดียว). ratio 601/1.42 ≈ 423× ชี้ชัดว่าเป็น OCR error
+//
+// กติกา (two-sided spec เท่านั้น — one-sided วัดไม่ได้ว่า "ไกลเกินจริงแค่ไหน"):
+//   result > specMax × 100 → downgrade FAIL → SKIP + needsReview
+//   แตะเฉพาะ FAIL + ต้องมี min AND max (two-sided) + result เป็น finite number
+export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult {
+  const downgraded: { name: string; reason: string }[] = [];
+  for (const r of rows) {
+    if (r.status !== "FAIL") continue;
+    if (r.min == null || r.max == null || r.max <= 0) continue;
+    const result = typeof r.result === "number" ? r.result : Number(r.result);
+    if (!Number.isFinite(result)) continue;
+    if (result > r.max * 100) {
+      const reason =
+        "ค่าผลห่างเกณฑ์มากผิดปกติ — น่าจะ OCR อ่านตัวเลขผิด (digit scramble) เทียบกับใบจริง";
+      r.status = "SKIP";
+      r.needsReview = true;
+      r.reason = reason;
+      downgraded.push({ name: r.name, reason });
+    }
+  }
+  return { downgraded };
+}
+
 // ★ Anti-fabricated-FAIL guard (column collapse) ★ — downgrade FAIL ที่ spec ไม่ใช่ของแถวตัวเอง
 //
 // อาการ (เคสจริง Lot240521, Suzorite): scan/text-layer ตาราง transposed (ชื่อ/spec/result คนละบรรทัด)

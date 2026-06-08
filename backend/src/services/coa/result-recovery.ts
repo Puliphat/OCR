@@ -91,6 +91,15 @@ function hasSpec(it: RawCoaItem): boolean {
   return !blank(it.specRaw) || !blank(it.specMin) || !blank(it.specMax);
 }
 
+// ★ Judgement-column exclusion ★ — COA format บางอัน (เช่น D-2072) มีคอลัมน์ Judgement (O/X) หลัง Result
+//   OCR อ่านตัว O เป็น 0 → เจอ "0" ท้ายแถวหลังค่าจริง → result-recovery เห็น cands=[item-num, result, 0]
+//   แทนที่จะเป็น cands=[result] → unique check ล้มเหลว → ปล่อยว่าง. pattern ชี้ชัด: cell สุดท้ายของแถว
+//   เป็น Judgement symbol (0 / O / X / Passed / Failed / ACCEPT / REJECT) ตัดทิ้งก่อน scan cands
+const JUDGEMENT_RE = /^(0|o|x|passed|failed|pass|fail|accept|reject)$/i;
+// ★ Item-sequence-number exclusion ★ — แถวบางแบบขึ้นต้นด้วย "1  | Viscosity | ..." โดยเลข 1 = ลำดับ ไม่ใช่ result
+//   ถ้า cell แรกเป็นเลขเต็ม 1-99 (ไม่มีทศนิยม) → ตัดออก (item-num ขึ้นสูงสุดแค่หลักสิบสำหรับ COA ปกติ)
+const ITEM_NUM_RE = /^[1-9][0-9]?$/;
+
 // mutate items in place — เติม result ให้ row ที่ result ว่าง + spec มี + เจอผู้สมัครตัวเลขเดี่ยวบนบรรทัดตัวเอง
 export function recoverResultsFromOcr(
   items: RawCoaItem[],
@@ -122,9 +131,19 @@ export function recoverResultsFromOcr(
     const isClaimed = (n: number) =>
       vals.some((v) => Math.abs(v - n) < 1e-9) || digits.has(digitsOnly(String(n)));
 
+    // ★ ตัด Judgement + item-number cells ก่อน scan ★ — บน cell list (by index, ไม่ใช่ by value)
+    const cellList = splitCells(line);
+    const lastIdx = cellList.length - 1;
+    const lastCellNorm = (cellList[lastIdx] ?? "").replace(/\s+/g, "");
+    const hasJudgement = JUDGEMENT_RE.test(lastCellNorm);
+    const firstCellNorm = (cellList[0] ?? "").trim();
+    const hasItemNum = ITEM_NUM_RE.test(firstCellNorm);
+
     const cands: number[] = [];
-    for (const cell of splitCells(line)) {
-      const n = singleNumberCell(cell);
+    for (let ci = 0; ci < cellList.length; ci++) {
+      if (ci === lastIdx && hasJudgement) continue;  // Judgement column → ตัด
+      if (ci === 0 && hasItemNum) continue;           // Item sequence number → ตัด
+      const n = singleNumberCell(cellList[ci]);
       if (n == null) continue;
       if (isClaimed(n)) continue;
       if (!cands.some((c) => Math.abs(c - n) < 1e-9)) cands.push(n);

@@ -103,6 +103,8 @@ Rules:
 - Numbers separated by spaces are SEPARATE values (OCR artifact): "1 4 23" is 1, 4, 23 — do NOT join into "423". Pick one token; never invent digits.
 - If a result is non-numeric (e.g. "White", a formula), copy it verbatim — do not force a number.
 - ★ ABSTAIN, NEVER GUESS ★ If a cell is blank, unreadable, or you are not sure which number belongs to THIS row, output null for that field. Do NOT guess and do NOT copy a value from a neighbouring row or column. A null (which becomes an honest SKIP) is ALWAYS better than a confident wrong number — wrong numbers that happen to land inside a spec produce deceptive PASS/FAIL, the single worst failure of this system.
+- Some COA formats include a Judgement or Pass/Fail column at the far right, AFTER the Result column. Its values are letters O (= pass) / X (= fail), the digit 0 (OCR of letter O), or words Passed/Failed/ACCEPT/REJECT. IGNORE this column — it records a QA decision, not a measured value. When a row ends in such a judgement symbol after a numeric result, that preceding numeric value is the result.
+- Row sequence numbers (1, 2, 3, 4…) printed at the start or left edge of a table row identify test order only. They are NOT result, spec, or unit values. Never use them for result.
 
 COA Text:
 ${text}
