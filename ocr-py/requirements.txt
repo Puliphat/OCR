@@ -1,6 +1,13 @@
 # Python OCR sidecar deps — RapidOCR (CPU onnxruntime) for scanned COA files.
 # Setup:  python -m venv venv  &&  venv\Scripts\pip install -r requirements.txt
 # Run:    venv\Scripts\python ocr_server.py 8765   (or `npm run ocr:daemon` from backend/)
-rapidocr-onnxruntime
+#
+# rapidocr 3.x = successor of rapidocr-onnxruntime (which capped at PP-OCRv3 on Python
+# 3.13 — every >=1.2.4 release pins Requires-Python <3.13). Ships PP-OCRv4 mobile by
+# default; det+rec server / PP-OCRv5 auto-download on demand (see COA_OCR_MODEL_TYPE /
+# COA_OCR_VERSION env in ocr_server.py). Mobile chosen: corpus-better on ground-truth
+# scans (ZP10, RI-015) + 12x lighter than server.
+rapidocr
+onnxruntime
 opencv-python-headless
 pymupdf
