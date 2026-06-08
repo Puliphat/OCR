@@ -1,9 +1,12 @@
 // HTTP layer ของ COA — รับไฟล์ผ่าน multer แล้วโยนเข้า pipeline
 // endpoint หลัก: POST /api/coa/upload (multipart "file") + GET /api/coa/health
+// + GET /ocr/daemon-health (probe sidecar) + POST /ocr/restart (spawn sidecar)
 import { Router, Request, Response } from "express";
 import multer from "multer";
 import * as path from "path";
 import * as fs from "fs";
+import * as child_process from "child_process";
+import axios from "axios";
 import { runCoaPipeline } from "../services/coa/coa-pipeline";
 
 const router = Router();
@@ -35,6 +38,46 @@ const upload = multer({
 
 router.get("/health", (_req: Request, res: Response) => {
   res.json({ ok: true });
+});
+
+// Probe Python sidecar — never 500; always 200 with boolean ok
+// Response: { ok: boolean }
+router.get("/ocr/daemon-health", async (_req: Request, res: Response) => {
+  const sidecarUrl =
+    process.env.OCR_SIDECAR_URL || "http://127.0.0.1:8765";
+  try {
+    await axios.get(`${sidecarUrl}/health`, { timeout: 2000 });
+    return res.json({ ok: true });
+  } catch {
+    return res.json({ ok: false });
+  }
+});
+
+// Spawn Python sidecar as detached child; return immediately
+// Paths resolved relative to repo root (3 levels up from backend/src/routes)
+// Response: { ok: true } | { ok: false, error: string } (status 500)
+router.post("/ocr/restart", (_req: Request, res: Response) => {
+  try {
+    const repoRoot = path.join(__dirname, "..", "..", "..");
+    const pythonExe = path.join(
+      repoRoot,
+      "ocr-py",
+      "venv",
+      "Scripts",
+      "python.exe"
+    );
+    const serverScript = path.join(repoRoot, "ocr-py", "ocr_server.py");
+
+    const child = child_process.spawn(pythonExe, [serverScript, "8765"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: (e as Error).message });
+  }
 });
 
 // รับไฟล์ → save → runCoaPipeline → เขียน JSON log → return reports
@@ -91,8 +134,8 @@ router.post(
       // });
       // return res.json({ report, logFile: logBasename, id: saved.id });
 
-      // HTTP response: ตัด debug ออกต่อ report (ocrText/llmRaw ใหญ่และ FE ไม่ใช้) — อยู่ใน log file แล้ว
-      const reportsForClient = reports.map(({ debug: _debug, ...r }) => r);
+      // HTTP response: ตัด ocrText/llmRaw (ใหญ่) แต่ surface ocrEngine จาก debug — FE ใช้แจ้ง engine
+      const reportsForClient = reports.map(({ debug, ...r }) => ({ ...r, ocrEngine: debug?.ocrEngine }));
       return res.json({ reports: reportsForClient, logFile: logBasename });
     } catch (e) {
       console.error("[coa-route] pipeline error:", (e as Error).message);

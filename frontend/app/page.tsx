@@ -4,7 +4,7 @@
 // เรียก POST /api/coa/upload ผ่าน react-query (lib/axios.ts baseURL = :3001)
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "@/lib/axios";
 import { UploadResponse } from "@/lib/types";
@@ -22,6 +22,8 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [dragover, setDragover] = useState(false);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const [daemonStatus, setDaemonStatus] = useState<"restarting" | "uploading" | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const mutation = useMutation<UploadResponse, Error, File>({
     mutationFn: async (f: File) => {
@@ -41,6 +43,64 @@ export default function Home() {
 
   const { data, isPending, isError, error } = mutation;
   const mode: Mode = isPending ? "analyzing" : data ? "done" : "idle";
+
+  // Auto-restart RapidOCR daemon when result used Tesseract fallback
+  useEffect(() => {
+    if (!data) return;
+    const hasTesseract = data.reports.some((r) => r.ocrEngine === "tesseract");
+    if (!hasTesseract) return;
+
+    // Clear any stale poll
+    if (pollIntervalRef.current !== null) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+
+    setDaemonStatus("restarting");
+
+    // Fire restart — best-effort, no await
+    api.post("/api/coa/ocr/restart").catch(() => undefined);
+
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30;
+
+    pollIntervalRef.current = setInterval(async () => {
+      attempts += 1;
+      try {
+        const res = await api.get<{ ok: boolean }>("/api/coa/ocr/daemon-health");
+        if (res.data.ok) {
+          clearInterval(pollIntervalRef.current!);
+          pollIntervalRef.current = null;
+          setDaemonStatus("uploading");
+          if (file) mutation.mutate(file);
+        }
+      } catch {
+        // ignore transient health-check errors
+      }
+      if (attempts >= MAX_ATTEMPTS) {
+        clearInterval(pollIntervalRef.current!);
+        pollIntervalRef.current = null;
+        setDaemonStatus(null);
+      }
+    }, 1500);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  // Clear daemonStatus once re-upload finishes (new result won't have tesseract)
+  useEffect(() => {
+    if (daemonStatus === "uploading" && data && !data.reports.some((r) => r.ocrEngine === "tesseract")) {
+      setDaemonStatus(null);
+    }
+  }, [data, daemonStatus]);
+
+  // Cleanup poll interval on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current !== null) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, []);
 
   function pickFile(f: File | null) {
     if (!f) return;
@@ -135,6 +195,7 @@ export default function Home() {
                 elapsedMs={i === 0 ? elapsedMs : null}
                 index={i}
                 total={data.reports.length}
+                daemonStatus={daemonStatus}
               />
             ))}
           </div>

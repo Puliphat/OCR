@@ -11,12 +11,14 @@ export default function ResultsCard({
   elapsedMs,
   index,
   total,
+  daemonStatus,
 }: {
   report: CoaReport;
   logFile: string;
   elapsedMs: number | null;
   index: number;
   total: number;
+  daemonStatus?: "restarting" | "uploading" | null;
 }) {
   const { summary, rows, filename, product } = report;
   const reviewCount = rows.filter((r) => r.needsReview === true).length;
@@ -88,6 +90,27 @@ export default function ResultsCard({
           </div>
         </div>
       </div>
+
+      {/* tesseract fallback banner */}
+      {report.ocrEngine === "tesseract" && (
+        <div style={{
+          background: "#fffbeb",
+          borderTop: "1px solid var(--line)",
+          padding: "10px 24px",
+          fontSize: 13,
+          color: "#92400e",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}>
+          <span>⚠</span>
+          {daemonStatus === "restarting"
+            ? "กำลังเริ่ม OCR daemon..."
+            : daemonStatus === "uploading"
+            ? "กำลังวิเคราะห์ใหม่..."
+            : "OCR daemon ปิดอยู่ — ผลนี้ใช้ Tesseract (ตัวเลขอาจเพี้ยน)"}
+        </div>
+      )}
 
       {/* stats */}
       <StatStrip summary={summary} />
