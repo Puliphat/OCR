@@ -37,6 +37,18 @@ function toNum(s: string): number {
   return Number(cleaned);
 }
 
+// OCR มัก misread เลขเป็นตัวอักษรทรงคล้าย (7→T, 0→O/Q, 1→l/I, 5→S, 8→B, 6→G, 9→g, 2→Z)
+// ใช้ "เฉพาะ" ตอนซ่อมค่าที่บริบทเป็นเลขชัด (range 2 ฝั่ง ที่ทั้งคู่มี digit จริง) — ไม่ใช้ทั่วไป
+// กัน corrupt คำจริง เช่น "White"/"Pass"
+const OCR_DIGIT_FIX: Record<string, string> = {
+  O: "0", o: "0", Q: "0", D: "0",
+  I: "1", l: "1", "|": "1",
+  Z: "2", S: "5", G: "6", T: "7", B: "8", g: "9",
+};
+function repairOcrDigits(s: string): string {
+  return s.replace(/[OoQDIl|ZSGTBg]/g, (c) => OCR_DIGIT_FIX[c] ?? c);
+}
+
 function stripUnits(s: string): string {
   return s
     .replace(/\s+/g, " ")
@@ -90,6 +102,21 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
         max: Math.max(a, b),
         raw: original,
       };
+    }
+
+    // OCR garble fallback: "45 ~T5" (75 อ่านเป็น T5) → ซ่อม letter→digit แล้ว parse ใหม่
+    // เงื่อนไข: ทั้งสองฝั่งต้องมี digit จริงในต้นฉบับ (ไม่เสกเลขจากคำล้วน เช่น "Pass~Fail")
+    const lm = cleaned.match(new RegExp(`^(.+?)\\s*(?:[~\\-–—]\\s*)+(.+?)$`));
+    if (lm) {
+      const lhs = lm[1].trim();
+      const rhs = lm[2].trim();
+      if (/\d/.test(lhs) && /\d/.test(rhs)) {
+        const a = toNum(repairOcrDigits(lhs));
+        const b = toNum(repairOcrDigits(rhs));
+        if (Number.isFinite(a) && Number.isFinite(b)) {
+          return { op: "between", min: Math.min(a, b), max: Math.max(a, b), raw: original };
+        }
+      }
     }
   }
 

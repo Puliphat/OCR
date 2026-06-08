@@ -139,6 +139,13 @@ ocr-py/                         ★ Python OCR sidecar ★
 | UI ตาราง / สี / column | `frontend/app/page.tsx` (`ResultTable`, `StatusPill`) |
 | เปิด persist DB | (1) เติม `ENABLE_DB=true` + `DB_PASSWORD=...` ใน `.env` (2) uncomment `entities` ใน `data-source.ts` (3) uncomment block ใต้ `// TODO: persist ลง DB` ใน `routes/coa.routes.ts` |
 
+## Context management (สำคัญ — ป้องกัน context เต็ม → ทำงานคลาดเคลื่อน)
+
+- **ทุกครั้งที่ compress → บันทึก decision สำคัญลง memory vault ทันที** (SessionEnd hook ทำงานอัตโนมัติแล้ว แต่ decision ใหม่ให้ save เอง)
+- **ก่อนเริ่มงานใหม่ → search memory ก่อนเสมอ** อย่าวางใจ context ที่ย่อไป
+- **งานข้าม session → อ่าน MEMORY.md + memory_search ก่อนเริ่ม**
+- **decision/fix/bug/non-obvious → save ทันที** อย่ารอ session end
+
 ## Reference template (อ่านประกอบ — stack ไม่ตรง)
 
 `C:\local repo\setupskills` มี template CLAUDE.md/SKILL.md (Express + pg raw SQL + Zod + asyncHandler + Vite + AntD) — **stack ต่างจาก repo นี้** (เราใช้ TypeORM + Next.js 16 + Tailwind) อย่ายก pattern เข้ามาทั้งดุ้นโดยไม่ตกลงกันก่อน

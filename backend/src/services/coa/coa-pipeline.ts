@@ -543,14 +543,14 @@ async function runExtractionPass(
     }
   }
 
-  // ★ avg-column override → surface PASS rows (re-read the result column = ควรให้คนเหลือบยืนยัน) ★
-  //   provenance ตัดสิน amber vs green เหมือน grid-won: spatial (rapidocr คอลัมน์ inferred) → amber เสมอ ·
-  //   structural (pdfplumber geometry-verified) → balanced (clean-green เฉพาะค่ากลางช่วง 2 ด้าน).
+  // ★ avg-column override → balanced policy (spatial + structural) ★ — override = re-read "cell เดียว"
+  //   จากคอลัมน์ Average (ไม่ใช่ทั้งคอลัมน์) → เสี่ยงต่ำ. ค่ากลางช่วง → green (override ผิดก็ไม่พลิก verdict)
+  //   · ใกล้ขอบ spec → amber (พลิก PASS↔FAIL ง่าย). ★ ต่างจาก grid keep-best (re-read ทั้งคอลัมน์ =
+  //   เสี่ยงกว่า) ที่ spatial ยังคง amber เสมอ ★
   if (avgOverridden.size > 0) {
     for (const r of evaluated.rows) {
       if (!avgOverridden.has(r.name.trim()) || r.status !== "PASS") continue;
-      const amber = gridSource === "structural" ? isNearSpecBoundary(r) : true;
-      if (amber) r.needsReview = true;
+      if (isNearSpecBoundary(r)) r.needsReview = true;
     }
   }
 
@@ -699,7 +699,7 @@ async function processPage(
 // Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
 // คืน CoaReport[] หนึ่งตัวต่อหน้า PDF (single-page/image = [1 report])
 export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
-  const filename = path.basename(filePath);
+  const filename = path.basename(filePath).replace(/^\d+-/, "");
   const pages = await extractTextPerPage(filePath);
   const reports: CoaReport[] = [];
   for (const pg of pages) {

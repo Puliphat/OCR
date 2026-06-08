@@ -116,6 +116,36 @@ check(
   `(downgraded=${rGlueDec.downgraded.length})`
 );
 
+// ★ REGRESSION (Lot240521 150μ) ★ — OCR garble ชื่อ "SicveResidueQn 150ur%)" → token-anchor latch บรรทัด
+//   500μ ผิด → false SKIP. aperture 150 ตัดบรรทัด 500μ ออก → คง PASS (result 56 ∈ 45~75 ของแถวจริง)
+const garble150 = [
+  row({ name: "Sieve Residue on 150ur%)", specRaw: "45 ~75", min: 45, max: 75, result: 56, resultRaw: "56" }),
+];
+const rGarble = downgradeUngroundedPasses(garble150, LOT_OCR);
+check(
+  "garble-name 150μ (OCR เพี้ยน Sicve/Qn) result 56 ของแถวจริง → คง PASS (aperture-anchor)",
+  rGarble.downgraded.length === 0 && garble150[0].status === "PASS",
+  `(downgraded=${rGarble.downgraded.length})`
+);
+
+// ★ qwen review #1 (aperture garble ทุกบรรทัด ห้ามถอยเกินเดิม) ★ — deceptive PASS: result 4 ยืมจากแถว
+//   coating, ค่าจริงบรรทัด filter = 8. OCR garble เลข aperture 200 หายหมด (ไม่มีบรรทัดไหนมี 200).
+//   ถ้า exclusion zero ทุกบรรทัด → backoff → keep deceptive PASS (อันตราย). apertureOnSomeLine=false →
+//   fall back scoring เดิม → anchor บรรทัด filter (overlap 2) → result 4 ไม่อยู่ → downgrade ถูกต้อง
+const APERTURE_GONE_OCR = [
+  "Filter mesh size  |  8  |  5 Max  |  Pass",
+  "Coating weight  |  4  |  20 Max  |  Pass",
+].join("\n");
+const apertureGone = [
+  row({ name: "Filter mesh 200", specRaw: "5 Max", max: 5, result: 4, resultRaw: "4" }),
+];
+const rApGone = downgradeUngroundedPasses(apertureGone, APERTURE_GONE_OCR);
+check(
+  "aperture garble หายทุกบรรทัด → fall back scoring → ยัง downgrade deceptive PASS (qwen #1 safe)",
+  rApGone.downgraded.length === 1 && apertureGone[0].status === "SKIP",
+  `(downgraded=${rApGone.downgraded.length})`
+);
+
 // ★ ตารางปกติ name|spec|result บรรทัดเดียว → คง PASS ★
 const CLEAN_OCR = "Moisture Content (%)  |  0.5 Max  |  0.2";
 const clean = [

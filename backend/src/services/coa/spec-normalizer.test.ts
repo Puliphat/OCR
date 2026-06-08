@@ -30,6 +30,11 @@ const cases: [string, Expect][] = [
   ["270 ~- 350",     { op: "between", min: 270, max: 350 }],
   ["40.0 ~ - 70.0",  { op: "between", min: 40, max: 70 }],
   ["15 -45",         { op: "between", min: 15, max: 45 }],
+  // OCR garble repair (digit-shaped letters) ในบริบท range 2 ฝั่ง
+  ["45 ~T5",         { op: "between", min: 45, max: 75 }],   // 75 → T5
+  ["1OO-2OO",        { op: "between", min: 100, max: 200 }], // 0 → O
+  ["4S~6S",          { op: "between", min: 45, max: 65 }],   // 5 → S
+  ["Pass~Fail", null],   // คำล้วน ไม่มี digit ทั้งคู่ → ห้ามเสกเลข
   ["White", null],
   ["K2Ti6O13", null],
   ["Powder without foreign body", null],

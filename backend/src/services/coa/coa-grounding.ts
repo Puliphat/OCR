@@ -299,7 +299,17 @@ export function downgradeUngroundedPasses(
     //   = deceptive PASS รอด. ชื่อแถวจริงมีเลข aperture ฝัง (350/500/150) → เป็น cell เต็มเฉพาะบรรทัดตัวเอง
     //   เท่านั้น. ถ้าชื่อ glue ปนขยะ (ไม่ใช่ cell เต็ม) → glue ไม่ติด → fall back เดิม (false SKIP = honest)
     const joinedName = nameSig.join("");
+    // ★ aperture exclusion (Lot240521 150μ) ★ — เลขฝังในชื่อ (150/350/500) = ตัวแยกแถว unique
+    //   บรรทัดที่ไม่มีเลขนี้ → ไม่ใช่แถวนี้ → score 0 (กัน garble ชื่อ→ anchor ข้าม aperture ผิด → false SKIP)
+    //   ★ เปิด exclusion เฉพาะเมื่อมี ≥1 บรรทัดที่มี aperture จริง ★ — ถ้า OCR garble aperture หายหมด →
+    //   fall back scoring เดิม (ไม่ zero ทุกบรรทัด → ไม่ถอยเกินเดิม → ไม่เปิดช่อง deceptive PASS หลุด)
+    const nameNums = nameEmbeddedDigits(r.name);
+    const apertureOnSomeLine =
+      nameNums.size > 0 &&
+      lineNums.some((lt) => lt.some((tk) => nameNums.has(tk.digits)));
     const scores = lineSigs.map((ls, i) => {
+      if (apertureOnSomeLine && !lineNums[i].some((tk) => nameNums.has(tk.digits)))
+        return 0;
       const tok = nameSig.filter((t) => ls.has(t)).length;
       const glue =
         joinedName.length >= 6 && lineCells[i].some((c) => c === joinedName)
@@ -323,7 +333,6 @@ export function downgradeUngroundedPasses(
     const isBetween = r.min != null && r.max != null && r.min !== r.max;
     const boundVal = isBetween ? null : r.max != null ? r.max : r.min;
 
-    const nameNums = nameEmbeddedDigits(r.name);
     let validated = false; // เจอบรรทัด data ที่ result (+bound) ตรงกันจริง
     let hasDataNumber = false; // บรรทัด anchor มีเลข "นอกเหนือเลขในชื่อ" ไหม (= เป็น data line จริง)
     for (let i = 0; i < lines.length; i++) {
