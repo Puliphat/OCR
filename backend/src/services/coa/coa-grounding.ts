@@ -379,6 +379,24 @@ export function downgradeUngroundedPasses(
     if (validated) continue; // result(+bound) อยู่บรรทัด data จริง → ค่าเป็นของแถวนี้ → คง PASS
     if (!hasDataNumber) continue; // บรรทัดชื่อไม่มี data number (ชื่อ wrap/header) → พิสูจน์ collapse ไม่ได้ → คง PASS
 
+    // Sub-row check: header line is a section header (item sequence number = only "data number"),
+    // and actual results live on sub-rows below. Example: D-2072 "Shear Strength" header has
+    // no result; sub-rows "- Room Temperature" and "- Heat Resistance (200°C)" carry results.
+    // Validate by checking that result (+ bound if single-bound) co-locate on a nearby sub-row.
+    if (!validated) {
+      outerSubrow: for (let i = 0; i < lines.length; i++) {
+        if (scores[i] !== bestScore) continue;
+        for (let li = i + 1; li < Math.min(i + 8, lines.length); li++) {
+          if (/^\d+\s*[|]/.test(lines[li])) break; // next numbered item → stop
+          const subLt = lineNums[li];
+          const rHit = resultNums.some((v) => valuePresent(v, subLt));
+          const sHit = boundVal == null || valuePresent(boundVal, subLt);
+          if (rHit && sHit) { validated = true; break outerSubrow; }
+        }
+      }
+      if (validated) continue;
+    }
+
     // บรรทัดชื่อมี data number ของตัวเอง แต่ result/bound ที่ LLM ให้ไม่ตรง → ยกเลขมาจากแถวอื่น (deceptive)
     r.status = "SKIP";
     r.needsReview = true;

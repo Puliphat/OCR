@@ -148,7 +148,45 @@ export function recoverResultsFromOcr(
       if (isClaimed(n)) continue;
       if (!cands.some((c) => Math.abs(c - n) < 1e-9)) cands.push(n);
     }
-    if (cands.length !== 1) continue; // 0 = ไม่เจอ, ≥2 = กำกวม → ปล่อยว่าง (honest SKIP)
+    // Sub-row fallback: header line has no result (cands=0) but actual results live on sub-rows.
+    // Example: D-2072 "Shear Strength" header has no result; sub-rows "- Room Temperature" and
+    // "- Heat Resistance (200°C)" carry the results. Anchor each item to its sub-row via spec tokens.
+    if (cands.length === 0) {
+      const headerIdx = scores.indexOf(best);
+      const specSig = sig(
+        [it.specRaw, it.specMin, it.specMax]
+          .filter((v) => v != null)
+          .map(String)
+          .join(" ")
+      );
+      if (specSig.length >= 1) {
+        for (let li = headerIdx + 1; li < Math.min(headerIdx + 8, lines.length); li++) {
+          const subLine = lines[li];
+          if (/^\d+\s*[|]/.test(subLine)) break; // next numbered item → stop scanning
+          const subLineSig = new Set(sig(subLine));
+          const specNeed = Math.max(1, Math.ceil(specSig.length * 0.5));
+          const specOverlap = specSig.filter((t) => subLineSig.has(t)).length;
+          if (specOverlap < specNeed) continue;
+          const subCells = splitCells(subLine);
+          const subLastIdx = subCells.length - 1;
+          const subLastNorm = (subCells[subLastIdx] ?? "").replace(/\s+/g, "");
+          const subHasJudgement = JUDGEMENT_RE.test(subLastNorm);
+          const subCands: number[] = [];
+          for (let ci = 0; ci < subCells.length; ci++) {
+            if (ci === subLastIdx && subHasJudgement) continue;
+            const n = singleNumberCell(subCells[ci]);
+            if (n == null) continue;
+            if (isClaimed(n)) continue;
+            if (!subCands.some((c) => Math.abs(c - n) < 1e-9)) subCands.push(n);
+          }
+          if (subCands.length === 1) {
+            cands.push(subCands[0]);
+            break;
+          }
+        }
+      }
+    }
+    if (cands.length !== 1) continue; // 0 = ไม่เจอ / ≥2 = กำกวม → honest SKIP
 
     it.result = String(cands[0]);
     recovered++;

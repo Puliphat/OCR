@@ -61,7 +61,9 @@ cd C:\local-repo\OCR\frontend && npm run dev          # http://localhost:3000
 ## Baseline ต่อไฟล์ (เทียบหา regression)
 ไฟล์ rotation fire เฉพาะ: **Lot240521 (.pdf+.png), _diag_small.png** (เอกสารเดียวกัน). ที่เหลือ fast-path เป๊ะเดิม.
 - Lot240521 .pdf/.png: 5P/0F/0S · _diag_small: 4P/0F/1S
-- Inolob 4P · TR_1099 3P · ZP10(×2) 1P/3S · RI-015(×2) 0/4S · PR1950W4063(×2) 6P · Barimite 4P/3S · SODA(×2) 6P · Suzorite 0/5S · Z99 10P/3S · D-2072(×2) 4P · TXAX 4P · 1F1710(×2) 0/0/0 · 4A(×2) 1P/1S · RB220 1P/1S · PR1950W4064 3P/3S
+- Inolob 4P · TR_1099 3P · ZP10(×2) 1P/3S · RI-015(×2) 0/4S · PR1950W4063(×2) 6P · Barimite 4P/3S · SODA(×2) 6P · Suzorite 0/5S · Z99 10P/3S · D-2072(×2) 4P · TXAX 4P · 1F1710(×2) **prod=32P/0F/10S** [harness=0/0/0 = ARTIFACT ดู ★ ด้านล่าง] · 4A(×2) 1P/1S · RB220 1P/1S · PR1950W4064 3P/3S
+
+> ★ HARNESS BUG (2026-06-08, verify แล้ว): `verify-4b.ts`/`sweep.ts`/`pilot`/`probe` ใช้ `extractText()` (coa-pipeline.ts:747) ที่คืน **first page เท่านั้น** (`return { text: first.text }`). PDF ที่หน้าแรกเป็น disclaimer/cover (เช่น 1F1710) → harness เห็น 0 row = วัดผิด. **Production (`runCoaPipeline`) ใช้ `extractTextPerPage` (loop ทุกหน้า) → 1F1710 จริง = 32P/0F/10S clean.** baseline บรรทัดบนสำหรับ multi-page PDF ที่หน้าแรกไม่มี table = เชื่อไม่ได้. ground-truth ต้อง probe ผ่าน runCoaPipeline (ดู `_validate/_probe2-1f1710.ts`). ก่อนเชื่อว่าไฟล์ไหน "พัง" → verify production path ก่อนเสมอ.
 
 ## Residual / next levers (ยังไม่ทำ, เรียงตาม payoff)
 0. ✓ **text-layer Min/Max direction = SOLVED (guard #9 header-direction)** — Barimite class กู้แล้ว.
