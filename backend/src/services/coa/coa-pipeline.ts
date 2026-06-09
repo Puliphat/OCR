@@ -28,6 +28,8 @@ import {
   downgradeUngroundedFails,
   downgradeUngroundedPasses,
   downgradeOcrOutlierFails,
+  FailGuardResult,
+  PassGuardResult,
 } from "./coa-grounding";
 
 // ★ grid→LLM (column-aware OCR text → LLM; keep-best) ★
@@ -330,7 +332,8 @@ function passNameCounts(rpt: CoaReport): Map<string, number> {
   const m = new Map<string, number>();
   for (const r of rpt.rows) {
     if (r.status !== "PASS") continue;
-    const k = r.name.trim().toLowerCase();
+    // ยุบ whitespace ทั้งหมด: flat/structural สะกดชื่อเว้นวรรคต่างกัน ("Ba SO4"="BaSO4","D 100"="D100")
+    const k = r.name.replace(/\s+/g, "").toLowerCase();
     m.set(k, (m.get(k) ?? 0) + 1);
   }
   return m;
@@ -481,14 +484,15 @@ async function runExtractionPass(
   gridOrient?: GridOrient,
   avgGrid?: string
 ): Promise<CoaReport> {
-  // ★ structural grid → DETERMINISTIC parse (no LLM) ★ — pdfplumber recovered geometry-verified
-  //   columns; a 4B model still mis-maps roles on merged-header/ragged grids (shifts result→spec).
-  //   parseStructuralGrid classifies cells by CONTENT, so the variable result-column index dissolves.
-  //   Still gated by keep-best below → can only help. Spatial (rapidocr) grids stay on the LLM path.
+  // ★ structural/scanned-vector grid → parse แบบ deterministic (ไม่ใช้ LLM) ★ คอลัมน์ยืนยันด้วย geometry
+  //   ใช้: เดิน parse path นี้ · ข้าม flat-text guard (เทียบ text ผิด→false downgrade) · promote boundary · gate ด้วย keep-best
+  const isDeterministicGrid =
+    variant === "grid" && (gridSource === "structural" || gridSource === "scanned-vector");
+
   let raw: RawCoa | null;
   let llmModelLabel: string;
   let llmRawLabel: string | null;
-  if (variant === "grid" && (gridSource === "structural" || gridSource === "scanned-vector")) {
+  if (isDeterministicGrid) {
     console.log(`  [grid-parser] parsing (deterministic ${gridSource ?? "structural"}, ${gridOrient ?? "normal"})…`);
     raw = parseStructuralGrid(llmInput, gridOrient ?? "normal");
     llmModelLabel = "deterministic-grid-parser";
@@ -518,7 +522,7 @@ async function runExtractionPass(
     };
   }
   // deterministic path already logged its count; only the LLM path needs the parsed-count line here
-  if (!(variant === "grid" && (gridSource === "structural" || gridSource === "scanned-vector"))) {
+  if (!isDeterministicGrid) {
     console.log(`  [ollama] parsed ${raw.items?.length ?? 0} items (${variant})`);
   }
 
@@ -614,7 +618,9 @@ async function runExtractionPass(
   // ★ Anti-fabricated-FAIL ★ — downgrade FAIL ที่ spec กับ result ไม่อยู่บรรทัด OCR เดียวกัน
   //   (column collapse: spec ถูก broadcast/map ผิดแถวบน scan ตาราง transposed) → SKIP+needsReview
   //   กัน verdict "ของเสีย" จาก spec ที่ไม่ใช่ของแถวนั้นจริง
-  const failGuard = downgradeUngroundedFails(evaluated.rows, text);
+  const failGuard: FailGuardResult = isDeterministicGrid
+    ? { downgraded: [] }
+    : downgradeUngroundedFails(evaluated.rows, text);
   if (failGuard.downgraded.length > 0) {
     console.warn(
       `  [fail-guard] downgrade ${failGuard.downgraded.length} FAIL→SKIP (column collapse): ${failGuard.downgraded
@@ -637,7 +643,9 @@ async function runExtractionPass(
   // ★ Anti-deceptive-PASS ★ — downgrade PASS ที่ spec/result ไม่อยู่บรรทัดชื่อ row เดียวกันใน OCR
   //   (column collapse ฝั่ง PASS: LLM ดึงเลขข้ามแถว → ค่าผิดแต่บังเอิญเข้า spec) → SKIP+needsReview
   //   กัน false-PASS (บาปหนักสุด): บอก "ผ่าน" จาก spec/result ที่ไม่ใช่ของแถวนั้นจริง
-  const passGuard = downgradeUngroundedPasses(evaluated.rows, text);
+  const passGuard: PassGuardResult = isDeterministicGrid
+    ? { downgraded: [] }
+    : downgradeUngroundedPasses(evaluated.rows, text);
   if (passGuard.downgraded.length > 0) {
     console.warn(
       `  [pass-guard] downgrade ${passGuard.downgraded.length} PASS→SKIP (column collapse): ${passGuard.downgraded
@@ -650,7 +658,9 @@ async function runExtractionPass(
   //   transposed/rotated เช่น RI-015 sieve: LLM เอา aperture เป็น result) → SKIP+needsReview.
   //   ★ downgrade ไม่ overwrite ★ — บนบรรทัดเดียวแยก "ป้าย" กับ "result จริงที่อยู่ซ้าย spec" ไม่ออก →
   //   เลือกเลขหลัง spec มาเป็น result = เสี่ยง deceptive PASS → honest SKIP ปลอดภัยกว่า (review เจอ)
-  const colShift = downgradeColumnShiftedResults(evaluated.rows, text);
+  const colShift: ReturnType<typeof downgradeColumnShiftedResults> = isDeterministicGrid
+    ? { downgraded: [] }
+    : downgradeColumnShiftedResults(evaluated.rows, text);
   if (colShift.downgraded.length > 0) {
     console.warn(
       `  [column-shift] downgrade ${colShift.downgraded.length} → SKIP (result = คอลัมน์ป้าย): ${colShift.downgraded
@@ -671,6 +681,28 @@ async function runExtractionPass(
         .map((s) => `${s.name}(${s.from}→${s.to})`)
         .join(", ")}`
     );
+  }
+
+  // ★ promote boundary-exact (เฉพาะ grid ที่ geometry ยืนยัน) ★ — evaluateCoa downgrade PASS ที่ result ตรงขอบ spec พอดี
+  //   (กัน LLM ปลอม) แต่ที่นี่ bound มาจากคอลัมน์ Lower/Upper จริง = PASS แท้ · promote SKIP→PASS คง needsReview · เฉพาะ min≠max
+  let boundaryPromoted = 0;
+  if (isDeterministicGrid) {
+    for (const r of evaluated.rows) {
+      if (r.status !== "SKIP" || r.min == null || r.max == null || r.min === r.max) continue;
+      const res = typeof r.result === "number" ? r.result : Number(r.result);
+      if (!Number.isFinite(res)) continue;
+      if (res >= r.min && res <= r.max && (res === r.min || res === r.max)) {
+        r.status = "PASS";
+        r.needsReview = true;
+        r.reason = "ค่าผลตรงขอบเกณฑ์พอดี (คอลัมน์ยืนยันด้วย geometry) — ผ่าน แต่ควรเหลือบดู";
+        boundaryPromoted++;
+      }
+    }
+    if (boundaryPromoted > 0) {
+      console.log(
+        `  [boundary-promote] promote ${boundaryPromoted} SKIP→PASS (geometry-verified boundary-exact)`
+      );
+    }
   }
 
   // result ที่กู้มาจาก OCR (result-recovery) → ★ Balanced amber policy ★
@@ -712,7 +744,8 @@ async function runExtractionPass(
     outlierGuard.downgraded.length > 0 ||
     passGuard.downgraded.length > 0 ||
     colShift.downgraded.length > 0 ||
-    sieveRec.recovered.length > 0
+    sieveRec.recovered.length > 0 ||
+    boundaryPromoted > 0
   ) {
     evaluated.summary = summarize(evaluated.rows);
   }

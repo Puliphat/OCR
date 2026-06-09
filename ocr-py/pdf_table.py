@@ -105,6 +105,30 @@ def _best(tabs, min_score):
     return best if (best is not None and best_score >= min_score) else None
 
 
+def _explode_collapsed_rows(tbl):
+    """grid ที่มีเส้นคอลัมน์แต่ไม่มีเส้นแบ่งแถว → ทุก item ยุบเป็น row เดียว cell stack ค่าด้วย '\n' (เคส Z99)
+    แตกกลับเป็น target rows ตาม line-count · cell 1 บรรทัด = broadcast เป็น section label · keep-best กัน regression"""
+    out = []
+    for row in tbl:
+        counts = [((c.count("\n") + 1) if (c and c.strip()) else 0) for c in row]
+        target = max(counts) if counts else 0
+        at_target = sum(1 for n in counts if n == target)
+        if not (target >= 3 and at_target >= 2 and all(n in (0, 1, target) for n in counts)):
+            out.append(row)
+            continue
+        cols = []
+        for c, n in zip(row, counts):
+            if n == target:
+                cols.append([s.strip() for s in (c or "").split("\n")])
+            elif n == 1:
+                cols.append([(c or "").strip()] * target)  # broadcast เป็น section/merged label
+            else:
+                cols.append([""] * target)
+        for i in range(target):
+            out.append([col[i] for col in cols])
+    return out
+
+
 def _merge_slivers(edges, min_col_width):
     """Remove edges that would create a column narrower than min_col_width.
     Repeated until stable (slivers can chain)."""
@@ -199,6 +223,8 @@ def extract_page(page):
     if best is None:
         return "", "none", "normal", None
 
+    # แตก grid ที่มีแต่เส้นคอลัมน์ ทำทุก item ยุบเป็น stacked row เดียว (Z99)
+    best = _explode_collapsed_rows(best)
     orient = _orient(best)
     tbl = _transpose(best) if orient == "transposed" else best
     return render_table(tbl), source, orient, None

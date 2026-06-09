@@ -110,6 +110,103 @@ function classifySpec(c: string): SpecCells | null {
   return null;
 }
 
+// ดึงเลขนำหน้าของ limit cell คอลัมน์เดียว (ตัด unit suffix "4.32g/cm3","93%" ทิ้ง)
+// ไม่มีเลขนำ → null → row ABSTAIN เป็น SKIP ตรงๆ
+function numOrNull(c: string): number | null {
+  const s = nrm(c);
+  if (!s) return null;
+  const m = s.match(/^-?\d+(?:[.,]\d+)?/);
+  if (!m) return null;
+  return toNum(m[0]);
+}
+
+interface HeaderRoles {
+  nameIdx: number;
+  methodIdx: number;
+  unitIdx: number;
+  lowerIdx: number;
+  upperIdx: number;
+  resultIdx: number;
+}
+
+// header ที่แยกคอลัมน์ Lower/Upper-limit + Result — เคสเดียวที่ content parser แยกไม่ได้ (spec เป็น bare 2 คอลัมน์)
+// ต้องมี lower+upper+result คนละคอลัมน์ครบ 3 ไม่งั้น null → ตกไป content path (Suzorite/PR1950W)
+function detectSeparateLimitHeader(headerCells: string[]): HeaderRoles | null {
+  const find = (re: RegExp) => headerCells.findIndex((c) => re.test(nrm(c)));
+  const lowerIdx = find(/\b(lower|min)\b/i);
+  const upperIdx = find(/\b(upper|max)\b/i);
+  const resultIdx = find(/\banaly[sz]is\b|\bresults?\b|\bmeasured\b|\bactual\b|\bfound\b|test\s*result/i);
+  if (lowerIdx < 0 || upperIdx < 0 || resultIdx < 0) return null;
+  if (new Set([lowerIdx, upperIdx, resultIdx]).size < 3) return null; // ต้องคนละคอลัมน์
+  const nameIdx = find(/\b(characteristic|item|parameter|property|component|description|test\s*item)\b/i);
+  const methodIdx = find(/\bmethod\b/i);
+  const unitIdx = find(/\bunit\b/i);
+  return {
+    nameIdx: nameIdx >= 0 ? nameIdx : 0,
+    methodIdx,
+    unitIdx,
+    lowerIdx,
+    upperIdx,
+    resultIdx,
+  };
+}
+
+// parse layout Lower/Upper-limit แยกคอลัมน์ — role เป็น index ตายตัวจาก header ความกำกวมหาย
+// limit cell ไม่ใช่เลข → bound null (ABSTAIN เป็น SKIP)
+function parseSeparateLimitGrid(
+  dataRows: string[][],
+  roles: HeaderRoles,
+  lotNo: string | null
+): RawCoa {
+  const items: RawCoaItem[] = [];
+  let section = "";
+  for (const row of dataRows) {
+    const nameCell = nrm(row[roles.nameIdx] ?? "");
+    if (nameCell && !isMesh(nameCell)) section = nameCell;
+    const name = nameCell && !isMesh(nameCell) ? nameCell : section;
+    if (!name) continue;
+
+    const specMin = numOrNull(row[roles.lowerIdx] ?? "");
+    const specMax = numOrNull(row[roles.upperIdx] ?? "");
+    const resultRaw = nrm(row[roles.resultIdx] ?? "");
+    const methodCell = roles.methodIdx >= 0 ? nrm(row[roles.methodIdx] ?? "") : "";
+    const unitCell = roles.unitIdx >= 0 ? nrm(row[roles.unitIdx] ?? "") : "";
+
+    // ABSTAIN: ทิ้ง spacer / header ที่หลุดมา (ไม่มีทั้ง spec และ result)
+    if (specMin == null && specMax == null && !resultRaw) continue;
+
+    items.push({
+      name,
+      unit: unitCell ? unitText(unitCell) ?? unitCell : null,
+      method: methodCell || null,
+      specRaw: null,
+      specMin,
+      specMax,
+      result: resultRaw || null,
+    });
+  }
+  return { product: null, lotNo, items };
+}
+
+// pdfplumber วาง header (merged/centered) เลื่อนขว่าจาก data ทำ role index เพี้ยน (เคส Barimite)
+// ตัด leading-empty ส่วนเกินของ header ให้ตรง data · header[0] มีค่าอยู่แล้ว = no-op (Z99 ไม่โดน)
+function alignHeaderToData(header: string[], dataRows: string[][]): string[] {
+  const lead = (r: string[]): number => {
+    let n = 0;
+    while (n < r.length && !nrm(r[n])) n++;
+    return n;
+  };
+  const hLead = lead(header);
+  if (hLead === 0 || dataRows.length === 0) return header;
+  const dLeads = dataRows.map(lead).sort((a, b) => a - b);
+  const dLead = dLeads[Math.floor(dLeads.length / 2)]; // median leading-empty ของ data rows
+  const shift = hLead - dLead;
+  if (shift <= 0) return header;
+  const shifted = header.slice(shift);
+  while (shifted.length < header.length) shifted.push("");
+  return shifted;
+}
+
 function splitGrid(gridText: string): string[][] {
   const rows = (gridText ?? "")
     .split(/\r?\n/)
@@ -159,16 +256,26 @@ export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawC
   if (rows.length === 0) return { product: null, lotNo: null, items: [] };
   const ncol = rows[0].length;
 
+  const lotFrom = (rowCells: string[]): string | null => {
+    for (const c of rowCells) {
+      const m = c.match(/lot\s*no\.?\s*([A-Za-z0-9\-]+)/i);
+      if (m) return m[1];
+    }
+    return null;
+  };
+
+  // ★ layout Lower/Upper-limit แยกคอลัมน์ (Z99, Barimite) ★ — เช็ค row 0 ตรงๆ ไม่ผ่าน isHeaderRow
+  //   ที่ keyword แคบ · ต้องมี lower+upper+result คนละคอลัมน์ data จึงไม่ false-trigger
+  if (rows.length > 1) {
+    const aligned = alignHeaderToData(rows[0], rows.slice(1));
+    const roles = detectSeparateLimitHeader(aligned);
+    if (roles) return parseSeparateLimitGrid(rows.slice(1), roles, lotFrom(rows[0]));
+  }
+
   let lotNo: string | null = null;
   let dataRows = rows;
   if (rows.length > 1 && isHeaderRow(rows[0])) {
-    for (const c of rows[0]) {
-      const m = c.match(/lot\s*no\.?\s*([A-Za-z0-9\-]+)/i);
-      if (m) {
-        lotNo = m[1];
-        break;
-      }
-    }
+    lotNo = lotFrom(rows[0]);
     dataRows = rows.slice(1);
   }
 
