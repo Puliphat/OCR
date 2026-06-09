@@ -113,7 +113,7 @@ export function dropUngroundedItems(
 ): GroundingResult {
   if (!items?.length || !ocrText) return { kept: items ?? [], dropped: [] };
 
-  // latin word set (whole-word name match)
+  // ชุดคำ latin จาก OCR (match ชื่อแบบทั้งคำ)
   const ocrWords = new Set(
     ocrText.toLowerCase().match(/[a-z]{3,}/g) ?? []
   );
@@ -143,7 +143,7 @@ export function dropUngroundedItems(
 //   (tokens ทั้งหมด—result+spec—อยู่บรรทัดเดียว). ratio 601/1.42 ≈ 423× ชี้ชัดว่าเป็น OCR error
 //
 // กติกา (two-sided spec เท่านั้น — one-sided วัดไม่ได้ว่า "ไกลเกินจริงแค่ไหน"):
-//   result > specMax × 100 → downgrade FAIL → SKIP + needsReview
+//   result เกิน specMax × 100 → ลด FAIL → SKIP + needsReview
 //   แตะเฉพาะ FAIL + ต้องมี min AND max (two-sided) + result เป็น finite number
 export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult {
   const downgraded: { name: string; reason: string }[] = [];
@@ -379,15 +379,14 @@ export function downgradeUngroundedPasses(
     if (validated) continue; // result(+bound) อยู่บรรทัด data จริง → ค่าเป็นของแถวนี้ → คง PASS
     if (!hasDataNumber) continue; // บรรทัดชื่อไม่มี data number (ชื่อ wrap/header) → พิสูจน์ collapse ไม่ได้ → คง PASS
 
-    // Sub-row check: header line is a section header (item sequence number = only "data number"),
-    // and actual results live on sub-rows below. Example: D-2072 "Shear Strength" header has
-    // no result; sub-rows "- Room Temperature" and "- Heat Resistance (200°C)" carry results.
-    // Validate by checking that result (+ bound if single-bound) co-locate on a nearby sub-row.
+    // เช็ค sub-row: บรรทัดชื่อเป็น section header (มีแค่เลขลำดับ = "data number") result จริงอยู่ sub-row
+    //   ข้างล่าง. เช่น D-2072 "Shear Strength" header ไม่มี result · sub-row "- Room Temperature" +
+    //   "- Heat Resistance (200°C)" ถือ result. ยืนยันโดยเช็คว่า result (+ bound ถ้ามีด้านเดียว) อยู่ sub-row ใกล้ๆ
     if (!validated) {
       outerSubrow: for (let i = 0; i < lines.length; i++) {
         if (scores[i] !== bestScore) continue;
         for (let li = i + 1; li < Math.min(i + 8, lines.length); li++) {
-          if (/^\d+\s*[|]/.test(lines[li])) break; // next numbered item → stop
+          if (/^\d+\s*[|]/.test(lines[li])) break; // เจอ item ลำดับถัดไป → หยุด
           const subLt = lineNums[li];
           const rHit = resultNums.some((v) => valuePresent(v, subLt));
           const sHit = boundVal == null || valuePresent(boundVal, subLt);

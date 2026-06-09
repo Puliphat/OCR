@@ -146,7 +146,7 @@ async function extractPageLines(doc: any, pageNum: number): Promise<string[]> {
 }
 
 // Per-page extraction — คืน array ของ {text, hasUsableText} ต่อหน้า + pageCount
-// hasUsableText per page: text.replace(/\s/g,"").length >= 300
+// hasUsableText ต่อหน้า: text.replace(/\s/g,"").length >= 300
 export async function extractPdfTextPerPage(
   filePath: string
 ): Promise<{ pages: { text: string; hasUsableText: boolean }[]; pageCount: number }> {

@@ -19,7 +19,7 @@ function dumpOllamaRaw(content: string) {
     fs.mkdirSync(path.dirname(DEBUG_PATH), { recursive: true });
     fs.writeFileSync(DEBUG_PATH, content, "utf8");
   } catch {
-    /* ignore — debug only */
+    /* ไม่สนใจ — debug เท่านั้น */
   }
 }
 

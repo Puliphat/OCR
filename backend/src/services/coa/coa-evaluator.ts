@@ -75,17 +75,16 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     };
   }
 
-  // ★ Bound-expression result (e.g. "<15", "≤0.01") ★ — result is one-sided, not a point value.
-  //   PASS only when EVERY value in the bound provably satisfies the spec (logically sound — cannot
-  //   be a deceptive PASS regardless of the true measured value). Otherwise SKIP (indeterminate).
-  //   Never FAIL from a bound result (a mangled/one-sided result must not produce a scary verdict).
+  // ★ result แบบ bound (เช่น "<15", "≤0.01") ★ — ค่าด้านเดียว ไม่ใช่จุดเดียว
+  //   PASS เฉพาะเมื่อทุกค่าในช่วง bound เข้า spec แน่ (พิสูจน์ได้ ไม่ deceptive) · ไม่งั้น SKIP (ตัดสินไม่ได้)
+  //   ★ ห้าม FAIL จาก bound result — result เพี้ยน/ด้านเดียว ไม่ควรให้ verdict ของเสีย
   if (result.bound) {
     const verdict = evalBoundResult(result.bound, spec); // "PASS" | "SKIP"
     return {
       ...base,
       min: spec.min ?? (spec.op === "ge" || spec.op === "gt" ? spec.value ?? null : null),
       max: spec.max ?? (spec.op === "le" || spec.op === "lt" ? spec.value ?? null : null),
-      result: null, // no single numeric value — resultRaw carries the "<15" text
+      result: null, // ไม่มีค่าเลขเดี่ยว — resultRaw เก็บข้อความ "<15" ไว้
       status: verdict,
       reason:
         verdict === "PASS"
@@ -188,28 +187,28 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
   };
 }
 
-// Bound result vs spec — return PASS only when the ENTIRE bound is guaranteed inside the spec.
-// b = result bound (lt/le/gt/ge X). Logic per direction; spec between/eq → indeterminate (SKIP).
+// bound result เทียบ spec — คืน PASS เฉพาะเมื่อทั้งช่วง bound อยู่ใน spec แน่นอน
+// b = bound ของ result (lt/le/gt/ge X) · แยก logic ตามทิศ · spec between/eq → ตัดสินไม่ได้ (SKIP)
 function evalBoundResult(
   b: { op: "lt" | "le" | "gt" | "ge"; value: number },
   spec: ParsedSpec
 ): "PASS" | "SKIP" {
   const X = b.value;
-  const upper = b.op === "lt" || b.op === "le"; // result says value is BELOW X
+  const upper = b.op === "lt" || b.op === "le"; // result บอกว่า value ต่ำกว่า X
   if (upper) {
-    // value < X (lt) or value <= X (le). Spec must be an upper bound too.
+    // value < X (lt) หรือ <= X (le) — spec ต้องเป็น upper bound ด้วย
     if (spec.op === "le" && spec.value != null) {
-      // need all v<=X (or <X) to be <= Y  ⟺  X <= Y
+      // ต้องให้ทุก v<=X (หรือ <X) ≤ Y  ⟺  X <= Y
       return X <= spec.value ? "PASS" : "SKIP";
     }
     if (spec.op === "lt" && spec.value != null) {
-      // lt-result vs lt-spec: X<=Y ok.  le-result vs lt-spec: need X<Y (X==Y leaves v==X==Y not < Y)
+      // lt-result vs lt-spec: X<=Y ผ่าน · le-result vs lt-spec: ต้อง X<Y (X==Y → v==X==Y ไม่ < Y)
       const ok = b.op === "lt" ? X <= spec.value : X < spec.value;
       return ok ? "PASS" : "SKIP";
     }
-    return "SKIP"; // ge/gt/between/eq spec → indeterminate
+    return "SKIP"; // spec แบบ ge/gt/between/eq → ตัดสินไม่ได้
   } else {
-    // value > X (gt) or value >= X (ge). Spec must be a lower bound too.
+    // value > X (gt) หรือ >= X (ge) — spec ต้องเป็น lower bound ด้วย
     if (spec.op === "ge" && spec.value != null) {
       return X >= spec.value ? "PASS" : "SKIP";
     }
@@ -217,7 +216,7 @@ function evalBoundResult(
       const ok = b.op === "gt" ? X >= spec.value : X > spec.value;
       return ok ? "PASS" : "SKIP";
     }
-    return "SKIP"; // le/lt/between/eq spec → indeterminate
+    return "SKIP"; // spec แบบ le/lt/between/eq → ตัดสินไม่ได้
   }
 }
 
@@ -289,7 +288,7 @@ export interface CoaReport {
   filename: string;
   product: string | null;
   lotNo: string | null;
-  page?: number; // 1-indexed PDF page; single-page/image = 1
+  page?: number; // เลขหน้า PDF เริ่มที่ 1 · single-page/image = 1
   rows: EvaluatedItem[];
   summary: { pass: number; fail: number; skip: number; total: number };
   debug?: CoaDebug; // optional — แนบเฉพาะตอนรันจริง (route/test-coa), unit test ไม่ต้องมี

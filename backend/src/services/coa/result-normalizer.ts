@@ -65,8 +65,8 @@ export function normalizeResult(raw: unknown): NormalizedResult | null {
   const s = String(raw).trim();
   if (!s) return null;
 
-  // Bound-expression result: "<15", "≤0.01", "≦ 0.2", ">50", "≥ 95"
-  // The WHOLE string must be comparator + number (no trailing units — strict).
+  // result แบบ bound: "<15", "≤0.01", "≦ 0.2", ">50", "≥ 95"
+  // ทั้ง string ต้องเป็น comparator + เลข เท่านั้น (ไม่มี unit ต่อท้าย — เข้มงวด)
   {
     const m = s.match(/^\s*(<=|≤|≦|<|>=|≥|≧|>)\s*(-?\d+(?:[.,]\d+)?)\s*$/);
     if (m) {
@@ -80,8 +80,8 @@ export function normalizeResult(raw: unknown): NormalizedResult | null {
     }
   }
 
-  // Reject text-like values (chemical formulas, "White", "GOOD", "Pass", "Light Yellow"...).
-  // A real numeric result starts with a digit, sign, or decimal point.
+  // ปัดค่าที่เป็นข้อความ (สูตรเคมี, "White", "GOOD", "Pass", "Light Yellow"...)
+  // result ตัวเลขจริงต้องขึ้นต้นด้วย digit, เครื่องหมาย, หรือจุดทศนิยม
   if (!/^[\-+.\d]/.test(s)) return null;
 
   const nums = extractNumbers(s);

@@ -71,7 +71,7 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
   const original = s;
   const cleaned = stripUnits(s);
 
-  // ± tolerance:  "26.0 ± 2.0",  "7 ± 3",  "120 +/- 30"
+  // ค่าเผื่อ ± : "26.0 ± 2.0", "7 ± 3", "120 +/- 30"
   {
     const m = cleaned.match(
       new RegExp(`^(${NUM})\\s*(?:±|\\+/-|\\+-)\\s*(${NUM})$`)
@@ -88,7 +88,7 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
     }
   }
 
-  // Range: "275-425", "0.6~0.8", "40.0 ~ 70.0", "105〜115"
+  // ช่วง: "275-425", "0.6~0.8", "40.0 ~ 70.0", "105〜115"
   {
     const m = cleaned.match(
       new RegExp(`^(${NUM})\\s*(?:[~\\-–—]\\s*)+(${NUM})$`)
@@ -120,7 +120,7 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
     }
   }
 
-  // ≤ / ≦ / <= / Max.
+  // ขอบบน: ≤ / ≦ / <= / Max.
   {
     const leSym = cleaned.match(new RegExp(`^(?:≤|≦|<=)\\s*(${NUM})$`));
     const leSuffix = cleaned.match(new RegExp(`^(${NUM})\\s*Max\\.?$`, "i"));
@@ -128,7 +128,7 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
     if (m) return { op: "le", value: toNum(m[1]), raw: original };
   }
 
-  // ≥ / ≧ / >= / Min.
+  // ขอบล่าง: ≥ / ≧ / >= / Min.
   {
     const geSym = cleaned.match(new RegExp(`^(?:≥|≧|>=)\\s*(${NUM})$`));
     const geSuffix = cleaned.match(new RegExp(`^(${NUM})\\s*Min\\.?$`, "i"));
@@ -136,19 +136,19 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
     if (m) return { op: "ge", value: toNum(m[1]), raw: original };
   }
 
-  // strict <
+  // น้อยกว่าแท้ <
   {
     const m = cleaned.match(new RegExp(`^<\\s*(${NUM})$`));
     if (m) return { op: "lt", value: toNum(m[1]), raw: original };
   }
 
-  // strict >
+  // มากกว่าแท้ >
   {
     const m = cleaned.match(new RegExp(`^>\\s*(${NUM})$`));
     if (m) return { op: "gt", value: toNum(m[1]), raw: original };
   }
 
-  // bare number -> equal
+  // เลขเดี่ยว → equal (eq)
   {
     const m = cleaned.match(new RegExp(`^(${NUM})$`));
     if (m) return { op: "eq", value: toNum(m[1]), raw: original };
