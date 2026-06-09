@@ -23,14 +23,15 @@ export class RapidOcrService {
   private readonly url = process.env.OCR_SIDECAR_URL || "http://127.0.0.1:8765";
 
   // ยิงรูปไป daemon → tokens พร้อม box; null ถ้า daemon ล่ม (caller fall back)
-  async ocrTokens(imagePath: string): Promise<OcrToken[] | null> {
+  // hq=true → daemon ใช้ HQ engine (v5-server, lazy-load) สำหรับ scanned page ที่อ่านเพี้ยน
+  async ocrTokens(imagePath: string, hq = false): Promise<OcrToken[] | null> {
     // ★ ส่ง absolute path เสมอ ★ — daemon resolve relative path ตาม cwd ของตัวเอง (มัก != backend/)
     //   relative + cwd ผิด → RapidOCR หาไฟล์ไม่เจอ → throw → HTTP 500 (เคยทำ corpus พังเงียบ, วินิจฉัยยาก)
     const abs = path.resolve(imagePath);
     try {
       const res = await axios.post(
         `${this.url}/ocr`,
-        { path: abs },
+        { path: abs, hq },
         { timeout: 300_000 }
       );
       if (res.data?.error) {
@@ -114,7 +115,8 @@ export class RapidOcrService {
   //   ★ Fast-path ★: ไฟล์ไม่หมุน (wide-dominant) คืน tokens เดิมทันที — output เท่าเดิมเป๊ะ, ไม่ OCR ซ้ำ
   private async correctRotation(
     imagePath: string,
-    tokens0: OcrToken[]
+    tokens0: OcrToken[],
+    hq = false
   ): Promise<{ tokens: OcrToken[]; angle: number }> {
     const s0 = this.orientationStats(tokens0);
     // gate แบบ conservative: ต้อง tall มากและเยอะกว่า wide ชัดเจน ถึงจะถือว่าหมุน
@@ -135,7 +137,7 @@ export class RapidOcrService {
         const buf = await proc.preprocess(imagePath, angle);
         tmpFile = path.join(os.tmpdir(), `rapidocr-rot-${base}-${angle}.png`);
         fs.writeFileSync(tmpFile, buf);
-        const toks = await this.ocrTokens(tmpFile);
+        const toks = await this.ocrTokens(tmpFile, hq);
         if (toks && toks.length) {
           const st = this.orientationStats(toks);
           candidates.push({ angle, toks, wide: st.wide, score: meanScore(toks) });
@@ -165,10 +167,11 @@ export class RapidOcrService {
   }
 
   // post-rotation tokens (public — ใช้ทั้ง extractText และ dev harness เทียบ reconstruct)
-  async getProcessedTokens(imagePath: string): Promise<{ tokens: OcrToken[]; angle: number } | null> {
-    const toks = await this.ocrTokens(imagePath);
+  // hq=true → HQ engine (v5-server) ทั้ง OCR หลัก + รอบ rotation candidate
+  async getProcessedTokens(imagePath: string, hq = false): Promise<{ tokens: OcrToken[]; angle: number } | null> {
+    const toks = await this.ocrTokens(imagePath, hq);
     if (toks == null) return null;
-    return this.correctRotation(imagePath, toks);
+    return this.correctRotation(imagePath, toks, hq);
   }
 
   // convenience: รูป → text block; null ถ้า daemon ล่ม
@@ -181,9 +184,10 @@ export class RapidOcrService {
   // ★ grid→LLM (A/B-gated) ★ — คืนทั้ง flat (เดิม, ป้อน guard) + grid (column-aware, ป้อน LLM)
   //   จาก OCR pass เดียว (getProcessedTokens ครั้งเดียว → ไม่ OCR ซ้ำ). null ถ้า daemon ล่ม
   async extractTextBoth(
-    imagePath: string
+    imagePath: string,
+    hq = false
   ): Promise<{ flat: string; grid: string; tokens: OcrToken[]; correctionAngle: number } | null> {
-    const result = await this.getProcessedTokens(imagePath);
+    const result = await this.getProcessedTokens(imagePath, hq);
     if (result == null) return null;
     const { tokens, angle } = result;
     return {

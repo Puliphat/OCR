@@ -8,6 +8,11 @@
 #   COA_OCR_MODEL_TYPE = mobile (default, light) | server (heavier, ~same accuracy)
 #   COA_OCR_VERSION    = PP-OCRv4 (default) | PP-OCRv5
 # Server/v5 ONNX auto-download once from ModelScope into the package models/ dir.
+#
+# HQ fallback engine (POST {"hq": true}) — เครื่องอ่านความละเอียดสูงกว่า (default server/PP-OCRv5)
+#   ★ lazy-load ★: โหลดครั้งแรกที่มี request hq=true เท่านั้น (ไฟล์สะอาดไม่เคยแตะ → ไม่กิน RAM)
+#   ใช้ _engine_lock เดียวกับ default → inference ไม่รันพร้อมกัน (กัน CPU oversubscribe)
+#   override: COA_OCR_HQ_MODEL_TYPE (server default) · COA_OCR_HQ_VERSION (PP-OCRv5 default)
 import json
 import os
 import sys
@@ -30,14 +35,36 @@ engine = RapidOCR(params={
 # guaranteed thread-safe → serialize inference with a lock.
 _engine_lock = threading.Lock()
 
+# HQ engine — lazy-loaded สำหรับ scanned page ที่ default อ่าน spec/เลขเพี้ยน (เคส 4A LoI "%98"→"≤3.5%")
+_hq_engine = None
+_hq_lock = threading.Lock()  # กัน race ตอน lazy-init (สอง request hq พร้อมกันครั้งแรก)
 
-def run_ocr(path):
+
+def get_hq_engine():
+    global _hq_engine
+    if _hq_engine is None:
+        with _hq_lock:
+            if _hq_engine is None:  # double-check หลังได้ lock
+                hmt = _MT.get(os.environ.get("COA_OCR_HQ_MODEL_TYPE", "server").lower(), ModelType.SERVER)
+                hov = _OV.get(os.environ.get("COA_OCR_HQ_VERSION", "PP-OCRv5"), OCRVersion.PPOCRV5)
+                print(f"[hq] lazy-loading HQ engine ({hmt.value}/{hov.value})…", flush=True)
+                _hq_engine = RapidOCR(params={
+                    "Det.model_type": hmt, "Det.ocr_version": hov,
+                    "Rec.model_type": hmt, "Rec.ocr_version": hov,
+                })
+                print(f"[hq] HQ engine ready ({hmt.value}/{hov.value})", flush=True)
+    return _hq_engine
+
+
+def run_ocr(path, hq=False):
     # resolve absolute + existence check first — clear error (path + cwd) on miss
     path = os.path.abspath(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"image not found: {path} (daemon cwd={os.getcwd()})")
+    eng = get_hq_engine() if hq else engine
+    # ★ ใช้ _engine_lock เดียวเสมอ (ทั้ง default + hq) → inference ไม่ทับซ้อน ★
     with _engine_lock:
-        out = engine(path)
+        out = eng(path)
     toks = []
     if out is not None and out.boxes is not None and out.txts is not None:
         for box, text, score in zip(out.boxes, out.txts, out.scores):
@@ -62,7 +89,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(n)
         try:
             req = json.loads(body)
-            out = run_ocr(req["path"])
+            out = run_ocr(req["path"], hq=bool(req.get("hq", False)))
             code = 200
         except Exception as e:  # noqa: BLE001 — return error to caller
             out = {"error": str(e)}

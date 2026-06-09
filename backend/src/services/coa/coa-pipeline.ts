@@ -779,11 +779,11 @@ async function runExtractionPass(
   return evaluated;
 }
 
-// processPage — keep-best orchestrator ต่อ 1 หน้า
+// runFlatGridBest — keep-best ของ OCR text ชุดเดียว: flat floor + grid challenger
 //   flat ก่อนเสมอ (= floor, พฤติกรรมเดิม) · ถ้า flat โชว์ collapse-SKIP + มี gridText → ลอง grid challenger
 //   เก็บ grid เฉพาะเมื่อชนะ flat ขาด (เพิ่ม PASS, ไม่ลด PASS เดิม, 0 FAIL) → ไม่งั้นคง flat
 //   ★ anti-regression by construction: flat เป็น floor เสมอ — grid ทำให้ดีขึ้นได้ ทำให้แย่ลงไม่ได้ ★
-async function processPage(
+async function runFlatGridBest(
   filename: string,
   filePath: string,
   text: string,
@@ -878,6 +878,75 @@ async function processPage(
   return flatReport;
 }
 
+// ★ HQ OCR fallback toggle ★ — scanned page ที่ best ยังมี SKIP → re-OCR ด้วย HQ engine (v5-server, daemon
+//   lazy-load) เป็น challenger ชั้นนอกสุด. default เปิด. COA_OCR_HQ_FALLBACK=false ปิด (กลับไป mobile ล้วน)
+const OCR_HQ_FALLBACK_ENABLED = process.env.COA_OCR_HQ_FALLBACK !== "false";
+
+// processPage — keep-best orchestrator ต่อ 1 หน้า (2 ชั้น)
+//   ชั้นใน: runFlatGridBest บน OCR default (mobile) — flat floor + grid challenger
+//   ชั้นนอก: ★ HQ OCR challenger ★ — ถ้า best (scanned) ยังมี SKIP → re-OCR ด้วย v5-server แล้ว
+//     keep เฉพาะเมื่อชนะ best ขาด (gridBeatsFlat: เพิ่ม PASS, ไม่ลด PASS เดิม, 0 FAIL)
+//   ★ anti-regression by construction: best เป็น floor — HQ ทำให้ดีขึ้นได้ ทำให้แย่ลงไม่ได้ ★
+//   (เคส 4A: mobile อ่าน LoI spec "%98"→SKIP · v5-server อ่าน "≤3.5%"→PASS → HQ 3P ชนะ mobile 2P)
+async function processPage(
+  filename: string,
+  filePath: string,
+  text: string,
+  engine: OcrEngine,
+  page: number,
+  gridText?: string,
+  gridSource?: GridSource,
+  gridOrient?: GridOrient,
+  imagePath?: string
+): Promise<CoaReport> {
+  const best = await runFlatGridBest(
+    filename, filePath, text, engine, page, gridText, gridSource, gridOrient
+  );
+
+  // HQ challenger — เฉพาะ scanned (rapidocr) ที่ยังมี SKIP + มี imagePath ให้ re-OCR
+  //   ไฟล์สะอาด (skip=0 เช่น Lot240521) ไม่ trigger → v5 ไม่ถูกโหลด/รัน = เท่าเดิม
+  if (
+    OCR_HQ_FALLBACK_ENABLED &&
+    engine === "rapidocr" &&
+    imagePath &&
+    best.summary.skip > 0
+  ) {
+    console.log(
+      `  [hq-ocr] best ยังมี ${best.summary.skip} SKIP (scanned) → re-OCR HQ challenger (daemon HQ engine, default v5-server)`
+    );
+    try {
+      const hqOcr = await new RapidOcrService().extractTextBoth(imagePath, true);
+      if (hqOcr && hqOcr.flat.replace(/\s/g, "").length >= 50) {
+        dumpDebug("_last-ocr-hq.txt", hqOcr.flat);
+        const hqGrid = GRID_LLM_ENABLED ? hqOcr.grid : undefined;
+        // HQ grid = spatial (token-bbox inferred) — scanned-vector ต้องอาศัย pdfplumber geom (สร้างใน
+        //   extractTextPerPage) ที่ raster scan ไม่มี → spatial เท่านั้น
+        const hqBest = await runFlatGridBest(
+          filename, filePath, hqOcr.flat, "rapidocr", page,
+          hqGrid, hqGrid ? "spatial" : undefined, undefined
+        );
+        // gridBeatsFlat = "challenger ชนะ incumbent ขาด" (generic: 0 FAIL, PASS เดิมครบ, PASS เพิ่ม)
+        if (gridBeatsFlat(hqBest, best)) {
+          if (!hqBest.product && best.product) hqBest.product = best.product;
+          if (!hqBest.lotNo && best.lotNo) hqBest.lotNo = best.lotNo;
+          console.log(
+            `  [hq-ocr] ✓ HQ ชนะ ${passCount(best)}P→${passCount(hqBest)}P (0 FAIL, PASS เดิมครบ) — ใช้ HQ`
+          );
+          return hqBest;
+        }
+        console.log(
+          `  [hq-ocr] ✗ HQ ${passCount(hqBest)}P ไม่ชนะ best ${passCount(best)}P ขาด — คง best`
+        );
+      } else {
+        console.warn(`  [hq-ocr] HQ OCR thin/failed — คง best`);
+      }
+    } catch (e) {
+      console.warn(`  [hq-ocr] HQ challenger error — คง best:`, (e as Error).message);
+    }
+  }
+  return best;
+}
+
 // Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
 // คืน CoaReport[] หนึ่งตัวต่อหน้า PDF (single-page/image = [1 report])
 export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
@@ -888,7 +957,7 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
     dumpDebug("_last-ocr.txt", pg.text); // debug, overwrite per page
     if (!pg.text.trim()) continue;        // skip blank pages (pinned)
     reports.push(
-      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient)
+      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath)
     );
   }
   if (reports.length === 0) {
