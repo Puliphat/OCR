@@ -470,3 +470,15 @@ baseline (R3) 53P/0F/37S → **54P/0F/36S** (Lot240521 350μ SKIP→**clean PASS
 **★ ทำไม spec-misread นี้สร้าง deceptive PASS ไม่ได้ (พิสูจน์):** batch Min/Max = ค่า min/max ของ lot เอง → **avg ∈ [batchMin, batchMax] เสมอ** (นิยามค่าเฉลี่ย). batch มัก **แคบกว่า** real spec (217~248.5 ⊂ 160~360) → ผ่าน batch ก็ผ่าน real spec แน่ → batch-as-spec ให้ได้แค่ false-FAIL (เป็นไปไม่ได้เพราะ avg อยู่ใน batch) ไม่ใช่ false-PASS. ∴ ปลอดภัยกว่าที่กลัวไว้.
 
 **residual (honest abstain, safe):** บางหน้า OCR ให้ block เดียว → module abstain → spec ยังโชว์ batch range (เช่น report 3: Freeness `217~248.5`, Fiber `0.99~1.18`). verdict ยังถูก (avg ∈ batch) + amber flag → คนตรวจเจอ. ไม่ override จากหลักฐาน block เดียว = ดีไซน์ (honest > guess).
+
+## FIX ROUND 9 (2026-06-10, junk metadata-row filter + bare-number spec-col routing — เก็บ SKIP ค้าง 2 กลุ่ม)
+
+**baseline (R8+HQ) 126P/0F/25S → คาด 128P/0F/14S** (+2P verified, −11 junk SKIP) · 0 FAIL · 0 regression. 2 fix deterministic:
+
+**(a) `metadata-row-filter.ts` (+ hook ใน `coa-pipeline.ts` หลัง grounding ก่อน spec-recovery):** ตัด row ที่ LLM ดึงมาเป็น item ทั้งที่เป็น metadata ของใบ — dual gate ต้องครบคู่: (1) ชื่อ match pattern `^lot\s*[mn]umber` / `^pr[ao]duction\s*date` / `^accept$` / `^item$` (รองรับ OCR garble จริง: Lot mumber, Lotmumber, Praduction) + (2) **ไม่มี spec ที่ parse ได้** (เช็คผ่าน normalizeSpecFromCandidate — row ชื่อ match แต่มี spec จริง → ห้าม drop). ผลจริง: 1F1710 p4 ตัด 9 junk (Lot number ×4 + Production Date ×4 + ACCEPT), PR1950W_4064 ตัด header `Item` ×2. unit test 27 cases.
+
+**(b) `parse-structural-grid.ts` bare-number spec-col routing:** เคส 4064 `Residue on sieve(1mm)` spec พิมพ์ `0` เลขเปล่า → classifySpec ข้าม → SKIP "อ่านเกณฑ์ไม่ได้" ทั้งที่ 4063 (scanned เส้นทาง LLM) อ่านแถวเดียวกันได้ PASS. fix: resolveSpecCol (คอลัมน์ที่ classifySpec hit มากสุด) + specColDirection — ทิศต้อง **unanimous** (upper ล้วน เช่น ≤1.2/≤5/≤0.1 → bare 0 → specMax=0 · มี hit ต่างฝ่ายแม้ตัวเดียว → mixed → abstain คง SKIP). range ไม่นับทิศ. ออกทาง grid challenger → ผ่าน keep-best gate + amber ⚠ เสมอ (ไม่ clean-green). unit test +fixture 4064.
+
+**verify:** tsc 0 · filter 27/27 · grid 26/26 · evaluator fixtures เดิม · live: 1F1710 32P/0F/10S→**32P/0F/1S** (เหลือ Fiber Length `601` digit-scramble — HQ challenger ลองแล้ว 12P ไม่ชนะ 14P → คง best, gate ทำงานถูก) · 4064 6P/3S×2→**7P/0F/1S×2** (Residue 1mm → PASS ⚠, เหลือ Appearance legit) · sentinel 4063 **7P/1S×2 เป๊ะเดิม**.
+
+**เหลือ (รอ user บอกค่ากระดาษ):** 1F1710 Fiber Length ตัวจริง (ระบบอ่าน 601) · RI-015 Particle Size 0/1/0 ตรงขอบ + `(udd)qd` 50/32 ppm (ชื่อ garble) · grade 7 ไฟล์ที่ยังไม่มี ground truth (Z99, D-2072, TXAX-A, 1F1710, 4A, RB220, PR1950W_4064).
