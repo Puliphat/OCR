@@ -563,3 +563,14 @@ final gate `_run-0610-final.log`: **101P/0F/11S · 0 deceptive** · **RI-015 10P
 - + dedup null guard (`E.result != null` — กัน Number(null)===0 suppress แถว 0/0 จริง)
 
 **generalize:** จับ pattern (sieve table + bare-eq drop) ไม่ hardcode — เอกสารอื่น sieve ที่ LLM ทิ้งแถว bare-eq กู้ได้เหมือนกัน.
+
+---
+
+## FIX ROUND 12 (2026-06-10, perf: UI โหลดช้า)
+
+user: RI-015 โหลดนาน/ค้างที่ UI. สาเหตุ 3 ชั้น:
+1. **Ollama crash ค้าง** (connection forcibly closed ช่วงท้าย gate + UI พร้อมกัน) — restart หาย. คือตัว "ค้าง" จริง
+2. **`keep_alive: 0` ตกค้าง** ใน `ollama-coa.service.ts` — ของเดิมตั้งให้ typhoon-ocr-3b (7.5GB) แต่ติดมากับ call qwen3:4b → unload+reload model ทุก LLM call (scanned = 2-4 call/ไฟล์) → แก้เป็น `"10m"`
+3. **ไม่มี cache** — กดไฟล์เดิมซ้ำ = rerun pipeline เต็ม → เพิ่ม in-memory sha256 cache ใน `coa.routes.ts` (ตั้งใจไม่ persist: restart backend = cache ใส → เทสหลังแก้ code ไม่โดนผลเก่าหลอก)
+
+verify: tsc 0 · RI-015 เดี่ยว **45.5s ผลเป๊ะเดิม 10P/0F/4S** (2.000 recover ✓, HQ 11P ไม่ชนะขาด→คง best ✓). keep_alive ไม่แตะ accuracy (แค่ residency). ยังเหลือ (defer): gate HQ challenger ไม่ให้ยิงเมื่อชนะไม่ได้ — ต้องแยก SKIP ชนิด OCR-fixable vs structural, ค่อยทำถ้ายังช้า.

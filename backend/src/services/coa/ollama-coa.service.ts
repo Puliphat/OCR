@@ -123,7 +123,9 @@ ${text}
       prompt,
       stream: false,
       format: "json",
-      keep_alive: 0,
+      // keep_alive 10m: คง qwen3:4b (~2.5GB) ในเครื่องระหว่าง call — ไฟล์ scanned ยิง 2-4 call ติดกัน
+      //   (เดิม 0 = ตกค้างจาก typhoon-ocr-3b 7.5GB → unload+reload ทุก call เปลืองเวลาเปล่า)
+      keep_alive: "10m",
       ...(isQwen3 ? { think: false } : {}),
       // num_ctx 8192: ตาราง COA ใหญ่ (หลายหน้า/หลายแถว) เกิน 4096 tokens → โมเดล truncate ท้าย = หล่นแถวท้าย
       //   8192 กัน silent truncation. temp 0 = deterministic. ...extra = ใส่ num_gpu:0 ตอน fallback CPU

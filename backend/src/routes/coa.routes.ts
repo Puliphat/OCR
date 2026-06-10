@@ -6,10 +6,16 @@ import multer from "multer";
 import * as path from "path";
 import * as fs from "fs";
 import * as child_process from "child_process";
+import * as crypto from "crypto";
 import axios from "axios";
 import { runCoaPipeline } from "../services/coa/coa-pipeline";
 
 const router = Router();
+
+// In-memory result cache keyed by file content sha256 — same bytes = same reports.
+// Deliberately NOT persisted: backend restart (= code change in dev) clears it,
+// so re-testing after a pipeline fix never serves stale results.
+const reportCache = new Map<string, unknown>();
 
 const UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
 const LOG_DIR = path.join(__dirname, "..", "..", "coa-logs");
@@ -100,6 +106,16 @@ router.post(
     try {
       fs.mkdirSync(LOG_DIR, { recursive: true });
 
+      const hash = crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(req.file.path))
+        .digest("hex");
+      const cached = reportCache.get(hash);
+      if (cached) {
+        console.log(`[coa-route] cache hit ${hash.slice(0, 12)} — skip pipeline`);
+        return res.json(cached);
+      }
+
       const reports = await runCoaPipeline(req.file.path);
 
       const safeFilename = path.basename(req.file.path);
@@ -136,7 +152,9 @@ router.post(
 
       // HTTP response: ตัด ocrText/llmRaw (ใหญ่) แต่ surface ocrEngine จาก debug — FE ใช้แจ้ง engine
       const reportsForClient = reports.map(({ debug, ...r }) => ({ ...r, ocrEngine: debug?.ocrEngine }));
-      return res.json({ reports: reportsForClient, logFile: logBasename });
+      const payload = { reports: reportsForClient, logFile: logBasename };
+      reportCache.set(hash, payload);
+      return res.json(payload);
     } catch (e) {
       console.error("[coa-route] pipeline error:", (e as Error).message);
       return res.status(500).json({ error: (e as Error).message });
