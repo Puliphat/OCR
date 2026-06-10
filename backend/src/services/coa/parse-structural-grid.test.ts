@@ -98,5 +98,46 @@ const nf = parseStructuralGrid(NUMFIRST, "normal");
 check('"5 Max" → specMax=5', nf.items[0].specMax === 5, `got specMax=${nf.items[0].specMax}`);
 check("3.2 ≤ 5 → PASS", evaluateItem(nf.items[0]).status === "PASS");
 
+// ── 5) PR1950W-4064: bare spec=0 ใน upper-bound column → specMax=0 → result=0 → PASS ──
+//   fixture จาก _last-ocr-grid.txt ไฟล์จริง (text-layer) — แถว sieve(1mm) spec="0" result="0"
+//   คอลัมน์ spec มี ≦1.2/≦5.0/≦0.10 (upper-bound 3 แถว) → specDir=upper → bare 0 → specMax:0
+console.log("[5] PR1950W-4064 bare-0 spec in upper-bound column → PASS");
+const PR4064 = [
+  "Item |  | Unit | Treatment Condition | Specification | Test result",
+  "Appearance |  | - | A | Powder without foreign body | GOOD",
+  "Softening point |  | ℃ | A | 105〜115 | 113",
+  "Flow |  | mm | 125ﾟC | 10〜35 | 15",
+  "Gelation time |  | sec | A | 30〜55 | 35",
+  "Moisture |  | ％ | A | ≦1.2 | 0.5",
+  "Residue on sieve(106μm) |  | ％ | A | ≦5.0 | 1.3",
+  "Residue on sieve(500μm) |  | ％ | A | ≦0.10 | 0.01",
+  "Residue on sieve(1mm) |  | ％ | A | 0 | 0",
+].join("\n");
+const p4 = parseStructuralGrid(PR4064, "normal");
+const sieve1mm = p4.items.find((it) => it.name === "Residue on sieve(1mm)");
+check("sieve(1mm) emitted", !!sieve1mm, `items=${p4.items.map((i) => i.name).join(", ")}`);
+check(
+  "sieve(1mm) specMax=0 (bare-0 gated to upper-bound col)",
+  sieve1mm?.specMax === 0 && sieve1mm?.specMin == null && sieve1mm?.specRaw == null,
+  `specMax=${sieve1mm?.specMax} specMin=${sieve1mm?.specMin} specRaw=${sieve1mm?.specRaw}`
+);
+check("sieve(1mm) result='0'", sieve1mm?.result === "0", `got ${sieve1mm?.result}`);
+const sieve1mmEval = sieve1mm ? evaluateItem(sieve1mm) : null;
+check(
+  "sieve(1mm) 0 ≤ 0 → PASS",
+  sieve1mmEval?.status === "PASS",
+  `status=${sieve1mmEval?.status} reason=${sieve1mmEval?.reason}`
+);
+// sentinel: แถวอื่นต้องไม่ถูกกระทบ (Softening point ยัง PASS ด้วย between 105~115)
+const spEval = evaluateItem(p4.items.find((it) => it.name === "Softening point")!);
+check("Softening point unaffected → PASS 105~115 result=113", spEval.status === "PASS");
+// sentinel: AMBIG ยัง abstain (specDir=mixed ไม่มี spec cell เลย → ไม่ activate fallback)
+const amEval2 = parseStructuralGrid(AMBIG, "normal").items.map(evaluateItem);
+check(
+  "[AMBIG still abstains after change]",
+  amEval2.every((e) => e.status !== "PASS"),
+  `statuses=${amEval2.map((e) => e.status).join(",")}`
+);
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

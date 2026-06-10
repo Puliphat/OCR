@@ -249,6 +249,42 @@ function resolveResultCol(dataRows: string[][], ncol: number): number {
   return ncol - 1;
 }
 
+// หาคอลัมน์ spec หลัก — คอลัมน์ที่ classifySpec hit มากสุด (ไม่รวม resultCol)
+// คืน -1 ถ้าไม่พบหลักฐาน (grid ไม่มี spec cell เลย)
+function resolveSpecCol(dataRows: string[][], ncol: number, resultCol: number): number {
+  const score = new Array(ncol).fill(0);
+  for (const row of dataRows) {
+    for (let j = 0; j < row.length; j++) {
+      if (j === resultCol) continue;
+      if (classifySpec(row[j])) score[j]++;
+    }
+  }
+  let best = -1;
+  let bestScore = 0; // ต้องมีอย่างน้อย 1 hit
+  for (let j = 0; j < ncol; j++) {
+    if (score[j] > bestScore) { bestScore = score[j]; best = j; }
+  }
+  return best;
+}
+
+// ทิศของคอลัมน์ spec — "upper" (le/lt ส่วนใหญ่), "lower" (ge/gt ส่วนใหญ่), "mixed" (ไม่ชัด)
+// ใช้แยก bare-0 ใน spec col → specMax หรือ specMin อย่างน้อย 1 hit ต่างฝ่ายก็ mixed → abstain
+function specColDirection(dataRows: string[][], specCol: number): "upper" | "lower" | "mixed" {
+  let upper = 0;
+  let lower = 0;
+  for (const row of dataRows) {
+    const s = classifySpec(row[specCol] ?? "");
+    if (!s) continue;
+    if (s.specMax != null || (s.specRaw && /^(?:≤|≦|<=|<|\d.*max)/i.test(nrm(s.specRaw)))) upper++;
+    else if (s.specMin != null || (s.specRaw && /^(?:≥|≧|>=|>|\d.*min)/i.test(nrm(s.specRaw)))) lower++;
+    // range (specRaw only) ไม่นับทิศ — ไม่ช่วยตัดสิน
+  }
+  if (upper === 0 && lower === 0) return "mixed";
+  if (lower === 0) return "upper";
+  if (upper === 0) return "lower";
+  return "mixed";
+}
+
 // Parse a pdfplumber structural grid into RawCoa with NO LLM. orient is informational: pdf_table.py
 // has already transposed transposed COAs, so the grid is always items-as-rows by the time we see it.
 export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawCoa {
@@ -280,6 +316,9 @@ export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawC
   }
 
   const resultCol = resolveResultCol(dataRows, ncol);
+  // specCol + direction — ใช้กู้ bare-number ในคอลัมน์ spec ที่ classifySpec ข้ามไป (เช่น spec=0)
+  const specCol = resolveSpecCol(dataRows, ncol, resultCol);
+  const specDir = specCol >= 0 ? specColDirection(dataRows, specCol) : "mixed";
 
   const items: RawCoaItem[] = [];
   let section = "";
@@ -315,6 +354,19 @@ export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawC
       if (got) {
         spec = got;
         break;
+      }
+    }
+
+    // ★ กู้ bare-number ใน specCol เมื่อ classifySpec ข้ามไป (เลขเดี่ยวไม่มี operator) ★
+    // เงื่อนไข: spec ว่าง + specCol ชัดเจน (≥1 hit) + specCol cell เป็น bare number + ทิศคอลัมน์ไม่ mixed
+    // → route ตามทิศ upper→specMax, lower→specMin (geometry-based, ไม่ hardcode domain)
+    if (!spec && specCol >= 0 && specDir !== "mixed") {
+      const cell = nrm(row[specCol] ?? "");
+      if (isBare(cell) && !isMesh(cell)) {
+        const v = numOrNull(cell);
+        if (v !== null) {
+          spec = specDir === "upper" ? { specMax: v } : { specMin: v };
+        }
       }
     }
 
