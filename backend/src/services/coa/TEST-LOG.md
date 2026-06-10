@@ -482,3 +482,65 @@ baseline (R3) 53P/0F/37S → **54P/0F/36S** (Lot240521 350μ SKIP→**clean PASS
 **verify:** tsc 0 · filter 27/27 · grid 26/26 · evaluator fixtures เดิม · live: 1F1710 32P/0F/10S→**32P/0F/1S** (เหลือ Fiber Length `601` digit-scramble — HQ challenger ลองแล้ว 12P ไม่ชนะ 14P → คง best, gate ทำงานถูก) · 4064 6P/3S×2→**7P/0F/1S×2** (Residue 1mm → PASS ⚠, เหลือ Appearance legit) · sentinel 4063 **7P/1S×2 เป๊ะเดิม**.
 
 **เหลือ (รอ user บอกค่ากระดาษ):** 1F1710 Fiber Length ตัวจริง (ระบบอ่าน 601) · RI-015 Particle Size 0/1/0 ตรงขอบ + `(udd)qd` 50/32 ppm (ชื่อ garble) · grade 7 ไฟล์ที่ยังไม่มี ground truth (Z99, D-2072, TXAX-A, 1F1710, 4A, RB220, PR1950W_4064).
+
+---
+
+## FULL CORPUS RE-RUN (2026-06-10) — verify หลัง ROUND 9 + เคลียร์ contradiction Z99/Suzorite
+
+gate = `_validate/verify-4b-only.ts` (real pipeline, daemon :8765 + Ollama qwen3:4b). log = `_validate/_run-0610.log`.
+**ผลรวม: 128P / 0F / 12S · rows=140 · 0 deceptive · needsReview=51.**
+
+per-file (vs ground-truth 8 กลุ่มจาก session 06-09):
+
+| กลุ่ม | ไฟล์ | จริง 06-10 | ground-truth | สถานะ |
+|---|---|---|---|---|
+| A1 | Z99 | **13P/0F/0S** | 13P | ✅ จบ (probe Jun-9 `1P/6S` = stale/คนละ config, ของจริง clean) |
+| A2 | Suzorite | 5P/0F/1S | 5P + Traces(text)SKIP | ✅ จบ |
+| A3 | PR1950W_4064 | 7P/0F/1S ×2 | all PASS + Appearance(text) | ✅ จบ |
+| B4 | Barimite200 | 7P/0F/0S | 7P (PH max 8, SG max 4.32 กู้แล้ว) | ✅ จบ |
+| B5 | 4A | 3P/0F/0S | LOI 1.8≤3.5 PASS + logistics ตัดทิ้ง | ✅ จบ |
+| — | 1F1710 (4 หน้า) | 32P/0F/1S | เกือบหมด | ✅ เหลือ p4 Fiber `601` digit-scramble (รอกระดาษ) |
+| C6 | RI-015 | 8P/0F/3S | — | 🟡 ยังคา (ดูล่าง) |
+| D7 | RB220 (1 หน้า) | 2P/0F/0S | — | ⬜ รอค่ากระดาษ |
+
+**★ Z99/Suzorite contradiction RESOLVED:** milestone 06-05 บอก structural-grid fixed · vault ground-truth 06-09 บอกยังพัง · full re-run 06-10 ยืนยัน **ของจริงจบแล้วทั้งคู่** (Z99 13P, Suzorite 5P/1S). ค่าใน vault 06-09 = state เก่าก่อน R7.
+
+### งานที่เหลือจริง (2 อัน)
+
+**1) RI-015 Cu/Zn drop ★ bug จริง ★ (group C6)** — grounding guard false-positive:
+- ✅ Particle results 36/60/4 = PASS แล้ว
+- ❌ **wt%Cu 60.9 (spec 57~61) + wt%Zn 38.44 (spec 36~40) หายจาก output** ทั้งที่อยู่ใน llmRaw → `coa-grounding.ts` ตัด row ทิ้ง false-positive. ต้องไล่ว่าทำไม guard drop 2 row นี้
+- ⚠️ Particle 2.000 → SKIP (`result=0 spec อ่านเป็น 0.0-1.0` เพี้ยน — ground-truth = bare-eq "0.0" result 0.0 ควร PASS)
+- ⚠️ chem names garble `(udd)qd/sv/qs` (Pb/Cd/Sb/As) แต่ verdict ถูก — recognition-level, defer
+- **เสี่ยง/effort:** Tier B — grounding guard = load-bearing (กัน 0-deceptive). ห้าม loosen แบบ unilateral. ต้อง root-cause + gate corpus (0 regression) + Opus review. ไม่ใช่ one-liner
+
+**2) RB220 (group D7)** — รอ ground-truth หน้างาน:
+- ระบบได้ `Fibre length 200 ∈ 180~280 PASS` + `Shotcontent 0.07 spec=0.5 PASS`
+- ground-truth note: result มี 2 col Min/Max (200/250) LLM จับแค่ Min → **ยังไม่มีค่ากระดาษยืนยัน**
+- block จนกว่า user บอกค่าจริง — แก้เองไม่ได้
+
+---
+
+## FIX ROUND 10 (2026-06-10, transposed-table grounding — RI-015 Cu/Zn false-drop)
+
+baseline (R9 full re-run) **128P/0F/12S → 129P/0F/12S** · **RI-015 8P→10P** (Cu/Zn กู้คืน) · 0 FAIL · 0 deceptive. gate = `_validate/verify-4b-only.ts` (`_run-0610-grounding2.log`). tsc 0 · unit `coa-grounding.test.ts` 13/13.
+
+**bug (RI-015 group C6):** ตาราง chem เป็น transposed (items-as-columns), ชื่อ/spec/result คนละบรรทัด:
+```
+L31 ชื่อ:   ANALYSIS | wt%Cu  | wt% Zn1 | ...
+L32 spec:   Pattern  | 57-61  | 36-40   | ...
+L33 result: Lot#01   | 60.9   | 38.44   | ...
+```
+`dropUngroundedItems` ตัด Cu/Zn ทิ้ง (false-positive): name path พัง (token cu/wt < 3), co-location พัง (spec+result คนละบรรทัด). LLM ดึงครบ — guard ลบ.
+
+**แก้ (`coa-grounding.ts` path 3 `isTransposedGrounded`):** pipe-block (บรรทัด `|`-delimited ติดกัน ≥2) → grounded เมื่อ result+spec อยู่ **column เดียวกัน คนละบรรทัด** ใน block.
+
+**★ Opus review (Tier B) จับ HIGH+MEDIUM → แก้ก่อน ship:**
+1. **HIGH name-blind:** path 3 เดิม ground จากเลข align อย่างเดียว → fabricate (LLM อ่านเลข Zn ตั้งชื่อ "Gold") รอด. **แก้: name-in-block precondition** — ชื่อ row ต้องโผล่ใน block นั้น (`nameSignal` token ≥2 รับ symbol ธาตุ).
+2. **MEDIUM digit-loose:** `numberMatches` (`423↔42.3`) ฝั่ง keep หลวม. **แก้: `cellHasValue` exact-value** (ตรงหลัก `valuePresent` ของ pass-guard).
+
+**★ regression ที่ tightening แลกมา (user เลือก accept = tight):** 1F1710 p4 **14P→13P** — Percent Moisture batch สุดท้าย ชื่อ OCR garble ("Moislure") → name-blind row ที่เดิม path 3 เก็บด้วยเลขล้วน → ตอนนี้ name precondition ตัด. = **deceptive-keep hole ที่ Opus เตือนพอดี** (row จริงโดนลูกหลง). user เลือก tight ตามหลัก "0 deceptive > recall" — Moisture ยังโชว์ PASS อีก 4 batch ในหน้าเดียวกัน, ที่หาย = ตัวที่ 5 ชื่อพัง.
+
+**generalize:** deterministic/structural — จับโครง (pipe-block + column-align + name-in-block) ไม่ hardcode ค่า. เอกสารอื่นโครงเดียวกัน = ทำงานเหมือนกัน. layout ใหม่ที่ไม่เข้าเกณฑ์ → abstain (path 3 ไม่ยิง) → fall back honest SKIP.
+
+**เหลือ RI-015 (defer):** Particle 2.000 → SKIP (result=0 spec อ่าน `0~1` ยืมแถวข้าง ไม่ใช่ bare-eq `0.0`, result ตรงขอบ) · Pb โดน pass-guard transposed-blind downgrade (คนละ guard, มิลด์ honest SKIP). RB220 รอค่ากระดาษ.

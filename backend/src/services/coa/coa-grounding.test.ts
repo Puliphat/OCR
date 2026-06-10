@@ -83,5 +83,45 @@ check("mixed: เก็บ 2 จริง ตัด 1 ปั้น", r5.kept.len
 const r6 = dropUngroundedItems(realRows, "");
 check("OCR ว่าง → ไม่ drop (ปล่อยผ่าน)", r6.kept.length === 3 && r6.dropped.length === 0);
 
+// ★ transposed-table grounding (path 3, เคสจริง RI-015 chem) ★
+//   ตาราง items-as-columns: ชื่อ/spec/result คนละบรรทัด, column = ธาตุ
+//   name path พัง (wt%Cu → token cu/wt < 3) · co-location พัง (spec+result คนละบรรทัด)
+//   → ต้องกู้ด้วย column-anchored ข้ามบรรทัดใน pipe-block
+const TRANSPOSED_OCR = [
+  "ANALYSIS  |  wt%Cu  |  wt% Zn1  |  (udd)qd",
+  "Pattern  |  57 - 61  |  36 - 40  |  <50",
+  "Lot#01  |  60.9  |  38.44  |  32",
+].join("\n");
+
+const transposed: RawCoaItem[] = [
+  { name: "wt%Cu", specMin: "57", specMax: "61", result: "60.9" },
+  { name: "wt% Zn", specMin: "36", specMax: "40", result: "38.44" },
+];
+const r7 = dropUngroundedItems(transposed, TRANSPOSED_OCR);
+check("transposed: Cu/Zn (column-aligned) → เก็บทั้งคู่", r7.kept.length === 2 && r7.dropped.length === 0, `(kept=${r7.kept.length})`);
+
+// ★ safety: result กับ spec อยู่ "คนละ column" ในตาราง transposed → ยัง drop ★
+//   (ค่าทั้งคู่มีใน OCR แต่ไม่ใช่แถวเดียวกัน — hallucinate ที่บังเอิญชนคนละ column)
+const crossColumn: RawCoaItem[] = [
+  { name: "Gold (Au)", specRaw: "<50", result: "60.9" }, // result=col1, spec=col3 → คนละ column
+];
+const r8 = dropUngroundedItems(crossColumn, TRANSPOSED_OCR);
+check("transposed: result/spec คนละ column → drop", r8.kept.length === 0 && r8.dropped.length === 1, `(kept=${r8.kept.length})`);
+
+// ★ safety: hallucinate ที่ไม่มีใน OCR เลย แต่ใน doc ที่มี pipe-block → ยัง drop (path 3 ไม่ช่วย)
+const fakeInPipeDoc: RawCoaItem[] = [
+  { name: "Platinum (Pt)", specRaw: "0.5", result: "0.42" }, // 0.5/0.42 ไม่มีใน OCR
+];
+const r9 = dropUngroundedItems(fakeInPipeDoc, TRANSPOSED_OCR);
+check("transposed doc: ค่าไม่มีใน OCR → ยัง drop", r9.kept.length === 0 && r9.dropped.length === 1, `(kept=${r9.kept.length})`);
+
+// ★ Opus HIGH — name-blind fabricate: ค่า align column ตรง (38.44/36-40 ของ Zn) แต่ "ชื่อ" ไม่อยู่ใน block → drop
+//   (LLM column-mislabel: อ่านเลข Zn แต่ตั้งชื่อ Gold) → name-in-block precondition ต้องตัดทิ้ง
+const mislabeled: RawCoaItem[] = [
+  { name: "Gold (Au)", specMin: "36", specMax: "40", result: "38.44" },
+];
+const r10 = dropUngroundedItems(mislabeled, TRANSPOSED_OCR);
+check("transposed: ค่า column ตรงแต่ชื่อไม่อยู่ใน block → drop", r10.kept.length === 0 && r10.dropped.length === 1, `(kept=${r10.kept.length})`);
+
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);

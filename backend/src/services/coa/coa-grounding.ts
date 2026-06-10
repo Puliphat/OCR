@@ -76,12 +76,79 @@ function numberMatches(n: string, tokens: NumToken[]): boolean {
   return false;
 }
 
+// ★ transposed-table grounding (path 3) ★ — RI-015 chem: items-as-columns, ชื่อ/spec/result คนละบรรทัด
+//   (wt%Cu: ชื่อ token <3 → path1 พัง · spec+result คนละบรรทัด → path2 พัง). grounded เมื่อ result+spec
+//   อยู่ "column เดียวกัน คนละบรรทัด" ใน pipe-block ที่ "ชื่อ row อยู่ใน block นั้น" — column-anchored +
+//   name-in-block + exact-value → กัน fabricated row ที่ค่า align column บังเอิญ (Opus review HIGH/MEDIUM)
+
+// block = บรรทัด pipe-delimited ติดกัน (≥3 cell/บรรทัด, ≥2 บรรทัด/block) — เก็บ raw line ไว้ match ชื่อ
+function buildPipeBlocks(ocrText: string): string[][] {
+  const blocks: string[][] = [];
+  let block: string[] = [];
+  for (const line of ocrText.split(/\r?\n/)) {
+    if (line.includes("|") && line.split("|").length >= 3) block.push(line);
+    else {
+      if (block.length >= 2) blocks.push(block);
+      block = [];
+    }
+  }
+  if (block.length >= 2) blocks.push(block);
+  return blocks;
+}
+
+// token ตัวอักษร ≥2 ของชื่อ (รับ symbol ธาตุ Cu/Zn) — ใช้ผูกชื่อกับ block
+function nameSignal(name: string): string[] {
+  return (name ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+}
+
+// ★ exact-value cell match (ไม่ใช้ digit-string ↔ ฝั่ง keep หลวม = keep ปลอม, ดู valuePresent) ★
+function cellHasValue(n: string, cell: NumToken[]): boolean {
+  const v = Number(n.replace(/,/g, "."));
+  if (Number.isNaN(v)) return false;
+  return cell.some((o) => Math.abs(o.val - v) < 1e-9);
+}
+
+function isTransposedGrounded(
+  name: string,
+  resultNums: string[],
+  specNums: string[],
+  blocks: string[][]
+): boolean {
+  const sig = nameSignal(name);
+  if (!sig.length) return false; // ไม่มี name signal → ไม่ ground (กัน fabricated)
+  for (const block of blocks) {
+    // ★ name precondition ★ — ชื่อ row ต้องโผล่ใน block นี้ (กัน row ที่ LLM ตั้งชื่อมั่ว)
+    const blockNorm = block.join(" ").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (!sig.some((t) => blockNorm.includes(t))) continue;
+    const cells = block.map((l) => l.split("|").map((c) => parseNumTokens(c)));
+    const maxCols = Math.max(...cells.map((c) => c.length));
+    for (let k = 1; k < maxCols; k++) {
+      let rLine = -1;
+      let sLine = -1;
+      for (let li = 0; li < cells.length; li++) {
+        const cell = cells[li][k];
+        if (!cell || !cell.length) continue;
+        if (rLine < 0 && resultNums.some((n) => cellHasValue(n, cell))) rLine = li;
+        if (sLine < 0 && specNums.some((n) => cellHasValue(n, cell))) sLine = li;
+      }
+      if (rLine >= 0 && sLine >= 0 && rLine !== sLine) return true;
+    }
+  }
+  return false;
+}
+
 // 1 row grounded ไหม
 function isGrounded(
   item: RawCoaItem,
   ocrWords: Set<string>,
   ocrNoSpace: string,
-  lineTokens: NumToken[][]
+  lineTokens: NumToken[][],
+  pipeBlocks: string[][]
 ): boolean {
   // 1. name grounding — whole-word (latin) หรือ substring เฉพาะ token ยาว ≥5 (เผื่อไทย/ชื่อยาว)
   //    ไม่ substring token สั้น (3-4) กัน "tin" ไปแมตช์ "testing", "iron" แมตช์ "environment"
@@ -103,6 +170,8 @@ function isGrounded(
     const sHit = specNums.some((n) => numberMatches(n, lt));
     if (rHit && sHit) return true;
   }
+  // 3. transposed-table — result กับ spec column เดียวกัน คนละบรรทัด ใน pipe-block + ชื่ออยู่ใน block
+  if (isTransposedGrounded(item.name ?? "", resultNums, specNums, pipeBlocks)) return true;
   return false;
 }
 
@@ -120,11 +189,13 @@ export function dropUngroundedItems(
   const ocrNoSpace = ocrText.toLowerCase().replace(/\s+/g, "");
   // number token ต่อบรรทัด (co-location)
   const lineTokens = ocrText.split(/\r?\n/).map(parseNumTokens);
+  // pipe-block สำหรับ transposed grounding (path 3)
+  const pipeBlocks = buildPipeBlocks(ocrText);
 
   const kept: RawCoaItem[] = [];
   const dropped: { name: string; reason: string }[] = [];
   for (const it of items) {
-    if (isGrounded(it, ocrWords, ocrNoSpace, lineTokens)) {
+    if (isGrounded(it, ocrWords, ocrNoSpace, lineTokens, pipeBlocks)) {
       kept.push(it);
     } else {
       dropped.push({
