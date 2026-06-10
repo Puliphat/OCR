@@ -544,3 +544,22 @@ L33 result: Lot#01   | 60.9   | 38.44   | ...
 **generalize:** deterministic/structural — จับโครง (pipe-block + column-align + name-in-block) ไม่ hardcode ค่า. เอกสารอื่นโครงเดียวกัน = ทำงานเหมือนกัน. layout ใหม่ที่ไม่เข้าเกณฑ์ → abstain (path 3 ไม่ยิง) → fall back honest SKIP.
 
 **เหลือ RI-015 (defer):** Particle 2.000 → SKIP (result=0 spec อ่าน `0~1` ยืมแถวข้าง ไม่ใช่ bare-eq `0.0`, result ตรงขอบ) · Pb โดน pass-guard transposed-blind downgrade (คนละ guard, มิลด์ honest SKIP). RB220 รอค่ากระดาษ.
+
+## FIX ROUND 11 (2026-06-10, RI-015 2.000 missing-row recovery — SKIP+amber)
+
+final gate `_run-0610-final.log`: **101P/0F/11S · 0 deceptive** · **RI-015 10P/0F/4S** (2.000 แสดงเป็น SKIP+amber). tsc 0 · unit sieve 27/27. หมายเหตุ: RB220 + PR1950W_4064 ×2 ออก 0P รอบนี้เพราะ Ollama connection หลุด (ชนกับ UI ใช้พร้อมกัน) ไม่ใช่ code — run ก่อน RB220 = 2P ปกติ. 1F1710 p4 oscillate 13↔14 จาก LLM nondeterminism.
+
+**bug (user UI):** RI-015 sieve `2.000 | 0.0 | 0.0` — LLM ทิ้งทั้งแถว (spec+result เป็น 0.0 → มองเป็นว่าง) → ไม่ขึ้น UI เลย. ground-truth ควร PASS (0 retained).
+
+**แก้ (`sieve-table-recovery.ts` `recoverMissingSieveRows` + wire `coa-pipeline.ts` หลัง recoverSieveTableResults):**
+- parse OCR sieve block (`<aperture>|<spec>|<result>`) เติมแถวที่ items ไม่มี
+- **scope แคบ = เฉพาะ bare-eq (min===max) + result==ค่า** → range row (0.425 ฯลฯ) ไม่ถูกแตะ (กัน add ซ้ำ — เวอร์ชันกว้างเคย add "36" dup จาก OCR-glue spec `10.045.0`)
+- GATE: isSieveTable + apertures ลดหลั่น ≥3 (อ่าน OCR ตรง ไม่ใช่ LLM ปั้น)
+- insert **บนสุดกลุ่ม sieve** (splice firstSieveIdx ไม่ append ท้าย — user: 2.000 ต้องอยู่แถวแรก)
+
+**★ Opus review (Tier B) จับ BLOCKER → final:**
+- เดิม promote bare-eq → PASS = override anti-deceptive SKIP ของ evaluator (`coa-evaluator.ts:160`). worst case: real `0.5 Max` ยุบ → `_|0.5|0.5` → PASS ปลอม
+- **final (user): ทุกแถวที่ recover = SKIP+needsReview เสมอ ไม่ promote PASS เลย** — เป้าแค่ "แสดงบน UI" (user: "0 0 ไม่ต้องให้ pass แล้ว...แค่แสดงก็โอเค") → ไม่มีทาง override evaluator
+- + dedup null guard (`E.result != null` — กัน Number(null)===0 suppress แถว 0/0 จริง)
+
+**generalize:** จับ pattern (sieve table + bare-eq drop) ไม่ hardcode — เอกสารอื่น sieve ที่ LLM ทิ้งแถว bare-eq กู้ได้เหมือนกัน.

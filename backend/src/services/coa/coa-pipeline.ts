@@ -21,7 +21,7 @@ import { recoverResultsFromOcr } from "./result-recovery";
 import { recoverAverageColumn } from "./avg-column-recovery";
 import { recoverSpecificationColumn } from "./spec-column-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
-import { recoverSieveTableResults } from "./sieve-table-recovery";
+import { recoverSieveTableResults, recoverMissingSieveRows } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
 import {
   dropUngroundedItems,
@@ -692,6 +692,16 @@ async function runExtractionPass(
     console.log(
       `  [sieve-recovery] promote ${sieveRec.recovered.length} → PASS (result หลัง spec): ${sieveRec.recovered
         .map((s) => `${s.name}(${s.from}→${s.to})`)
+        .join(", ")}`
+    );
+  }
+
+  // ★ Missing sieve-row recovery ★ — แถว sieve ที่ LLM ทิ้งทั้งแถว (RI-015 `2.000|0.0|0.0`) → เติมจาก OCR
+  const missingSieve = recoverMissingSieveRows(evaluated.rows, text);
+  if (missingSieve.added.length > 0) {
+    console.log(
+      `  [missing-sieve] เติม ${missingSieve.added.length} แถวที่ LLM ทิ้ง: ${missingSieve.added
+        .map((s) => `${s.name}(spec=${s.spec} result=${s.result} → ${s.status})`)
         .join(", ")}`
     );
   }

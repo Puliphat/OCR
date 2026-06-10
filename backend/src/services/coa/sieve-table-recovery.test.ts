@@ -1,5 +1,6 @@
 import {
   recoverSieveTableResults,
+  recoverMissingSieveRows,
   isSieveTable,
   isDescendingApertureSeries,
 } from "./sieve-table-recovery";
@@ -142,6 +143,48 @@ function ri015Rows(): EvaluatedItem[] {
   rows[2].status = "PASS"; // 0.150 row → ออกจาก candidate, เหลือ 0.850/0.425/<0.150
   const { recovered } = recoverSieveTableResults(rows, SIEVE_OCR);
   check("non-SKIP excluded (3 left promote)", recovered.length === 3 && rows[2].status === "PASS", { recovered: recovered.length, r2: rows[2].status });
+}
+
+// ★ recoverMissingSieveRows — แถว 2.000 ที่ LLM ทิ้ง (เคสจริง RI-015) ★
+const MISSING_OCR = [
+  "PARTICLE SIZE (100 g / 15 min)",
+  "SIEVE  |  PATTERN  |  Lot #",
+  "2.000  |  0.0  |  0.0",
+  "0.850  |  0.0 - 1.0  |  0.0",
+  "0.425  |  10.0 - 45.0  |  36.0",
+  "0.150  |  50.0 - 80.0  |  60.0",
+].join("\n");
+
+// existing items = 3 แถว (LLM ทิ้ง 2.000) → ต้องเติม 2.000 เป็น PASS
+{
+  const rows = [
+    row({ status: "SKIP", result: 0, resultRaw: "0.0", specRaw: "0.0 - 1.0", min: 0, max: 1 }),
+    row({ status: "PASS", result: 36, resultRaw: "36.0", specRaw: "10.0 - 45.0", min: 10, max: 45 }),
+    row({ status: "PASS", result: 60, resultRaw: "60.0", specRaw: "50.0 - 80.0", min: 50, max: 80 }),
+  ];
+  const { added } = recoverMissingSieveRows(rows, MISSING_OCR);
+  const new2 = rows.find((r) => r.specRaw === "0.0" && r.result === 0);
+  check("missing 2.000 row added as SKIP+amber (shows, not promoted)", added.length === 1 && !!new2 && new2!.status === "SKIP" && new2!.needsReview === true, { added: added.length, st: new2?.status });
+  check("2.000 inserted at top of sieve group", rows[0] === new2, { firstSpec: rows[0]?.specRaw });
+}
+
+// แถวที่มีอยู่แล้ว (specKey+result ตรง) → ไม่ add ซ้ำ
+{
+  const rows = [
+    row({ status: "PASS", result: 0, resultRaw: "0.0", specRaw: "0.0", min: 0, max: 0 }),
+    row({ status: "SKIP", result: 0, resultRaw: "0.0", specRaw: "0.0 - 1.0", min: 0, max: 1 }),
+    row({ status: "PASS", result: 36, resultRaw: "36.0", specRaw: "10.0 - 45.0", min: 10, max: 45 }),
+    row({ status: "PASS", result: 60, resultRaw: "60.0", specRaw: "50.0 - 80.0", min: 50, max: 80 }),
+  ];
+  const { added } = recoverMissingSieveRows(rows, MISSING_OCR);
+  check("already-present 2.000 → no duplicate add", added.length === 0, { added: added.length });
+}
+
+// ไม่ใช่ sieve table (gate 1) → ไม่ add
+{
+  const rows = [row({ status: "PASS", result: 36, specRaw: "10.0 - 45.0", min: 10, max: 45 })];
+  const { added } = recoverMissingSieveRows(rows, "Assay 99.2 Min | 99.56\nMoisture 0.5 | 0.28");
+  check("non-sieve doc → no add", added.length === 0, { added: added.length });
 }
 
 console.log(`${pass} passed, ${fail} failed`);

@@ -41,6 +41,10 @@ export interface SieveRecoveryResult {
   recovered: { name: string; from: string; to: string }[];
 }
 
+export interface MissingSieveResult {
+  added: { name: string; spec: string; result: string; status: string }[];
+}
+
 // gate (1) ระดับไฟล์: OCR มี signature ของตาราง sieve/particle-size ไหม
 export function isSieveTable(ocrText: string): boolean {
   return (
@@ -127,4 +131,68 @@ export function recoverSieveTableResults(
     recovered.push({ name: r.name, from, to: String(finalVal) });
   }
   return { recovered };
+}
+
+// ★ Missing bare-eq sieve-row recovery (gated → add SKIP+amber, แทรกตำแหน่งจริง) ★ — RI-015 `2.000|0.0|0.0`
+//   LLM ทิ้งแถวที่ spec+result เป็นค่าเดียวเท่ากัน (มองเป็นว่าง). scope แคบ = เฉพาะ bare-eq (min===max) +
+//   result==ค่า → range row ไม่ถูกแตะ (กัน add ซ้ำ). GATE: sieve table + apertures ลดหลั่น ≥3 (อ่าน OCR ตรง).
+//   ★ คง SKIP+amber เสมอ (ไม่ promote PASS — Opus: bare-eq ทิศไม่รู้) ★ เป้า = ให้แถวที่หาย "แสดง" บน UI
+export function recoverMissingSieveRows(
+  rows: EvaluatedItem[],
+  ocrText: string
+): MissingSieveResult {
+  const added: MissingSieveResult["added"] = [];
+  if (!rows?.length || !ocrText || !isSieveTable(ocrText)) return { added }; // gate (1)
+
+  // parse OCR pipe rows: cell0 = aperture(number) · cell สุดท้าย = result(number) · กลาง = spec
+  const parsed: { ap: number; specRaw: string; resVal: number }[] = [];
+  for (const line of ocrText.split(/\r?\n/)) {
+    if (!line.includes("|")) continue;
+    const cells = line.split("|").map((c) => c.trim());
+    if (cells.length < 3) continue;
+    const ap = apertureNum(cells[0]);
+    if (ap == null) continue;
+    const resVal = singleNumberCell(cells[cells.length - 1].replace(/\s+/g, ""));
+    if (resVal == null) continue;
+    const specRaw = cells.slice(1, cells.length - 1).join(" ").trim();
+    if (!specRaw) continue;
+    parsed.push({ ap, specRaw, resVal });
+  }
+
+  // gate (2): apertures ลดหลั่น ≥3 → ยืนยันเป็นตาราง sieve จริง (ไม่ใช่เลขสุ่ม)
+  if (!isDescendingApertureSeries(parsed.map((p) => p.ap))) return { added };
+
+  const sieveName = rows.find((r) => isSieveRowName(r.name))?.name ?? "Particle Size";
+  const firstSieveIdx = rows.findIndex((r) => isSieveRowName(r.name)); // จุดแทรก = บนสุดกลุ่ม sieve
+
+  for (const p of parsed) {
+    const re = evaluateItem({ name: sieveName, specRaw: p.specRaw, result: String(p.resVal) });
+    // ★ scope: เฉพาะ bare-eq (min===max) ที่ result==ค่า — แบบ 0.0/0.0 ที่ LLM ทิ้ง. range row ไม่แตะ ★
+    if (re.min == null || re.max == null || re.min !== re.max) continue;
+    if (p.resVal !== re.min) continue;
+    // dedup: มี sieve row ที่ bare-eq ค่าเดียวกัน + result เดียวกันแล้วไหม (numeric, ข้าม result=null)
+    const dup = rows.some(
+      (E) =>
+        isSieveRowName(E.name) &&
+        E.min === re.min &&
+        E.max === re.max &&
+        E.result != null &&
+        Number(E.result) === p.resVal
+    );
+    if (dup) continue;
+    // ★ คง SKIP+amber เสมอ (ไม่ promote PASS) — bare-eq ทิศไม่รู้ → ไม่ตัดสิน (Opus: กัน deceptive PASS) ★
+    //   เป้าหมาย = แค่ให้แถวที่ LLM ทิ้ง "แสดง" บน UI (amber ต้องตรวจ) ไม่ใช่ดันให้ผ่าน
+    const item: EvaluatedItem = {
+      ...re,
+      status: "SKIP",
+      result: p.resVal,
+      resultRaw: String(p.resVal),
+      reason: SIEVE_RECOVERY_REASON,
+      needsReview: true, // ★ แถว reconstruct — ให้คนยืนยันใบจริงเสมอ (amber ไม่เขียวเงียบ) ★
+    };
+    const at = firstSieveIdx >= 0 ? firstSieveIdx : rows.length;
+    rows.splice(at, 0, item); // แทรกบนสุดของกลุ่ม sieve (ไม่ append ท้าย)
+    added.push({ name: sieveName, spec: p.specRaw, result: String(p.resVal), status: item.status });
+  }
+  return { added };
 }
