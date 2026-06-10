@@ -31,6 +31,7 @@ import {
   FailGuardResult,
   PassGuardResult,
 } from "./coa-grounding";
+import { filterMetadataRows } from "./metadata-row-filter";
 
 // ★ grid→LLM (column-aware OCR text → LLM; keep-best) ★
 //   column band จาก token bbox เก็บ cell ว่าง → LLM map spec/result ไม่เลื่อน (เคส column-shift เช่น SODA/PR1950W)
@@ -536,6 +537,18 @@ async function runExtractionPass(
         .join(", ")}`
     );
     raw.items = grounding.kept;
+  }
+
+  // ตัด metadata rows ที่ LLM ดึงมาเป็น item ทั้งที่ไม่ใช่รายการทดสอบ (Lot number/Production Date/ACCEPT/Item header)
+  // ต้องครบ 2 เงื่อนไข: (a) ชื่อ match pattern metadata + (b) ไม่มี spec จริง — conservative เพื่อไม่ตัดของจริง
+  const metaFilter = filterMetadataRows(raw.items ?? []);
+  if (metaFilter.dropped.length > 0) {
+    console.log(
+      `  [metadata-filter] ตัด ${metaFilter.dropped.length} junk metadata row: ${metaFilter.dropped
+        .map((d) => d.name ?? "(unnamed)")
+        .join(", ")}`
+    );
+    raw.items = metaFilter.kept;
   }
 
   // กู้คืน spec ที่ LLM (โมเดลเล็ก) หล่นทิ้งบางรัน — เติมเฉพาะ row ที่ spec ว่าง ★ ไม่ทับของเดิม ★
