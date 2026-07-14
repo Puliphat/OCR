@@ -7,6 +7,7 @@ import * as dotenv from "dotenv";
 import { AppDataSource } from "./data-source";
 import fs from "fs";
 import coaRouter from "./routes/coa.routes";
+import { startOllamaKeepWarm } from "./services/coa/ollama-coa.service";
 
 dotenv.config();
 
@@ -21,6 +22,10 @@ if (!fs.existsSync("./uploads")) {
 }
 
 app.use("/api/coa", coaRouter);
+
+// คง qwen3 อุ่นใน VRAM (warm ทันที + ping ทุก 8 นาที) — ตัด ~37s model reload ที่ user เจอตอน
+// upload แรกหลัง server idle. ปิดด้วย OLLAMA_KEEP_WARM=false
+startOllamaKeepWarm();
 
 // DB ยังไม่ได้ใช้ persist อะไร (entities ว่าง + route ยัง comment block save ไว้)
 // เปิด DB ตอนพร้อม persist: ใส่ ENABLE_DB=true ใน .env + เปิด entities ใน data-source.ts

@@ -574,3 +574,23 @@ user: RI-015 โหลดนาน/ค้างที่ UI. สาเหตุ 
 3. **ไม่มี cache** — กดไฟล์เดิมซ้ำ = rerun pipeline เต็ม → เพิ่ม in-memory sha256 cache ใน `coa.routes.ts` (ตั้งใจไม่ persist: restart backend = cache ใส → เทสหลังแก้ code ไม่โดนผลเก่าหลอก)
 
 verify: tsc 0 · RI-015 เดี่ยว **45.5s ผลเป๊ะเดิม 10P/0F/4S** (2.000 recover ✓, HQ 11P ไม่ชนะขาด→คง best ✓). keep_alive ไม่แตะ accuracy (แค่ residency). ยังเหลือ (defer): gate HQ challenger ไม่ให้ยิงเมื่อชนะไม่ได้ — ต้องแยก SKIP ชนิด OCR-fixable vs structural, ค่อยทำถ้ายังช้า.
+
+## FIX ROUND 13 (2026-07-14, perf: upload รอนาน — cold model reload + HQ challenger เผาเปล่า)
+
+user: upload แล้วรอผลนานผิดปกติ. วัดจริงจาก log timestamps: text-layer 51s · scanned 114s · scanned+HQ 262s, แต่ warm re-run = 16.5s / 67s → ตัวถ่วงคือ **cold start ไม่ใช่ pipeline**. สาเหตุ 3 จุด:
+
+1. **qwen3 โดน evict จาก VRAM หลัง idle เกิน keep_alive 10m** → upload แรกเจอ ~37s model reload "ระหว่าง user รอ". **แก้ (`ollama-coa.service.ts` `warmup()` + `startOllamaKeepWarm()`, เรียกจาก `index.ts`):** ping 1 token ทุก 8 นาที + warm ทันทีตอน start. ★ options ต้องตรง `parseCoa` (num_ctx 8192) — Ollama restart runner ถ้า options ต่าง = warm ทิ้งเปล่า. ปิดด้วย `OLLAMA_KEEP_WARM=false`. CLI/test-coa ไม่แตะ (batch warm เองตามธรรมชาติ)
+2. **HQ challenger ยิงทั้งที่ชนะไม่ได้** (defer จาก ROUND 12) — gate เดิม `skip > 0` ทำ PR1950W (SKIP เดียว = Appearance spec="body" result="Powderwithoutforeign", text ล้วนทั้งเอกสาร) เผา ~35s/หน้า re-OCR v5-server + LLM รอบใหม่ แล้วแพ้ keep-best 100%. **แก้ (`coa-pipeline.ts` `skipMayBenefitFromHq`):** ยิง HQ เฉพาะเมื่อมี SKIP ที่ spec/result มี digit หรือฝั่งใดฝั่งหนึ่งว่าง (= OCR อ่านเพี้ยน/ตกมีโอกาสจริง). "" นับเป็นว่าง (conservative → HQ ยังลอง)
+3. **HQ engine lazy-load ตอน request แรก** (~5-8s บวกเพิ่ม). **แก้ (`ocr_server.py`):** preload ใน daemon thread ตอน start. ปิดด้วย `COA_OCR_HQ_PRELOAD=false`
+
+**gate (corpus16, daemon+Ollama ครบ, รันเทียบบนเครื่องเดียวกันวันเดียวกัน):**
+- baseline (code เดิม stash ไว้): **125P/0F/16S** rows=141 needsReview=52
+- ใหม่: **126P/0F/15S** rows=141 needsReview=51 · **0 FAIL · 0 deceptive**
+- **4A: `[hq-ocr] ✓ HQ ชนะ 2P→3P` — critical case ยังยิงและยังชนะ** (LoI spec "%98" มี digit → ผ่าน filter)
+- PR1950W p2 +1P มาจาก LLM drift (flat ต่างกันก่อนถึง HQ — อาการเดียวกับ 1F1710 p4 oscillate ROUND 11) ไม่ใช่ gate ใหม่; SKIP แถวนั้น (`Residue on sieve(1mm)` min=0) มี digit → gate ใหม่ยิง HQ ตามปกติ
+- RI-015 9P/0F/5S เท่ากันทั้งสอง run (delta vs ROUND 11 คือ env drift ไม่ใช่ round นี้)
+- หมายเหตุ baseline ≠ 129P ของ ROUND 10 = LLM drift ข้ามวัน/เครื่อง — เทียบ apples-to-apples แล้วเท่านั้น
+
+**perf ที่วัดได้:** PR1950W smoke 67s→**32.5s** (ผลเป๊ะเดิม) · cold-start 37s หายจาก path ที่ user รอ · tsc 0 · unit 47/47+4F(expected)
+
+**generalize:** filter จับ "ชนิดของ SKIP" (numeric-fixable vs structural-text) ไม่ hardcode ชื่อ field/ไฟล์ — เอกสารใหม่ที่ SKIP เพราะ visual-check row ข้าม HQ เหมือนกัน, SKIP เพราะเลขเพี้ยนยังได้ HQ เต็มๆ. keep-best ชั้นนอกไม่แตะ = ต่อให้ filter พลาดยิง HQ ฟรี ก็แค่ช้า ไม่มีทาง regress ผล.

@@ -189,4 +189,44 @@ ${text}
     console.error(`[ollama-coa] parse failed (all attempts): ${lastErr}`);
     return null;
   }
+
+  // ping 1 token คง model ใน VRAM — ★ options ต้องตรง parseCoa (num_ctx 8192) ★ ไม่งั้น Ollama
+  //   restart runner ด้วย ctx ใหม่ตอน call จริง = warm ทิ้งเปล่า. timeout 120s เผื่อ cold reload (~37s)
+  async warmup(): Promise<void> {
+    const isQwen3 = /qwen3/i.test(this.model);
+    await axios.post(
+      this.generateUrl,
+      {
+        model: this.model,
+        prompt: "ok",
+        stream: false,
+        keep_alive: "10m",
+        ...(isQwen3 ? { think: false } : {}),
+        options: { temperature: 0, num_ctx: 8192, num_predict: 1 },
+      },
+      { timeout: 120_000 }
+    );
+  }
+}
+
+// ★ Keep-warm ★ — qwen3 (~3.2GB+KV) โดน evict จาก VRAM เมื่อ idle เกิน keep_alive → upload ถัดไป
+//   เสีย ~37s โหลด model กลับ "ระหว่าง user รอ". ping ทุก 8 นาที (< keep_alive 10m) = ถ้าโดน evict
+//   ก็โหลดกลับแบบ background แทน. ปิดด้วย OLLAMA_KEEP_WARM=false. เรียกจาก index.ts เท่านั้น
+//   (CLI/test-coa ไม่ใช้ — batch run คง warm เองตามธรรมชาติ)
+export function startOllamaKeepWarm(intervalMs = 8 * 60_000): void {
+  if (process.env.OLLAMA_KEEP_WARM === "false") return;
+  const svc = new OllamaCoaService();
+  const ping = () => {
+    const t0 = Date.now();
+    svc.warmup().then(
+      () => {
+        const s = (Date.now() - t0) / 1000;
+        // เงียบตอน warm อยู่แล้ว (<5s) — log เฉพาะตอน reload จริง ให้รู้ว่าเพิ่งถูก evict
+        if (s > 5) console.log(`[ollama-warm] model reloaded in ${s.toFixed(1)}s (ถูก evict ระหว่าง idle)`);
+      },
+      (e: any) => console.warn(`[ollama-warm] ping failed: ${e?.message ?? e}`)
+    );
+  };
+  ping(); // warm ทันทีตอน start — upload แรกหลังเปิด server ไม่ต้องรอโหลด model
+  setInterval(ping, intervalMs).unref();
 }

@@ -66,6 +66,8 @@ OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default)
 USE_RAPIDOCR=true                        # false = ข้าม sidecar ใช้ Tesseract เลย
 COA_OCR_MODEL_TYPE=mobile                # mobile (default) | server  — อ่านโดย ocr-py/ocr_server.py
 COA_OCR_VERSION=PP-OCRv4                 # PP-OCRv4 (default) | PP-OCRv5
+COA_OCR_HQ_PRELOAD=true                  # false = HQ engine กลับเป็น lazy-load (ประหยัด RAM, request hq แรกช้า)
+OLLAMA_KEEP_WARM=true                    # false = ปิด warm ping (upload แรกหลัง idle เจอ ~37s model reload)
 PORT=3001
 ```
 

@@ -905,6 +905,20 @@ async function runFlatGridBest(
 //   lazy-load) เป็น challenger ชั้นนอกสุด. default เปิด. COA_OCR_HQ_FALLBACK=false ปิด (กลับไป mobile ล้วน)
 const OCR_HQ_FALLBACK_ENABLED = process.env.COA_OCR_HQ_FALLBACK !== "false";
 
+// ★ HQ trigger filter ★ — SKIP ที่ re-OCR แล้ว "มีโอกาสหาย" = ต้องมีตัวเลขเกี่ยวข้องสักฝั่ง:
+//   • spec/result มี digit → อาจเป็นเลขที่ OCR อ่านเพี้ยน (เคส 4A: spec "≤3.5%"→"%98") → HQ ลองได้
+//   • ฝั่งใดฝั่งหนึ่ง null → OCR อาจอ่านตกทั้ง cell → HQ ลองได้
+//   แถว text ล้วนทั้งสองฝั่ง (PR1950W "Appearance": spec="body" result="Powderwithoutforeign" =
+//   visual check ไม่มีตัวเลขในเอกสารจริง) — OCR ดีแค่ไหนก็ยัง non-numeric → SKIP เหมือนเดิม →
+//   ไม่เผา HQ challenger (~35s/หน้า: re-OCR v5-server + LLM รอบใหม่) ที่รู้ล่วงหน้าว่าแพ้
+function skipMayBenefitFromHq(r: EvaluatedItem): boolean {
+  // "" (LLM emit ค่าว่าง) นับเป็น "ไม่มีค่า" เหมือน null → ให้ HQ ลอง (conservative)
+  const spec = r.specRaw?.trim() || (r.min ?? r.max)?.toString() || null;
+  const res = r.resultRaw?.trim() || r.result?.toString() || null;
+  if (spec == null || res == null) return true;
+  return /\d/.test(spec) || /\d/.test(res);
+}
+
 // processPage — keep-best orchestrator ต่อ 1 หน้า (2 ชั้น)
 //   ชั้นใน: runFlatGridBest บน OCR default (mobile) — flat floor + grid challenger
 //   ชั้นนอก: ★ HQ OCR challenger ★ — ถ้า best (scanned) ยังมี SKIP → re-OCR ด้วย v5-server แล้ว
@@ -934,8 +948,18 @@ async function processPage(
     imagePath &&
     best.summary.skip > 0
   ) {
+    // ยิงเฉพาะเมื่อมี SKIP ที่ OCR ดีขึ้นแล้วมีโอกาสหายจริง — text-only SKIP ข้าม (ดู skipMayBenefitFromHq)
+    const worthy = best.rows.filter(
+      (r) => r.status === "SKIP" && skipMayBenefitFromHq(r)
+    );
+    if (worthy.length === 0) {
+      console.log(
+        `  [hq-ocr] SKIP ทั้ง ${best.summary.skip} รายการเป็น text ล้วน (ไม่มีตัวเลขให้ OCR แก้) — ข้าม HQ challenger`
+      );
+      return best;
+    }
     console.log(
-      `  [hq-ocr] best ยังมี ${best.summary.skip} SKIP (scanned) → re-OCR HQ challenger (daemon HQ engine, default v5-server)`
+      `  [hq-ocr] best ยังมี ${best.summary.skip} SKIP (${worthy.length} ตัวมีโอกาสหายจาก re-OCR) → HQ challenger (daemon HQ engine, default v5-server)`
     );
     try {
       const hqOcr = await new RapidOcrService().extractTextBoth(imagePath, true);

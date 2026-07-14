@@ -120,6 +120,11 @@ if __name__ == "__main__":
         f"(model={mt.value}/{ov.value} loaded, cwd={os.getcwd()})",
         flush=True,
     )
+    # Preload HQ engine ใน background thread — request hq แรกไม่ต้องรอ lazy-load (~5-8s)
+    # แลก RAM ค้างตลอด (v5-server ~หลายร้อย MB) — ปิดกลับเป็น lazy ด้วย COA_OCR_HQ_PRELOAD=false
+    # get_hq_engine มี lock + double-check อยู่แล้ว → ชนกับ request hq แรกได้ปลอดภัย
+    if os.environ.get("COA_OCR_HQ_PRELOAD", "true").lower() != "false":
+        threading.Thread(target=get_hq_engine, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     try:
         srv.serve_forever()
