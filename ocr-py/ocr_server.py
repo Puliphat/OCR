@@ -1,4 +1,4 @@
-# OCR daemon — loads RapidOCR once, serves POST /ocr {path} -> {tokens[], elapse}.
+# OCR daemon — loads RapidOCR once, serves POST /ocr {image_b64|path, hq} -> {tokens[], elapse}.
 # stdlib http.server only (no FastAPI/uvicorn dep). Mirrors the TS sidecar contract.
 #
 # rapidocr 3.x (PP-OCRv4/v5) — successor of rapidocr-onnxruntime (which capped at v3 on
@@ -13,6 +13,7 @@
 #   ★ lazy-load ★: โหลดครั้งแรกที่มี request hq=true เท่านั้น (ไฟล์สะอาดไม่เคยแตะ → ไม่กิน RAM)
 #   ใช้ _engine_lock เดียวกับ default → inference ไม่รันพร้อมกัน (กัน CPU oversubscribe)
 #   override: COA_OCR_HQ_MODEL_TYPE (server default) · COA_OCR_HQ_VERSION (PP-OCRv5 default)
+import base64
 import json
 import os
 import sys
@@ -56,15 +57,26 @@ def get_hq_engine():
     return _hq_engine
 
 
-def run_ocr(path, hq=False):
-    # resolve absolute + existence check first — clear error (path + cwd) on miss
-    path = os.path.abspath(path)
+def resolve_image(req):
+    # Prefer inline bytes → daemon can run on a different machine than the backend
+    # (LAN deploy): the image never has to exist on this daemon's local disk.
+    # Fall back to a daemon-local path for same-machine / back-compat callers
+    # (render_and_test.py still POSTs {"path": ...}).
+    b64 = req.get("image_b64")
+    if b64:
+        return base64.b64decode(b64)  # RapidOCR 3.x LoadImage accepts raw bytes
+    path = os.path.abspath(req["path"])
     if not os.path.exists(path):
         raise FileNotFoundError(f"image not found: {path} (daemon cwd={os.getcwd()})")
+    return path
+
+
+def run_ocr(img, hq=False):
+    # img = raw bytes (decoded from image_b64) or a local file path (back-compat)
     eng = get_hq_engine() if hq else engine
     # ★ ใช้ _engine_lock เดียวเสมอ (ทั้ง default + hq) → inference ไม่ทับซ้อน ★
     with _engine_lock:
-        out = eng(path)
+        out = eng(img)
     toks = []
     if out is not None and out.boxes is not None and out.txts is not None:
         for box, text, score in zip(out.boxes, out.txts, out.scores):
@@ -89,7 +101,8 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(n)
         try:
             req = json.loads(body)
-            out = run_ocr(req["path"], hq=bool(req.get("hq", False)))
+            img = resolve_image(req)
+            out = run_ocr(img, hq=bool(req.get("hq", False)))
             code = 200
         except Exception as e:  # noqa: BLE001 — return error to caller
             out = {"error": str(e)}
@@ -115,8 +128,10 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    # 0.0.0.0 = รับ request จากเครื่องอื่นใน LAN (deploy หน้างาน); ตั้ง OCR_BIND_HOST=127.0.0.1 ถ้าจะปิดเฉพาะเครื่อง
+    host = os.environ.get("OCR_BIND_HOST", "0.0.0.0")
     print(
-        f"OCR daemon ready on 127.0.0.1:{port} "
+        f"OCR daemon ready on {host}:{port} "
         f"(model={mt.value}/{ov.value} loaded, cwd={os.getcwd()})",
         flush=True,
     )
@@ -125,7 +140,7 @@ if __name__ == "__main__":
     # get_hq_engine มี lock + double-check อยู่แล้ว → ชนกับ request hq แรกได้ปลอดภัย
     if os.environ.get("COA_OCR_HQ_PRELOAD", "true").lower() != "false":
         threading.Thread(target=get_hq_engine, daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = ThreadingHTTPServer((host, port), Handler)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

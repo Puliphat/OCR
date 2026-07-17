@@ -25,14 +25,24 @@ export class RapidOcrService {
   // ยิงรูปไป daemon → tokens พร้อม box; null ถ้า daemon ล่ม (caller fall back)
   // hq=true → daemon ใช้ HQ engine (v5-server, lazy-load) สำหรับ scanned page ที่อ่านเพี้ยน
   async ocrTokens(imagePath: string, hq = false): Promise<OcrToken[] | null> {
-    // ★ ส่ง absolute path เสมอ ★ — daemon resolve relative path ตาม cwd ของตัวเอง (มัก != backend/)
-    //   relative + cwd ผิด → RapidOCR หาไฟล์ไม่เจอ → throw → HTTP 500 (เคยทำ corpus พังเงียบ, วินิจฉัยยาก)
+    // ★ ส่ง image เป็น bytes (base64) เสมอ ★ — daemon อาจอยู่คนละเครื่อง (LAN deploy) →
+    //   เอื้อมถึง disk ของ backend ไม่ได้. path ยังส่งไปด้วยเพื่อ log/error เท่านั้น
+    //   (daemon เลือก b64 ก่อน, ไม่มี b64 ค่อย fall back อ่าน path = same-machine back-compat).
+    //   เดิมส่งแค่ path → daemon os.path.exists() เปิดจาก disk ตัวเอง → เครื่องอื่นหาไฟล์ไม่เจอ
+    //   → HTTP 500 → pipeline fall back Tesseract เงียบ (corpus เพี้ยนไม่รู้ตัว)
     const abs = path.resolve(imagePath);
+    let imageB64: string;
+    try {
+      imageB64 = fs.readFileSync(abs).toString("base64");
+    } catch (e: any) {
+      console.error(`[rapidocr] cannot read image "${abs}": ${e?.message ?? e}`);
+      return null;
+    }
     try {
       const res = await axios.post(
         `${this.url}/ocr`,
-        { path: abs, hq },
-        { timeout: 300_000 }
+        { path: abs, image_b64: imageB64, hq },
+        { timeout: 300_000, maxBodyLength: Infinity, maxContentLength: Infinity }
       );
       if (res.data?.error) {
         console.error("[rapidocr] daemon returned error:", res.data.error);

@@ -62,7 +62,8 @@ npm run build
 DB_HOST=localhost  DB_PORT=5432  DB_USERNAME=postgres  DB_PASSWORD=postgres  DB_NAME=invoice_db
 OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=qwen3:4b
-OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default)
+OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default) — ตั้ง http://<LAN_IP>:8765 ถ้า daemon อยู่คนละเครื่อง
+OCR_BIND_HOST=0.0.0.0                    # (ฝั่ง daemon) 0.0.0.0 = รับ LAN (deploy default) | 127.0.0.1 = เฉพาะเครื่อง
 USE_RAPIDOCR=true                        # false = ข้าม sidecar ใช้ Tesseract เลย
 COA_OCR_MODEL_TYPE=mobile                # mobile (default) | server  — อ่านโดย ocr-py/ocr_server.py
 COA_OCR_VERSION=PP-OCRv4                 # PP-OCRv4 (default) | PP-OCRv5
@@ -107,7 +108,7 @@ frontend/
     └── types.ts                CoaRow, UploadResponse
 
 ocr-py/                         ★ Python OCR sidecar ★
-├── ocr_server.py              HTTP daemon (:8765) — RapidOCR loaded once, POST /ocr {path}→tokens
+├── ocr_server.py              HTTP daemon (:8765, bind 0.0.0.0) — RapidOCR loaded once, POST /ocr {image_b64|path, hq}→tokens
 ├── render_and_test.py         standalone test: render 8 scanned PDFs + OCR + dump _scan_test/
 ├── requirements.txt           rapidocr (3.x), onnxruntime, opencv-python-headless, pymupdf
 └── venv/                      (gitignored)
