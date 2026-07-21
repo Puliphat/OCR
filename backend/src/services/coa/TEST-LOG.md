@@ -609,3 +609,27 @@ user: จะแยก OCR daemon (+Ollama) ไปรันเครื่อง 
 - byte-identical เพราะ `eng(path)` vs `eng(bytes)` decode เป็น ndarray ตัวเดียวกัน (cv2 imread vs imdecode พิกเซลเท่ากัน) → OCR output ไม่ขยับ. ไม่มี Tesseract fallback เงียบ (log สะอาด) · tsc 0 · py_compile 0
 
 **generalize:** contract เปลี่ยนจาก "daemon อ่าน disk" → "backend ส่งเนื้อรูปมา" = ตัด coupling ระหว่าง daemon กับ filesystem เครื่อง backend. path field เก็บไว้ = backward compat ไม่ต้องแก้ dev harness. **ค้าง (ไม่ใช่ blocker OCR):** `/ocr/restart` (`coa.routes.ts:65`) spawn python local → ข้ามเครื่องใช้ไม่ได้ (backend spawn daemon เครื่อง LAN ไม่ได้) → deploy LAN ต้อง start daemon เองบนเครื่องนั้น; UI restart button กลายเป็น no-op เงียบ (frontend `.catch` อยู่แล้ว ไม่ crash).
+
+## FIX ROUND 15 (2026-07-21, perf profile upload + HQ speculative prefetch — opt-in สำหรับ LAN)
+
+user: upload หน้างานยังรอนาน (10-20s+) — โปรไฟล์แยก step หา bottleneck จริง (งานค้างจาก ROUND 13 ที่ถูก interrupt ก่อนวัด)
+
+**Profile จริง (PR1950W 2 หน้า scanned, warm ทุกอย่าง, pre-change = 46.6s):**
+- render PDF→PNG 1.0s (2%) · OCR default mobile 8.0s (17%, fast-path ไม่หมุน) · grid geometry 2.3s (5%)
+- **LLM qwen3:4b ×3 calls = 26.3s (56%) = คอขวดหลัก** (flat p1 + flat p2 + HQ re-parse)
+- **HQ challenger 18.6s (40%): re-OCR v5-server 11.8s + LLM 8.4s — จบด้วย ✗ แพ้ keep-best ทุกครั้งบนไฟล์นี้**
+- rotation correction = จ่ายเฉพาะไฟล์หมุนจริง (×3 OCR) — ไฟล์ตั้งตรง fast-path อยู่แล้ว ไม่ใช่จุดต้องแก้
+- OCR ล้วนต่อหน้า scanned (mobile/v4): ~4.5-8s แปรตามความหนาแน่น token (RI-015 119 toks = 7.8s ช้าสุด)
+
+**ทำ: speculative HQ prefetch (`coa-pipeline.ts` อย่างเดียว, ~20 บรรทัด)** — ยิง `extractTextBoth(hq)` ทุกหน้า scanned ล่วงหน้าตอน LLM เริ่ม parse เก็บ promise ใน Map ส่งเข้า `processPage`; HQ branch `await (prefetch ?? re-OCR เดิม)`. ผลวัด: จุดรอ HQ-OCR 11.8s → **0s** (ผลรออยู่แล้ว), total 46.6→41.8s
+
+**แต่พบผลข้างเคียงบนเครื่องเดียว (single box):** onnxruntime (CPU ทุก core) ชนกับ Ollama ระหว่าง generate → LLM ช้าลง ~2s/call + speculation ที่ทิ้ง (ไฟล์สะอาด) ค้างใน daemon lock ทำ request ถัดไปต่อคิว → ไฟล์สะอาด Lot240521: ON 21.6/29.8s vs OFF 17.4/16.9s = **net ขาดทุนเมื่อไฟล์ส่วนใหญ่สะอาด** → **ตัดสิน: default OFF (opt-in `COA_OCR_HQ_SPECULATE=true`) — เปิดเมื่อย้าย daemon ไปเครื่อง LAN ตามแผน (CPU ไม่ชน = ได้ -11.8s เต็มฟรี)**. default path = code เดิมเป๊ะ (วัดยืนยัน 16.2s)
+
+**gate (corpus16, เครื่องเดียววันเดียว 2026-07-21):**
+- baseline (pre-change): **126P/0F/15S** rows=141 needsReview=51 = ตรง ROUND 14 เป๊ะ
+- after (speculation ON ระหว่าง gate): 124P/0F/15S rows=139 — ต่าง 2 จุด (PR1950W p2 sieve-1mm PASS↔SKIP, 1F1710 p4 ±2 rows) → **rerun แยก 2 ไฟล์ ×3 reps ×2 โหมด (ON/OFF): 6/6 รอบตรงกันเป๊ะทุกแถว** = flip เป็น Ollama run-to-run variance (prefix-cache ตามลำดับไฟล์ก่อนหน้า — sieve row เดียวกัน flip บน code เก่าในวันเดียวกันด้วย) ไม่ใช่ผลของ patch. **0 FAIL · 0 deceptive ทุก run** · tsc 0
+
+**generalize + เหลือ (เรียง impact):**
+1. **LLM 56% = คอขวดโครงสร้าง** — จะลดต้องเปลี่ยน model/prompt/hardware = accuracy A/B (user ตัดสิน)
+2. **บั๊ก keep-best พบใหม่ (ยังไม่แก้ — เปลี่ยน verdict):** HQ ชนะจริง 7P>6P บน PR1950W p2 แต่โดน reject เพราะ PASS-preservation เทียบชื่อ item แบบ strict — v5 อ่าน "Residue on sieve(106m)" vs mobile "(106 μ m)" = คนละ string → นับเป็น "PASS เดิมหาย". แก้ = normalize ชื่อก่อนเทียบ (strip space/μ) → HQ ที่จ่ายเวลาไปแล้วได้ผลตอบแทนจริง. ต้องผ่าน gate เต็มก่อน
+3. sha256 cache (d1dd822) กันไฟล์ซ้ำอยู่แล้ว — pain จริงคือไฟล์ใหม่ file แรกของวัน (cold model 36.5s ถ้า keep-warm ไม่ทำงาน เช่น CLI)

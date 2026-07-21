@@ -934,7 +934,8 @@ async function processPage(
   gridText?: string,
   gridSource?: GridSource,
   gridOrient?: GridOrient,
-  imagePath?: string
+  imagePath?: string,
+  hqPrefetch?: ReturnType<RapidOcrService["extractTextBoth"]>
 ): Promise<CoaReport> {
   const best = await runFlatGridBest(
     filename, filePath, text, engine, page, gridText, gridSource, gridOrient
@@ -962,7 +963,8 @@ async function processPage(
       `  [hq-ocr] best ยังมี ${best.summary.skip} SKIP (${worthy.length} ตัวมีโอกาสหายจาก re-OCR) → HQ challenger (daemon HQ engine, default v5-server)`
     );
     try {
-      const hqOcr = await new RapidOcrService().extractTextBoth(imagePath, true);
+      // ใช้ผล HQ OCR ที่สั่งไว้ล่วงหน้า (ดู runCoaPipeline) — ถ้าไม่มีก็ OCR ตรงนี้เหมือนเดิม
+      const hqOcr = await (hqPrefetch ?? new RapidOcrService().extractTextBoth(imagePath, true));
       if (hqOcr && hqOcr.flat.replace(/\s/g, "").length >= 50) {
         dumpDebug("_last-ocr-hq.txt", hqOcr.flat);
         const hqGrid = GRID_LLM_ENABLED ? hqOcr.grid : undefined;
@@ -999,12 +1001,26 @@ async function processPage(
 export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
   const filename = path.basename(filePath).replace(/^\d+-/, "");
   const pages = await extractTextPerPage(filePath);
+  // ★ HQ prefetch (perf) ★ — สั่ง HQ OCR ไว้ล่วงหน้าระหว่าง LLM ทำงาน พอถึงคิว HQ ก็ได้ผลเลยไม่ต้องรอ ~10s
+  //   เปิดด้วย COA_OCR_HQ_SPECULATE=true เฉพาะตอน daemon อยู่คนละเครื่อง (LAN) — เครื่องเดียวกัน OCR จะแย่ง CPU กับ LLM แล้วช้าลงแทน
+  const speculate = OCR_HQ_FALLBACK_ENABLED && process.env.COA_OCR_HQ_SPECULATE === "true";
+  const hqPrefetch = new Map<number, ReturnType<RapidOcrService["extractTextBoth"]>>();
+  if (speculate) {
+    const svc = new RapidOcrService();
+    for (const pg of pages) {
+      if (pg.engine === "rapidocr" && pg.imagePath && pg.text.trim()) {
+        const p = svc.extractTextBoth(pg.imagePath, true);
+        p.catch(() => {}); // กัน error จาก promise ที่ไม่ได้ใช้
+        hqPrefetch.set(pg.page, p);
+      }
+    }
+  }
   const reports: CoaReport[] = [];
   for (const pg of pages) {
     dumpDebug("_last-ocr.txt", pg.text); // debug, overwrite per page
     if (!pg.text.trim()) continue;        // skip blank pages (pinned)
     reports.push(
-      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath)
+      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch.get(pg.page))
     );
   }
   if (reports.length === 0) {
