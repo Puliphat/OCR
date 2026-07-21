@@ -5,9 +5,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/axios";
-import { UploadResponse } from "@/lib/types";
+import { UploadResponse, PipelineProgress } from "@/lib/types";
 import Topbar from "@/components/coa/Topbar";
 import Hero from "@/components/coa/Hero";
 import UploadCard from "@/components/coa/UploadCard";
@@ -24,11 +24,16 @@ export default function Home() {
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [daemonStatus, setDaemonStatus] = useState<"restarting" | "uploading" | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [liveMs, setLiveMs] = useState(0); // นาฬิกาวิ่งระหว่างรอวิเคราะห์
 
   const mutation = useMutation<UploadResponse, Error, File>({
     mutationFn: async (f: File) => {
+      const id = crypto.randomUUID();
+      setJobId(id);
       const form = new FormData();
       form.append("file", f);
+      form.append("jobId", id);
       const start = performance.now();
       try {
         const res = await api.post<UploadResponse>("/api/coa/upload", form, {
@@ -43,6 +48,25 @@ export default function Home() {
 
   const { data, isPending, isError, error } = mutation;
   const mode: Mode = isPending ? "analyzing" : data ? "done" : "idle";
+
+  // ระหว่างรอ: poll ขั้นที่ pipeline กำลังทำ ทุก ~0.45s เอามาโชว์ progress จริง
+  const { data: progress } = useQuery<PipelineProgress | null>({
+    queryKey: ["coa-progress", jobId],
+    queryFn: async () =>
+      (await api.get<{ progress: PipelineProgress | null }>(`/api/coa/progress/${jobId}`)).data.progress,
+    enabled: isPending && !!jobId,
+    refetchInterval: 450,
+    gcTime: 0,
+  });
+
+  // นาฬิกาวิ่ง (0.1s tick) ระหว่าง analyzing
+  useEffect(() => {
+    if (!isPending) return;
+    setLiveMs(0);
+    const t0 = performance.now();
+    const iv = setInterval(() => setLiveMs(performance.now() - t0), 100);
+    return () => clearInterval(iv);
+  }, [isPending]);
 
   // Auto-restart RapidOCR daemon when result used Tesseract fallback
   useEffect(() => {
@@ -143,6 +167,8 @@ export default function Home() {
         dragover={dragover}
         isPending={isPending}
         analyzing={mode === "analyzing"}
+        progress={progress ?? null}
+        liveMs={liveMs}
         inputRef={inputRef}
         onPick={onPick}
         onDrop={onDrop}

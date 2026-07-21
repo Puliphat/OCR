@@ -28,3 +28,12 @@ export interface UploadResponse {
   reports: CoaReport[];
   logFile: string;
 }
+
+// ขั้นของ pipeline ที่ backend รายงานระหว่างวิเคราะห์ (poll GET /api/coa/progress/:jobId)
+export type PipelineStage = "render" | "ocr" | "parse" | "hq" | "eval";
+
+export interface PipelineProgress {
+  stage: PipelineStage;
+  page?: number;
+  pages?: number;
+}

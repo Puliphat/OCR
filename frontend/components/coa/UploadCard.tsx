@@ -1,13 +1,17 @@
 // การ์ด upload — drop zone + ปุ่ม Analyze + state กำลังวิเคราะห์
 import type { RefObject } from "react";
 import { fmtBytes } from "@/lib/format";
+import { PipelineProgress } from "@/lib/types";
 import { IconUpload, IconX } from "./icons";
+import ProgressPanel from "./ProgressPanel";
 
 export default function UploadCard({
   file,
   dragover,
   isPending,
   analyzing,
+  progress,
+  liveMs,
   inputRef,
   onPick,
   onDrop,
@@ -20,6 +24,8 @@ export default function UploadCard({
   dragover: boolean;
   isPending: boolean;
   analyzing: boolean;
+  progress: PipelineProgress | null;
+  liveMs: number;
   inputRef: RefObject<HTMLInputElement | null>;
   onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onDrop: (e: React.DragEvent<HTMLLabelElement>) => void;
@@ -80,20 +86,7 @@ export default function UploadCard({
         </button>
       </div>
 
-      {analyzing && (
-        <div className="analyzing">
-          <div className="scanner">
-            <div className="scanner-doc"></div>
-            <div className="scanner-line"></div>
-          </div>
-          <div className="analyzing-text">
-            reading parameters
-            <span className="dot">.</span>
-            <span className="dot">.</span>
-            <span className="dot">.</span>
-          </div>
-        </div>
-      )}
+      {analyzing && <ProgressPanel progress={progress} liveMs={liveMs} />}
     </div>
   );
 }

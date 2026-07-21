@@ -133,17 +133,21 @@
   transform: translateX(2px);
 }
 
-/* ─── analyzing state ─────────────────────────────────────────────────────── */
-.analyzing {
-  padding: 36px 28px;
-  text-align: center;
+/* ─── progress panel (analyzing) ──────────────────────────────────────────── */
+.progress-panel {
+  padding: 22px 24px 16px;
   border-top: 1px solid var(--line);
   animation: fadeIn 0.4s ease;
 }
+.progress-body {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
 .scanner {
-  width: 260px;
-  height: 72px;
-  margin: 0 auto 16px;
+  width: 200px;
+  height: 104px;
+  flex-shrink: 0;
   position: relative;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -178,11 +182,105 @@
   opacity: 0.7;
   animation: scan 1.5s ease-in-out infinite;
 }
-.analyzing-text {
-  font-size: 13px;
-  color: var(--ink-2);
-  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+/* ── ขั้นตอน (checklist) ── */
+.p-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
 }
-.analyzing-text .dot { animation: dot 1.4s infinite; }
-.analyzing-text .dot:nth-child(2) { animation-delay: 0.2s; }
-.analyzing-text .dot:nth-child(3) { animation-delay: 0.4s; }
+.p-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink-3);
+  transition: color 0.2s ease;
+}
+.p-step.done { color: var(--ink-2); }
+.p-step.active { color: var(--ink); font-weight: 500; }
+.p-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--paper);
+  color: #fff;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.p-step.done .p-dot {
+  background: var(--good);
+  border-color: var(--good);
+}
+.p-step.active .p-dot { border-color: var(--accent); }
+.p-step.active .p-dot::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ppulse 1.2s ease-in-out infinite;
+}
+@keyframes ppulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+.p-page { font-size: 11px; color: var(--ink-3); }
+.p-hq {
+  font-size: 11px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 500;
+}
+
+/* ── หลอด % + meta ── */
+.p-bar {
+  margin-top: 18px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+.p-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.45s ease;
+  position: relative;
+  overflow: hidden;
+}
+.p-bar-fill::after {
+  /* shimmer — ให้เห็นว่ายังทำงานอยู่แม้ % ค้าง */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: pshimmer 1.6s linear infinite;
+}
+@keyframes pshimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.p-meta {
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.p-clock {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}

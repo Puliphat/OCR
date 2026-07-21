@@ -18,6 +18,9 @@ backend/coa-logs/
 
 # runtime data (uploads, generated PNGs)
 backend/png-out/
+
+# Playwright MCP artifacts (snapshots/screenshots from browser testing)
+.playwright-mcp/
 backend/uploads/
 
 # OS / editor

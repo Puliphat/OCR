@@ -8,7 +8,7 @@ import * as fs from "fs";
 import * as child_process from "child_process";
 import * as crypto from "crypto";
 import axios from "axios";
-import { runCoaPipeline } from "../services/coa/coa-pipeline";
+import { runCoaPipeline, PipelineProgress } from "../services/coa/coa-pipeline";
 
 const router = Router();
 
@@ -16,6 +16,17 @@ const router = Router();
 // Deliberately NOT persisted: backend restart (= code change in dev) clears it,
 // so re-testing after a pipeline fix never serves stale results.
 const reportCache = new Map<string, unknown>();
+
+// Progress ต่อ jobId — FE ส่ง jobId มากับ form แล้ว poll GET /progress/:jobId ระหว่างรอผล
+// เก็บใน memory เฉยๆ + กวาดตัวเก่าทิ้ง (client ที่ปิดหน้ากลางทางจะไม่ค้าง)
+const progressMap = new Map<string, PipelineProgress & { updatedAt: number }>();
+const PROGRESS_TTL_MS = 10 * 60_000;
+function sweepProgress() {
+  const now = Date.now();
+  for (const [k, v] of progressMap) {
+    if (now - v.updatedAt > PROGRESS_TTL_MS) progressMap.delete(k);
+  }
+}
 
 const UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
 const LOG_DIR = path.join(__dirname, "..", "..", "coa-logs");
@@ -44,6 +55,13 @@ const upload = multer({
 
 router.get("/health", (_req: Request, res: Response) => {
   res.json({ ok: true });
+});
+
+// ขั้นที่ pipeline กำลังทำของ job นี้ — null = ยังไม่เริ่ม/จบไปแล้ว
+// Response: { progress: { stage, page?, pages? } | null }
+router.get("/progress/:jobId", (req: Request, res: Response) => {
+  const p = progressMap.get(String(req.params.jobId));
+  res.json({ progress: p ? { stage: p.stage, page: p.page, pages: p.pages } : null });
 });
 
 // Probe Python sidecar — never 500; always 200 with boolean ok
@@ -103,8 +121,15 @@ router.post(
       return res.status(400).json({ error: "No file uploaded" });
     }
 
+    // jobId จาก FE (มากับ form) — ใช้ผูก progress; รูปแบบไม่ผ่าน = ไม่รายงาน progress เฉยๆ
+    const jobId =
+      typeof req.body?.jobId === "string" && /^[\w-]{8,64}$/.test(req.body.jobId)
+        ? req.body.jobId
+        : null;
+
     try {
       fs.mkdirSync(LOG_DIR, { recursive: true });
+      sweepProgress();
 
       const hash = crypto
         .createHash("sha256")
@@ -116,7 +141,10 @@ router.post(
         return res.json(cached);
       }
 
-      const reports = await runCoaPipeline(req.file.path);
+      const onProgress = jobId
+        ? (p: PipelineProgress) => progressMap.set(jobId, { ...p, updatedAt: Date.now() })
+        : undefined;
+      const reports = await runCoaPipeline(req.file.path, onProgress);
 
       const safeFilename = path.basename(req.file.path);
       const logBasename = `${Date.now()}-${safeFilename}.json`;
@@ -158,6 +186,8 @@ router.post(
     } catch (e) {
       console.error("[coa-route] pipeline error:", (e as Error).message);
       return res.status(500).json({ error: (e as Error).message });
+    } finally {
+      if (jobId) progressMap.delete(jobId); // จบแล้ว (สำเร็จ/พัง) — FE เลิก poll เอง
     }
   }
 );

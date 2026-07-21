@@ -633,3 +633,11 @@ user: upload หน้างานยังรอนาน (10-20s+) — โป�
 1. **LLM 56% = คอขวดโครงสร้าง** — จะลดต้องเปลี่ยน model/prompt/hardware = accuracy A/B (user ตัดสิน)
 2. **บั๊ก keep-best พบใหม่ (ยังไม่แก้ — เปลี่ยน verdict):** HQ ชนะจริง 7P>6P บน PR1950W p2 แต่โดน reject เพราะ PASS-preservation เทียบชื่อ item แบบ strict — v5 อ่าน "Residue on sieve(106m)" vs mobile "(106 μ m)" = คนละ string → นับเป็น "PASS เดิมหาย". แก้ = normalize ชื่อก่อนเทียบ (strip space/μ) → HQ ที่จ่ายเวลาไปแล้วได้ผลตอบแทนจริง. ต้องผ่าน gate เต็มก่อน
 3. sha256 cache (d1dd822) กันไฟล์ซ้ำอยู่แล้ว — pain จริงคือไฟล์ใหม่ file แรกของวัน (cold model 36.5s ถ้า keep-warm ไม่ทำงาน เช่น CLI)
+
+## FIX ROUND 16 (2026-07-21, live progress UI — pipeline บอกขั้นที่กำลังทำให้หน้าเว็บ)
+
+user: หลอด progress เดิมเดาไม่ได้ว่าใกล้เสร็จยัง → ให้ backend รายงานขั้นจริง + วินาที
+
+**ทำ:** (1) `coa-pipeline.ts` เพิ่ม `ProgressFn` callback (optional — CLI/corpus ไม่ส่ง = พฤติกรรมเดิมเป๊ะ) จุด emit: render / ocr(page,pages) / parse(page,pages) / hq / eval. (2) `coa.routes.ts` progress Map + `GET /progress/:jobId` (TTL 10 นาที กวาด orphan); FE ส่ง jobId มากับ form. (3) FE: `ProgressPanel.tsx` ใหม่ — checklist 4 ขั้น + "หน้า n/N" + badge HQ + หลอด % monotonic (น้ำหนักตาม profile ROUND 15) + นาฬิกาวิ่ง + hint "ปกติ ~20 วิ". Playwright ยืนยันบน PR1950W จริง: OCR หน้า 2/2 → AI อ่านตาราง + badge ตรวจซ้ำละเอียดสูง โชว์ถูกจังหวะ
+
+**gate (corpus16, วันเดียวกับ ROUND 15):** 123P/0F/14S — ต่างจาก baseline เช้า (126P) เฉพาะ 3 ไฟล์ variance เดิม: RI-015 **+1P**, PR1950W p2 sieve row (flip พิสูจน์แล้ว 6/6), 1F1710 p4 แกว่ง 14/13/11/12P ภายในวันเดียวบน CLI path ที่ callback = undefined (code ไม่ต่าง) = Ollama drift ไม่ใช่ regression. **0 FAIL · 0 deceptive ทุก run** · BE tsc 0 · FE lint 0 + build ผ่าน

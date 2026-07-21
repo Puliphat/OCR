@@ -18,4 +18,6 @@
     justify-self: start;
     text-align: left;
   }
+  .progress-body { flex-direction: column; align-items: stretch; gap: 16px; }
+  .scanner { width: 100%; height: 72px; }
 }

@@ -86,6 +86,15 @@ function dumpDebug(name: string, content: string) {
 // คืน engine ที่อ่านสำเร็จด้วย (text-layer/rapidocr/tesseract) → แนบ CoaReport.debug ให้รู้ว่าพังขั้นไหน
 export type OcrEngine = "text-layer" | "rapidocr" | "tesseract";
 
+// ★ progress callback ★ — pipeline บอกขั้นที่กำลังทำ (route เอาไปให้หน้าเว็บ poll โชว์ progress)
+//   ไม่ส่ง callback มา = เงียบเหมือนเดิม (CLI/corpus runner ไม่กระทบ)
+export type PipelineProgress = {
+  stage: "render" | "ocr" | "parse" | "hq" | "eval";
+  page?: number;
+  pages?: number;
+};
+export type ProgressFn = (p: PipelineProgress) => void;
+
 // OCR portion only — รับ path รูปที่ render ไว้แล้ว คืน {text, engine}
 // (RapidOCR sidecar + Tesseract multi-rotation fallback — logic เดิมทั้งหมด)
 async function ocrImage(
@@ -168,12 +177,14 @@ async function ocrImage(
 // image file (png/jpg) → คืน 1 entry, page=1
 // pdf → ลอง text-layer ต่อหน้า; หน้าที่ไม่มี usable text → render + OCR
 async function extractTextPerPage(
-  filePath: string
+  filePath: string,
+  onProgress?: ProgressFn
 ): Promise<PageExtract[]> {
   const ext = path.extname(filePath).toLowerCase();
 
   // ไฟล์รูป → OCR เดียว, page=1
   if (ext !== ".pdf") {
+    onProgress?.({ stage: "ocr", page: 1, pages: 1 });
     const result = await ocrImage(filePath);
     return [
       { ...result, page: 1, gridSource: result.gridText ? "spatial" : undefined, imagePath: filePath },
@@ -195,6 +206,7 @@ async function extractTextPerPage(
 
   let imgs: string[] = [];
   if (needRender) {
+    onProgress?.({ stage: "render" });
     imgs = await new PdfService().convertToImage(filePath);
   }
 
@@ -202,6 +214,7 @@ async function extractTextPerPage(
   if (pages.length === 0) {
     const results: PageExtract[] = [];
     for (let i = 0; i < imgs.length; i++) {
+      onProgress?.({ stage: "ocr", page: i + 1, pages: imgs.length });
       const ocr = await ocrImage(imgs[i]);
       results.push({
         ...ocr,
@@ -237,6 +250,7 @@ async function extractTextPerPage(
           `No rendered image for page ${i + 1} (rendered ${imgs.length} of ${pages.length} pages) — refusing to OCR a misaligned page`
         );
       }
+      onProgress?.({ stage: "ocr", page: i + 1, pages: pages.length });
       const ocr = await ocrImage(imgPath);
       results.push({
         ...ocr,
@@ -935,7 +949,8 @@ async function processPage(
   gridSource?: GridSource,
   gridOrient?: GridOrient,
   imagePath?: string,
-  hqPrefetch?: ReturnType<RapidOcrService["extractTextBoth"]>
+  hqPrefetch?: ReturnType<RapidOcrService["extractTextBoth"]>,
+  onProgress?: ProgressFn
 ): Promise<CoaReport> {
   const best = await runFlatGridBest(
     filename, filePath, text, engine, page, gridText, gridSource, gridOrient
@@ -962,6 +977,7 @@ async function processPage(
     console.log(
       `  [hq-ocr] best ยังมี ${best.summary.skip} SKIP (${worthy.length} ตัวมีโอกาสหายจาก re-OCR) → HQ challenger (daemon HQ engine, default v5-server)`
     );
+    onProgress?.({ stage: "hq", page });
     try {
       // ใช้ผล HQ OCR ที่สั่งไว้ล่วงหน้า (ดู runCoaPipeline) — ถ้าไม่มีก็ OCR ตรงนี้เหมือนเดิม
       const hqOcr = await (hqPrefetch ?? new RapidOcrService().extractTextBoth(imagePath, true));
@@ -998,9 +1014,9 @@ async function processPage(
 
 // Entry point ของ pipeline — เรียกจากทั้ง HTTP route และ CLI (test-coa.ts)
 // คืน CoaReport[] หนึ่งตัวต่อหน้า PDF (single-page/image = [1 report])
-export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
+export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn): Promise<CoaReport[]> {
   const filename = path.basename(filePath).replace(/^\d+-/, "");
-  const pages = await extractTextPerPage(filePath);
+  const pages = await extractTextPerPage(filePath, onProgress);
   // ★ HQ prefetch (perf) ★ — สั่ง HQ OCR ไว้ล่วงหน้าระหว่าง LLM ทำงาน พอถึงคิว HQ ก็ได้ผลเลยไม่ต้องรอ ~10s
   //   เปิดด้วย COA_OCR_HQ_SPECULATE=true เฉพาะตอน daemon อยู่คนละเครื่อง (LAN) — เครื่องเดียวกัน OCR จะแย่ง CPU กับ LLM แล้วช้าลงแทน
   const speculate = OCR_HQ_FALLBACK_ENABLED && process.env.COA_OCR_HQ_SPECULATE === "true";
@@ -1019,10 +1035,12 @@ export async function runCoaPipeline(filePath: string): Promise<CoaReport[]> {
   for (const pg of pages) {
     dumpDebug("_last-ocr.txt", pg.text); // debug, overwrite per page
     if (!pg.text.trim()) continue;        // skip blank pages (pinned)
+    onProgress?.({ stage: "parse", page: pg.page, pages: pages.length });
     reports.push(
-      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch.get(pg.page))
+      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch.get(pg.page), onProgress)
     );
   }
+  onProgress?.({ stage: "eval" });
   if (reports.length === 0) {
     // all pages blank → one empty report so route/UI still render
     reports.push({
