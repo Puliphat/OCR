@@ -2,8 +2,9 @@
 // Verifies recoverSpecificationColumn picks the RIGHT (Specification) Min/Max pair on DuPont
 //   double-min/max grids, REJECTS mangled cells instead of falling through to a neighbour column
 //   (the fabricated-spec trap), needs ≥2 agreeing blocks, and abstains entirely off-layout.
-import { recoverSpecificationColumn } from "./spec-column-recovery";
+import { recoverSpecificationColumn, reconcileDupontSpecs } from "./spec-column-recovery";
 import { RawCoaItem } from "./ollama-coa.service";
+import { EvaluatedItem } from "./coa-evaluator";
 
 let pass = 0;
 let fail = 0;
@@ -150,6 +151,57 @@ const items8: RawCoaItem[] = [
 recoverSpecificationColumn(items8, grid8);
 check("Fiber → 0.92~1.42 (not merged with Moisture)", items8[0].specRaw === "0.92~1.42", `got ${items8[0].specRaw}`);
 check("Moisture → 5.0~11.0 (not merged with Fiber)", items8[1].specRaw === "5.0~11.0", `got ${items8[1].specRaw}`);
+
+// ── 9) cross-page reconciliation — เคสจริง 1F1710 (หน้า 3 หยิบคอลัมน์ Batch มาเป็น spec) ──
+console.log("\n[9] cross-page reconciliation (DuPont multi-batch)");
+function xrow(name: string, min: number, max: number, result: number): EvaluatedItem {
+  return {
+    name, unit: null, method: null, min, max, result,
+    status: "PASS", reason: "", specRaw: `${min}~${max}`, resultRaw: String(result),
+    needsReview: true, specDupont: true,
+  };
+}
+// p2/p4 อ่าน Specification band ถูก (5~11) · p3 หยิบ Batch band (5.4~9.5) — ชื่อเพี้ยนแบบ OCR จริง
+const p2 = { page: 2, rows: [xrow("Canadian Std Freencss", 160, 360, 241.417), xrow("Percent Moisture", 5, 11, 8.1)] };
+const p3 = { page: 3, rows: [xrow("Canadian Sid Frceness", 160, 360, 241.417), xrow("Percent Moisture", 5.4, 9.5, 8.1)] };
+const p4 = { page: 4, rows: [xrow("Canadian Std Freeness", 160, 360, 241.417), xrow("Percent Moisture", 5, 11, 8.1)] };
+const rec = reconcileDupontSpecs([p2, p3, p4]);
+check("แก้ spec หน้าที่เสียงข้างน้อย 1 แถว", rec.corrected.length === 1, JSON.stringify(rec.corrected));
+check("แก้ที่หน้า 3", rec.corrected[0]?.page === 3, `got ${rec.corrected[0]?.page}`);
+check("Moisture p3 → 5~11", p3.rows[1].min === 5 && p3.rows[1].max === 11, `got ${p3.rows[1].min}~${p3.rows[1].max}`);
+check("แถวที่แก้ยังคงธงไว้", p3.rows[1].needsReview === true);
+check("แถวที่หน้าอื่นยืนยัน → เขียว", p2.rows[1].needsReview === false && p4.rows[1].needsReview === false);
+check(
+  "ชื่อ OCR เพี้ยน (Freencss/Frceness/Freeness) จับเป็นกลุ่มเดียว → เขียวทั้ง 3",
+  [p2, p3, p4].every((p) => p.rows[0].needsReview === false)
+);
+check("greened = 5 (Freeness 3 + Moisture 2)", rec.greened === 5, `got ${rec.greened}`);
+
+// ไฟล์หน้าเดียว = ไม่มีอะไรมายัน → no-op ทั้งหมด
+const solo = { page: 1, rows: [xrow("Percent Moisture", 5.4, 9.5, 8.1)] };
+const recSolo = reconcileDupontSpecs([solo]);
+check(
+  "[sentinel] หน้าเดียว → no-op คงธงเดิม",
+  recSolo.corrected.length === 0 && recSolo.greened === 0 && solo.rows[0].needsReview === true
+);
+
+// เสมอ (2 หน้าคนละ band) → abstain ไม่เดา
+const t1 = { page: 1, rows: [xrow("Percent Moisture", 5, 11, 8.1)] };
+const t2 = { page: 2, rows: [xrow("Percent Moisture", 5.4, 9.5, 8.1)] };
+const recTie = reconcileDupontSpecs([t1, t2]);
+check(
+  "[sentinel] เสมอ → abstain ไม่แก้ ไม่เขียว",
+  recTie.corrected.length === 0 && recTie.greened === 0 && t1.rows[0].needsReview === true
+);
+
+// แถวที่ไม่ใช่ layout นี้ (specDupont ไม่ได้ปัก) → ไม่ถูกแตะ
+const other = { page: 1, rows: [{ ...xrow("Moisture", 5.4, 9.5, 8.1), specDupont: false }] };
+const other2 = { page: 2, rows: [{ ...xrow("Moisture", 5, 11, 8.1), specDupont: false }] };
+check(
+  "[sentinel] แถวที่ไม่ใช่ DuPont ไม่ถูกแตะ",
+  reconcileDupontSpecs([other, other2]).greened === 0 && other.rows[0].needsReview === true
+);
+
 
 console.log(`\n${"=".repeat(50)}\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

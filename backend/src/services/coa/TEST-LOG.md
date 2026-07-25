@@ -934,3 +934,63 @@ flag loop รัน **หลัง** `gridBeatsFlat` ตัดสินไปแ
 **41 ธงที่เหลือ = ของจริงล้วน:** boundary-exact 4 (D50 3.5/2~3.5, AL2O3 0.5/0~0.5, MGO, Residue) ·
 DuPont spec-column 27 (1F1710 9 หน้า × 3 — spec มาจาก spatial) · sieve-reconstruct 2 · interval-result 2 ·
 one-sided บนไฟล์ scan 6 · 0 FAIL · 0 deceptive · BE+FE tsc 0 · 14 suite ผ่านครบ
+
+---
+
+## ROUND 23 — ถอด Tesseract + cross-page reconciliation (DuPont)
+
+### 23a) ถอด Tesseract fallback ทิ้ง (commit 61e5989)
+
+user: "ไม่ได้ใช้แล้วลบไปเลย ถ้า daemon ล่มให้เตือนที่หน้าเว็บ"
+
+Tesseract วิ่งเฉพาะตอน RapidOCR daemon ล่ม และสิ่งที่มันคืนมาคือ **เลขที่อ่านออกแต่ผิด** (`7 ± 3`→`743`,
+เลข bleed ข้ามแถว, multi-column ยุบ) ซึ่งไหลเข้า evaluator แล้วออกมาเป็น PASS/FAIL = failure mode
+ที่แย่ที่สุดของระบบนี้. **พังดังๆ ดีกว่าอ่านผิดเงียบๆ**
+
+- `ocrImage` โยน error พร้อม code ที่ FE branch ได้: `OCR_DAEMON_DOWN` (daemon ล่ม → รีสตาร์ตช่วยได้)
+  vs `OCR_EMPTY_RESULT` (daemon ขึ้นอยู่แต่ไฟล์โล่ง → รีสตาร์ตไปก็เท่าเดิม) — อย่าบอกให้รีสตาร์ตของที่ทำงานอยู่
+- FE มีกลไก restart+poll+re-upload อยู่แล้ว แต่เดิม trigger จาก `ocrEngine === "tesseract"` ของ **ผลที่สำเร็จ**
+  ซึ่งตอนนี้เกิดไม่ได้ → ย้ายมา trigger จาก error code · unwrap `response.data.error` (axios ให้แค่ "status code 500")
+- ถอด dep `tesseract.js` + env ที่ตายแล้ว (`USE_RAPIDOCR`, `RAPIDOCR_REQUIRED`) + แก้ docs ทุกที่ที่เขียนว่ามี fallback
+- `ImageProcessingService.preprocess` **คงไว้** — RapidOCR rotation path ใช้อยู่
+- ✔ ทดสอบจริงผ่าน browser: kill daemon → หน้าเว็บขึ้น "OCR daemon ไม่ทำงาน" → สั่ง restart เอง → daemon ขึ้น
+  → ยิงไฟล์เดิมซ้ำอัตโนมัติ → 4 PASS
+
+### 23b) DuPont cross-page reconciliation — "เคสพิเศษ" ที่ user ขอ
+
+**Grade ใบจริงก่อน (1F1710 = DuPont multi-batch, 11 บล็อกใน 4 หน้า):**
+คอลัมน์คือ `Property | UoM | [Batch] Avg Min Max Std | [Specification] Aim Min Max`
+ทุกบล็อกเป็น Lot 26011A เดียวกัน → ค่าซ้ำเป๊ะทั้งใบ (ไม่ใช่ parser ปั่นซ้ำ):
+
+| property | Avg | Batch Min~Max | **Spec Min~Max** |
+|---|---|---|---|
+| Canadian Std Freeness | 241.417 | 217.000~248.500 | **160.000~360.000** |
+| Fiber Length | 1.090 | 0.990~1.180 | **0.920~1.420** |
+| Percent Moisture | 8.100 | 5.400~9.500 | **5.000~11.000** |
+
+→ spec ที่ pipeline กู้มา **ตรงกับ Specification จริงทั้ง 3 รายการ** · ตรากับ "ACCEPT By: QA Dept."
+
+**แต่ปล่อยเขียวเฉยๆ ไม่ได้** — log รอบเก่าจับได้ว่า **หน้า 3 อ่าน Percent Moisture เป็น 5.400~9.500
+= คอลัมน์ Batch ไม่ใช่ Specification** (หน้า 2/4 อ่าน 5.000~11.000 ถูก). spec แคบกว่าจริง = deceptive-FAIL รออยู่
+→ ธงตัวนี้ทำงานถูกแล้ว การ "ยกเว้นทั้ง layout" จะกลบเคสนี้พอดี
+
+**เคสพิเศษที่เขียนแทน (`reconcileDupontSpecs`):** เอกสารซ้ำบล็อกเดิมหลายหน้า → **ให้หน้ายันกันเอง**
+- โหวตด้วย **จำนวนหน้า** ไม่ใช่จำนวนแถว (บล็อกซ้ำในหน้าเดียวไม่ควรหนักกว่าหน้าอื่น)
+- band ที่ชนะต้องมาจาก **≥2 หน้า** และมากกว่าอันดับสองจริง — เสมอ = abstain ทั้งกลุ่ม
+- แถวที่ตรง band ที่ชนะ → **เคลียร์ธง** (หลักฐานที่หน้าเดียวไม่มี)
+- แถวที่ต่าง → **แก้ spec เป็น band ที่ชนะ + evaluate ใหม่ + คงธงไว้** (หน้านี้เคยพลาดมาแล้ว)
+- จับกลุ่มชื่อด้วย `lev ≤ 3` — OCR ให้ `Freeness`/`Freencss`/`Frceness`/`Sid Frceness` มาจริง
+- ★ no-op เมื่อ: ไฟล์หน้าเดียว · ไม่มีเสียงข้างมาก · แถวที่ไม่ได้ปัก `specDupont` ★
+
+### gate (corpus 17)
+| | PASS | FAIL | SKIP | rows | needsReview | TOTAL |
+|---|---|---|---|---|---|---|
+| ROUND 22 | 133 | 0 | 11 | 144 | 41 | 333s |
+| **ROUND 23** | **133** | **0** | **11** | **144** | **14** | 350s |
+
+**per-file เท่ากันเป๊ะทั้ง 22 ไฟล์-หน้า** (ต่างแค่เวลา) — verdict ไม่ขยับเลยแม้แต่แถวเดียว
+`[dupont-xpage] clean-green 27 แถว · แก้ spec 0 แถว` (รอบนี้ทุกหน้าอ่าน Specification ถูกหมด → ไม่มีอะไรต้องแก้;
+path แก้ spec มี fixture คุมไว้แทน) · **needsReview 41 → 14 (−66%)**
+
+**14 ธงที่เหลือ:** ติดขอบพอดี 5 · spatial keep-best บนไฟล์สแกน 5 · sieve reconstruct 2 · result เป็นช่วง 2
+· 0 FAIL · 0 deceptive · BE+FE tsc 0 · 14 suite ผ่าน (`spec-column-recovery` 17→27 เช็ค)

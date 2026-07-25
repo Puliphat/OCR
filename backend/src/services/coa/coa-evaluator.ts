@@ -35,6 +35,9 @@ export interface EvaluatedItem {
   //   result (ด้านบน) = "ขอบที่ตัดสิน" (binding bound) ของช่วงนี้ → guard/margin ที่คิดบนเลขเดี่ยวยังทำงานถูกทาง
   resultMin?: number | null;
   resultMax?: number | null;
+  // แถวนี้ spec มาจาก DuPont double-min/max layout (spec-column-recovery) — ใช้เป็นเป้าของ
+  //   cross-page reconciliation เท่านั้น (เอกสารซ้ำบล็อกเดิมหลายหน้า → หน้ายันกันเองได้)
+  specDupont?: boolean;
 }
 
 // Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)

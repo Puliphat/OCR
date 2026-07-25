@@ -19,7 +19,7 @@ import {
 import { recoverResultsFromOcr } from "./result-recovery";
 import { recoverResultMinMax } from "./result-minmax-recovery";
 import { recoverAverageColumn } from "./avg-column-recovery";
-import { recoverSpecificationColumn } from "./spec-column-recovery";
+import { recoverSpecificationColumn, reconcileDupontSpecs } from "./spec-column-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
 import { recoverSieveTableResults, recoverMissingSieveRows } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
@@ -782,9 +782,13 @@ async function runExtractionPass(
 
   // ★ spec-column (DuPont) → surface ALL detected rows ★ — the spec was re-sourced from an inferred
   //   (spatial) grid; even a corrected/unchanged spec must be human-verified, never silent clean-green.
+  //   ★ ปัก specDupont ไว้ด้วย ★ — เอกสารแบบนี้ซ้ำบล็อกเดิมหลายหน้า → หลังรันครบทุกหน้าเอามายันกันเองได้
+  //   (reconcileDupontSpecs) ซึ่งเป็นหลักฐานที่หน้าเดียวไม่มี
   if (specDupontNames.size > 0) {
     for (const r of evaluated.rows) {
-      if (specDupontNames.has(r.name.trim()) && r.status === "PASS") r.needsReview = true;
+      if (!specDupontNames.has(r.name.trim())) continue;
+      r.specDupont = true;
+      if (r.status === "PASS") r.needsReview = true;
     }
   }
 
@@ -1065,6 +1069,23 @@ export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn):
     );
   }
   onProgress?.({ stage: "eval" });
+
+  // ★ cross-page reconciliation (DuPont multi-batch) ★ — ทำได้เฉพาะตรงนี้ที่เห็นครบทุกหน้าแล้ว
+  //   หน้าหนึ่งอ่าน spec พลาดจะถูกหน้าอื่นค้าน (เคสจริง 1F1710 p3 Percent Moisture หยิบคอลัมน์ Batch)
+  //   no-op สำหรับไฟล์หน้าเดียว / ไฟล์ที่ไม่ใช่ layout นี้
+  const dupont = reconcileDupontSpecs(reports);
+  if (dupont.greened > 0 || dupont.corrected.length > 0) {
+    for (const c of dupont.corrected) {
+      console.log(
+        `  [dupont-xpage] page ${c.page} ${c.name}: spec ${c.from} → ${c.to} (${c.status}) — หน้าอื่นยืนยัน`
+      );
+    }
+    for (const r of reports) r.summary = summarize(r.rows);
+    console.log(
+      `  [dupont-xpage] clean-green ${dupont.greened} แถว (หน้ายันกันเอง) · แก้ spec ${dupont.corrected.length} แถว`
+    );
+  }
+
   if (reports.length === 0) {
     // all pages blank → one empty report so route/UI still render
     reports.push({

@@ -24,6 +24,7 @@
 //   returned in `dupontNames` so the caller flags it needsReview (spatial grid = inferred columns →
 //   amber), keeping even a corrected spec out of silent clean-green.
 import { RawCoaItem } from "./ollama-coa.service";
+import { EvaluatedItem, evaluateItem } from "./coa-evaluator";
 
 // "Specification" / "Specifications" / OCR "Spccification" — loose stem match
 const SPEC_KW_RE = /sp\w*ificat/i;
@@ -268,4 +269,100 @@ export function recoverSpecificationColumn(items: RawCoaItem[], gridText: string
   }
 
   return { overridden, dupontNames };
+}
+
+// ★ Cross-page reconciliation — เอกสาร DuPont แบบ multi-batch (เคสจริง 1F1710) ★
+//
+// Why: ใบพวกนี้พิมพ์บล็อกเดิมซ้ำทีละ Batch ไปเรื่อยๆ ข้ามหน้า (1F1710 = 11 บล็อกใน 4 หน้า) และ
+//   Specification band ของ property เดียวกัน **เท่ากันทุกบล็อกทั้งไฟล์** (ตรวจกับใบจริงแล้ว:
+//   Freeness 160.000~360.000 · Fiber Length 0.920~1.420 · Percent Moisture 5.000~11.000)
+//   แต่ pipeline ประมวลผลทีละหน้า → หน้าไหนอ่านพลาดก็พลาดเงียบๆ ไม่มีใครค้าน. เคสจริงที่จับได้:
+//   หน้า 3 อ่าน Percent Moisture เป็น 5.400~9.500 ซึ่งคือ **คอลัมน์ Batch Min/Max ไม่ใช่ Specification**
+//   (หน้า 2 กับ 4 อ่านได้ 5.000~11.000 ถูกต้อง) — spec แคบกว่าความจริง = deceptive-FAIL รออยู่
+//
+// How: โหวตด้วย "จำนวนหน้า" ไม่ใช่จำนวนแถว (บล็อกซ้ำในหน้าเดียวไม่ควรมีน้ำหนักมากกว่าหน้าอื่น)
+//   band ที่ชนะต้องมาจาก ≥2 หน้า และมากกว่าอันดับสองจริง (เสมอ = abstain ทั้งกลุ่ม)
+//   • แถวที่ตรง band ที่ชนะ → เคลียร์ธง (หน้าอื่นยืนยันให้แล้ว = หลักฐานที่หน้าเดียวไม่มี)
+//   • แถวที่ต่าง → แก้ spec เป็น band ที่ชนะ + evaluate ใหม่ + **คงธงไว้** (หน้านี้เคยอ่านพลาดมาแล้ว)
+//
+// ★ SAFETY ★ แตะเฉพาะแถวที่ specDupont (layout นี้เท่านั้น) · ไฟล์หน้าเดียว/ไม่มีเสียงข้างมาก = no-op
+//   ทุกกรณี → guard ตัวอื่นและ COA ปกติไม่ได้รับผลกระทบ
+export interface DupontReconcileResult {
+  greened: number;
+  corrected: { page: number; name: string; from: string; to: string; status: string }[];
+}
+
+export function reconcileDupontSpecs(
+  pages: { page?: number; rows: EvaluatedItem[] }[]
+): DupontReconcileResult {
+  const out: DupontReconcileResult = { greened: 0, corrected: [] };
+  if (!pages || pages.length < 2) return out; // ต้องมี ≥2 หน้าถึงจะมีอะไรมายัน
+
+  // 1. จับกลุ่มแถว dupont ข้ามหน้าด้วยชื่อ (OCR เพี้ยนได้: Freeness/Freencss/Frceness → lev ≤ 3)
+  type Entry = { row: EvaluatedItem; page: number };
+  const groups: { key: string; entries: Entry[] }[] = [];
+  for (const [i, pg] of pages.entries()) {
+    const pageNo = pg.page ?? i + 1;
+    for (const row of pg.rows ?? []) {
+      if (!row.specDupont) continue;
+      const k = nameKey(row.name);
+      if (!k) continue;
+      const g = groups.find((x) => x.key === k || lev(x.key, k) <= 3);
+      if (g) g.entries.push({ row, page: pageNo });
+      else groups.push({ key: k, entries: [{ row, page: pageNo }] });
+    }
+  }
+
+  for (const g of groups) {
+    // 2. โหวตระดับหน้า — 1 หน้าออกเสียงได้ band ละ 1 ครั้ง
+    const pagesByBand = new Map<string, Set<number>>();
+    for (const e of g.entries) {
+      if (e.row.min == null || e.row.max == null) continue;
+      const band = `${e.row.min}|${e.row.max}`;
+      const s = pagesByBand.get(band) ?? new Set<number>();
+      s.add(e.page);
+      pagesByBand.set(band, s);
+    }
+    if (pagesByBand.size < 1) continue;
+    const ranked = [...pagesByBand.entries()].sort((a, b) => b[1].size - a[1].size);
+    const [winBand, winPages] = ranked[0];
+    if (winPages.size < 2) continue;                                  // หลักฐานไม่พอ
+    if (ranked[1] && ranked[1][1].size === winPages.size) continue;   // เสมอ → abstain
+
+    const [wMin, wMax] = winBand.split("|").map(Number);
+    // specRaw ของแถวที่อ่านถูก ใช้เป็นข้อความอ้างอิงตอนแก้แถวที่ผิด (รักษา format เดิมของใบ)
+    const winRaw =
+      g.entries.find((e) => e.row.min === wMin && e.row.max === wMax)?.row.specRaw ??
+      `${wMin}~${wMax}`;
+
+    for (const e of g.entries) {
+      const onWin = e.row.min === wMin && e.row.max === wMax;
+      if (onWin) {
+        if (e.row.needsReview && e.row.status === "PASS") {
+          e.row.needsReview = false;
+          out.greened++;
+        }
+        continue;
+      }
+      if (e.row.min == null || e.row.max == null) continue; // ไม่มี band ให้เทียบ → ปล่อยตามเดิม
+      const from = e.row.specRaw ?? `${e.row.min}~${e.row.max}`;
+      const fixed = evaluateItem({
+        name: e.row.name,
+        unit: e.row.unit,
+        method: e.row.method,
+        specRaw: winRaw,
+        specMin: null,
+        specMax: null,
+        result: e.row.resultRaw ?? e.row.result,
+      });
+      e.row.min = fixed.min;
+      e.row.max = fixed.max;
+      e.row.specRaw = fixed.specRaw;
+      e.row.status = fixed.status;
+      e.row.needsReview = true; // หน้านี้อ่าน spec พลาดมาแล้ว — ให้คนยืนยันแม้แก้ให้แล้ว
+      e.row.reason = `spec ของหน้านี้ไม่ตรงกับหน้าอื่น (${from}) — ใช้ค่าที่ ${winPages.size} หน้าอ่านตรงกัน (${winRaw}) แทน เทียบกับใบจริง`;
+      out.corrected.push({ page: e.page, name: e.row.name, from, to: winRaw, status: fixed.status });
+    }
+  }
+  return out;
 }
