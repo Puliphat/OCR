@@ -17,12 +17,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Backend**: Express + TypeScript + TypeORM + PostgreSQL + pdfjs-dist + axios → Ollama / OCR sidecar
 - **Frontend**: Next.js 16 (app router) + React 19 + Tailwind CSS 4 + @tanstack/react-query + axios
-- **OCR sidecar** (`ocr-py/`): Python **RapidOCR `rapidocr` 3.x** (PP-OCRv4 **mobile** default, CPU onnxruntime, models ~16MB / venv ~366MB) — default OCR engine สำหรับ scanned COA. v4 (successor ของ `rapidocr-onnxruntime` ที่ค้างที่ PP-OCRv3 เพราะ pin Requires-Python <3.13). แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). Tesseract.js เหลือเป็น fallback อย่างเดียวถ้า daemon ล่ม
+- **OCR sidecar** (`ocr-py/`): Python **RapidOCR `rapidocr` 3.x** (PP-OCRv4 **mobile** default, CPU onnxruntime, models ~16MB / venv ~366MB) — default OCR engine สำหรับ scanned COA. v4 (successor ของ `rapidocr-onnxruntime` ที่ค้างที่ PP-OCRv3 เพราะ pin Requires-Python <3.13). แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). ★ **ไม่มี fallback engine** ★ — Tesseract.js ถูกถอดออก 2026-07-26 (ROUND 23): มันอ่านได้แต่เลขเพี้ยน = deceptive PASS/FAIL ซึ่งแย่กว่าพังดังๆ. daemon ล่ม → pipeline โยน `OCR_DAEMON_DOWN` → หน้าเว็บเตือน + สั่ง restart daemon ให้อัตโนมัติ
   - Override: `COA_OCR_MODEL_TYPE` (`mobile` default | `server`), `COA_OCR_VERSION` (`PP-OCRv4` default | `PP-OCRv5`) — server/v5 auto-download ModelScope. mobile ชนะ corpus (ZP10/RI-015 ground-truth) + เบากว่า 12x
   - **HQ fallback engine** (`POST {hq:true}` → daemon lazy-load engine ตัวที่ 2): scanned page ที่ default อ่าน spec/เลขเพี้ยนจน SKIP → pipeline re-OCR ด้วย HQ engine (default **server/PP-OCRv5**) เป็น challenger, keep เฉพาะชนะ keep-best ขาด (เพิ่ม PASS, 0 FAIL, PASS เดิมครบ) = anti-regression. lazy-load → ไฟล์สะอาดไม่โหลด v5 เลย (ไม่กิน RAM); inference ใช้ lock เดียว ไม่รันพร้อม default. เคส 4A: mobile อ่าน LoI "≤3.5%"→"%98"→SKIP, v5-server อ่านถูก→PASS. **v5-mobile ไม่พอ** (อ่านเป็น "985") — ต้อง server-tier. Override: `COA_OCR_HQ_MODEL_TYPE` (`server` default), `COA_OCR_HQ_VERSION` (`PP-OCRv5` default), `COA_OCR_HQ_FALLBACK=false` ปิด
 - **LLM**: Ollama HTTP API ที่ `localhost:11434`
   - `qwen3:4b` — parse text → JSON (default; reasoning model → ใส่ `think:false`. A/B vs โมเดลอื่น ดู `src/scripts/ab-models.ts`)
-  - Override: `OLLAMA_URL`, `OLLAMA_MODEL`, `OCR_SIDECAR_URL`, `USE_RAPIDOCR`
+  - Override: `OLLAMA_URL`, `OLLAMA_MODEL`, `OCR_SIDECAR_URL`
 
 ## Commands
 
@@ -64,7 +64,6 @@ OLLAMA_URL=http://localhost:11434/api/generate
 OLLAMA_MODEL=qwen3:4b
 OCR_SIDECAR_URL=http://127.0.0.1:8765    # RapidOCR daemon (default) — ตั้ง http://<LAN_IP>:8765 ถ้า daemon อยู่คนละเครื่อง
 OCR_BIND_HOST=0.0.0.0                    # (ฝั่ง daemon) 0.0.0.0 = รับ LAN (deploy default) | 127.0.0.1 = เฉพาะเครื่อง
-USE_RAPIDOCR=true                        # false = ข้าม sidecar ใช้ Tesseract เลย
 COA_OCR_MODEL_TYPE=mobile                # mobile (default) | server  — อ่านโดย ocr-py/ocr_server.py
 COA_OCR_VERSION=PP-OCRv4                 # PP-OCRv4 (default) | PP-OCRv5
 COA_OCR_HQ_PRELOAD=true                  # false = HQ engine กลับเป็น lazy-load (ประหยัด RAM, request hq แรกช้า)
@@ -119,7 +118,7 @@ ocr-py/                         ★ Python OCR sidecar ★
 
 **3 ขั้น** (อยู่ใน `backend/src/services/coa/coa-pipeline.ts`):
 
-1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → ถ้า daemon ล่ม fall back Tesseract `eng+tha` (multi-rotation)
+1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → daemon ล่ม/อ่านไม่ออก = **โยน error ไม่มี fallback**
 2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama qwen3:4b (`think:false`), `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
 3. **Deterministic evaluator** (`coa/coa-evaluator.ts`) → status `PASS`/`FAIL`/`SKIP` ต่อ row พร้อม `reason` + summary
 

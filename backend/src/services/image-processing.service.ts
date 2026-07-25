@@ -1,7 +1,7 @@
 import sharp = require("sharp");
 
 export class ImageProcessingService {
-  // Preprocess รูปก่อนส่ง Tesseract — return Buffer (ไม่เซฟไฟล์ ลด clutter ใน uploads/)
+  // Preprocess รูปก่อนส่ง OCR — return Buffer (ไม่เซฟไฟล์ ลด clutter ใน uploads/)
   // rotation: หมุนภาพก่อน preprocess (0/90/180/270) — ใช้คู่กับ multi-rotation OCR ใน coa-pipeline
   // normalize() เพิ่ม contrast — ช่วยอ่านตัวอักษรเก่า/จาง
   async preprocess(filePath: string, rotation = 0): Promise<Buffer> {

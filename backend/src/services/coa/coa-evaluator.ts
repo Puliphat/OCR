@@ -403,10 +403,10 @@ export interface CoaInput {
 }
 
 // debug: หลักฐานดิบของ run นี้ — เปิดดูใน coa-log JSON ได้ว่า "พังที่ model ไหน"
-//   OCR (rapidocr/tesseract/text-layer) อ่านมาเป็นอะไร vs LLM (ollama) parse ออกมาเป็นอะไร
+//   OCR (rapidocr/text-layer) อ่านมาเป็นอะไร vs LLM (ollama) parse ออกมาเป็นอะไร
 //   เคส Lot240521: ocrText อ่าน "0.3 | 3 Max" ถูก แต่ llmRaw ได้ result 42 → ผิดที่ LLM ชัดเจน
 export interface CoaDebug {
-  ocrEngine: string; // "text-layer" | "rapidocr" | "tesseract"
+  ocrEngine: string; // "text-layer" | "rapidocr"
   ocrText: string; // ข้อความที่ป้อนเข้า LLM (หลัง OCR/text-layer)
   llmModel: string; // ollama model ที่ใช้ parse
   llmRaw: string | null; // JSON ดิบที่ LLM คายออกมา (ก่อน guard/normalize)

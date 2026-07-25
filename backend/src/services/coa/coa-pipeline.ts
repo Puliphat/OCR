@@ -2,7 +2,6 @@
 // แก้ลำดับขั้น/เปลี่ยน OCR engine/เปลี่ยน LLM service ที่นี่
 import * as fs from "fs";
 import * as path from "path";
-import * as Tesseract from "tesseract.js";
 import { PdfService } from "../pdf.service";
 import { ImageProcessingService } from "../image-processing.service";
 import { OllamaCoaService, RawCoa } from "./ollama-coa.service";
@@ -38,7 +37,7 @@ import { filterMetadataRows } from "./metadata-row-filter";
 //   column band จาก token bbox เก็บ cell ว่าง → LLM map spec/result ไม่เลื่อน (เคส column-shift เช่น SODA/PR1950W)
 //   ★ ใช้แบบ keep-best (ดู processPage): flat เป็น floor เสมอ, grid challenger เก็บเฉพาะตอนชนะขาด → 0 regress ★
 //   ★ guard ทุกตัวกิน flat text (debug.ocrText) เสมอ — grid ป้อน LLM อย่างเดียว ★
-//   rapidocr engine เท่านั้น (text-layer/tesseract ไม่มี token bbox ที่เชื่อถือได้)
+//   rapidocr engine เท่านั้น (text-layer ไม่มี token bbox)
 //   toggle: COA_GRID_LLM=false ปิด grid challenger (กลับ flat ล้วน). default เปิด
 const GRID_LLM_ENABLED = process.env.COA_GRID_LLM !== "false";
 
@@ -83,9 +82,14 @@ function dumpDebug(name: string, content: string) {
 }
 
 // Step 1 — ดึงข้อความออกจากไฟล์
-// RapidOCR = default OCR (แม่นกว่า Tesseract มากบนตาราง COA, CPU ~300MB) — ปิดด้วย USE_RAPIDOCR=false
-// คืน engine ที่อ่านสำเร็จด้วย (text-layer/rapidocr/tesseract) → แนบ CoaReport.debug ให้รู้ว่าพังขั้นไหน
-export type OcrEngine = "text-layer" | "rapidocr" | "tesseract";
+// RapidOCR = OCR ตัวเดียวของระบบ (CPU ~300MB) — ไม่มี fallback engine แล้ว
+// คืน engine ที่อ่านสำเร็จด้วย (text-layer/rapidocr) → แนบ CoaReport.debug ให้รู้ว่าพังขั้นไหน
+export type OcrEngine = "text-layer" | "rapidocr";
+
+// ★ error code ที่ FE branch ได้ ★ — daemon ล่ม = กดปุ่มเริ่ม daemon แล้วลองใหม่ได้
+//   ไฟล์โล่ง = ไม่ต้องรีสตาร์ต daemon (รีไปก็เหมือนเดิม) ต้องไปดูไฟล์
+export const OCR_DAEMON_DOWN = "OCR_DAEMON_DOWN";
+export const OCR_EMPTY_RESULT = "OCR_EMPTY_RESULT";
 
 // ★ progress callback ★ — pipeline บอกขั้นที่กำลังทำ (route เอาไปให้หน้าเว็บ poll โชว์ progress)
 //   ไม่ส่ง callback มา = เงียบเหมือนเดิม (CLI/corpus runner ไม่กระทบ)
@@ -97,81 +101,36 @@ export type PipelineProgress = {
 export type ProgressFn = (p: PipelineProgress) => void;
 
 // OCR portion only — รับ path รูปที่ render ไว้แล้ว คืน {text, engine}
-// (RapidOCR sidecar + Tesseract multi-rotation fallback — logic เดิมทั้งหมด)
+// ★ RapidOCR อย่างเดียว ไม่มี fallback ★ — Tesseract ถูกถอดออก (ROUND 23): มันให้ผล "อ่านได้แต่เลขเพี้ยน"
+//   ซึ่งเข้าทาง failure mode ที่แย่ที่สุดของระบบนี้ (PASS/FAIL จากตัวเลขที่ผิด = deceptive) ต่างจากพังดังๆ
+//   ที่คนเห็นแล้วแก้ได้. daemon ล่ม → โยน error ขึ้นไปให้หน้าเว็บเตือน + เสนอปุ่มเริ่ม daemon
 async function ocrImage(
   imagePath: string
 ): Promise<{ text: string; engine: OcrEngine; gridText?: string; tokens?: OcrToken[]; correctionAngle?: number }> {
-  // 2. RapidOCR sidecar (primary OCR) — Python daemon, แม่นกว่า Tesseract มากบนตาราง COA scan
-  //    ต้อง start daemon ก่อน: `npm run ocr:daemon` (หรือ ocr-py/ocr_server.py). ปิดด้วย USE_RAPIDOCR=false
-  //    daemon ล่ม/unreachable → คืน null → fall through ไป Tesseract อัตโนมัติ
-  if (process.env.USE_RAPIDOCR !== "false") {
-    console.log(`  [rapidocr] OCR via sidecar…`);
-    // null = daemon ล่ม/errored · "" หรือ string สั้น = daemon ทำงานแต่ scan โล่ง/คุณภาพต่ำ
-    // extractTextBoth: OCR pass เดียว คืน flat (guard) + grid (LLM) — ไม่ OCR ซ้ำ
-    const both = await new RapidOcrService().extractTextBoth(imagePath);
-    const text = both?.flat ?? null;
-    if (text && text.replace(/\s/g, "").length >= 50) {
-      console.log(`  [rapidocr] ${text.length} chars`);
-      // grid (column-aware) ป้อน LLM เฉพาะเมื่อเปิด flag — guard ยังใช้ flat (text) เสมอ
-      const gridText = GRID_LLM_ENABLED ? both?.grid : undefined;
-      return { text, engine: "rapidocr", gridText, tokens: both.tokens, correctionAngle: both.correctionAngle };
-    }
-    // ★ RapidOCR ล้ม → Tesseract fallback ให้ผล "อ่านได้แต่เลขเพี้ยน" (เคยทำ corpus พังเงียบ)
-    //   แยกสาเหตุให้ชัด (อย่าโทษ daemon เมื่อ daemon ขึ้นอยู่ — misdirection แบบเดิม):
-    //   daemonDown = ติดต่อ daemon ไม่ได้/500 · ไม่ใช่ = daemon อ่านแล้วได้ข้อความน้อย (ไฟล์โล่ง)
-    const daemonDown = text == null;
-    //   RAPIDOCR_REQUIRED=true → โยน error แทน fallback เงียบๆ (ใช้ตอน validation run กัน garbage ปนผล)
-    if (process.env.RAPIDOCR_REQUIRED === "true") {
-      throw new Error(
-        daemonDown
-          ? "RapidOCR daemon unreachable/errored and RAPIDOCR_REQUIRED=true — refusing silent Tesseract fallback. Start it: `npm run ocr:daemon` from backend/."
-          : "RapidOCR returned too little text (daemon IS running — scan may be blank/low-quality) and RAPIDOCR_REQUIRED=true — refusing silent Tesseract fallback. Inspect the file."
-      );
-    }
-    console.warn(
-      daemonDown
-        ? `  [rapidocr] ⚠ daemon FAILED — falling back to Tesseract (numbers may be garbled; check coa-log debug.ocrEngine)`
-        : `  [rapidocr] ⚠ thin result (<50 chars, daemon up) — falling back to Tesseract; scan may be low-quality`
-    );
+  console.log(`  [rapidocr] OCR via sidecar…`);
+  // null = daemon ล่ม/errored · "" หรือ string สั้น = daemon ทำงานแต่ scan โล่ง/คุณภาพต่ำ
+  // extractTextBoth: OCR pass เดียว คืน flat (guard) + grid (LLM) — ไม่ OCR ซ้ำ
+  const both = await new RapidOcrService().extractTextBoth(imagePath);
+  const text = both?.flat ?? null;
+  if (text && text.replace(/\s/g, "").length >= 50) {
+    console.log(`  [rapidocr] ${text.length} chars`);
+    // grid (column-aware) ป้อน LLM เฉพาะเมื่อเปิด flag — guard ยังใช้ flat (text) เสมอ
+    const gridText = GRID_LLM_ENABLED ? both?.grid : undefined;
+    return { text, engine: "rapidocr", gridText, tokens: both.tokens, correctionAngle: both.correctionAngle };
   }
-
-  // 3. Tesseract multi-rotation OCR (fallback) — ใช้เมื่อ RapidOCR daemon ล่ม/อ่านไม่ได้
-  // บาง scan/PDF มาเอียง 90/180/270° → text เป็นขยะถ้าไม่หมุนก่อน
-  // จัดลำดับลองตาม aspect ratio (portrait ลอง 90/270 ก่อน), pick by Tesseract confidence
-  // Early exit ถ้า confidence ≥ 75 — ไฟล์ orientation ปกติยังเร็ว 1 pass เท่าเดิม
-  const proc = new ImageProcessingService();
-  const meta = await proc.metadata(imagePath);
-  const isPortrait = (meta.height ?? 0) > (meta.width ?? 0);
-  const order: number[] = isPortrait
-    ? [90, 270, 0, 180]
-    : [0, 180, 90, 270];
-
-  let best = { text: "", confidence: -1, angle: 0 };
-  for (const angle of order) {
-    console.log(`  [tesseract] try ${angle}°…`);
-    const buf = await proc.preprocess(imagePath, angle);
-    const { data } = await Tesseract.recognize(buf, "eng+tha", {
-      // PSM 6 = assume uniform text block (เหมาะกับตาราง COA มากกว่า auto)
-      // preserve_interword_spaces=1 รักษา space ระหว่างคอลัมน์ ช่วยแยก result/spec
-      // เก็บ "|" ไว้ (LLM ใช้เป็น column boundary signal)
-      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-      preserve_interword_spaces: "1",
-    } as any);
-    console.log(
-      `  [tesseract] ${angle}°: ${data.text.length} chars, conf ${data.confidence.toFixed(1)}`
-    );
-    if (data.confidence > best.confidence) {
-      best = { text: data.text, confidence: data.confidence, angle };
-    }
-    if (data.confidence >= 75) {
-      console.log(`  [tesseract] picked ${angle}° (conf ≥ 75)`);
-      return { text: data.text, engine: "tesseract" };
-    }
-  }
-  console.log(
-    `  [tesseract] best rotation: ${best.angle}° (conf ${best.confidence.toFixed(1)})`
+  // แยกสาเหตุให้ชัด (อย่าโทษ daemon เมื่อ daemon ขึ้นอยู่ — misdirection แบบเดิม):
+  //   daemonDown = ติดต่อ daemon ไม่ได้/500 · ไม่ใช่ = daemon อ่านแล้วได้ข้อความน้อย (ไฟล์โล่ง/สแกนแย่)
+  const daemonDown = text == null;
+  console.error(
+    daemonDown
+      ? `  [rapidocr] ✗ daemon unreachable — abort (ไม่มี fallback engine แล้ว)`
+      : `  [rapidocr] ✗ thin result (<50 chars, daemon ขึ้นอยู่) — abort`
   );
-  return { text: best.text, engine: "tesseract" };
+  throw new Error(
+    daemonDown
+      ? `${OCR_DAEMON_DOWN}: OCR daemon ไม่ตอบสนอง — เริ่ม daemon แล้วลองใหม่ (backend: npm run ocr:daemon)`
+      : `${OCR_EMPTY_RESULT}: OCR daemon ทำงานอยู่แต่อ่านข้อความจากไฟล์นี้แทบไม่ได้ — ไฟล์อาจเป็นหน้าเปล่า/สแกนคุณภาพต่ำ`
+  );
 }
 
 // Extract text per page — คืน array [{text, engine, page}] หนึ่งตัวต่อหน้า

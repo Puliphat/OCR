@@ -133,7 +133,7 @@ pm2 status                                  # 3 ตัว online, restart count 
 | อาการ | สาเหตุ | แก้ |
 |---|---|---|
 | client upload แล้ว error/ค้าง แต่บน server เองใช้ได้ | `frontend\.env.local` ใส่ `localhost` หรือลืม build ใหม่ | ตั้ง `NEXT_PUBLIC_API_BASE_URL=http://<SERVER_IP>:3001` → `npm run build` → `pm2 restart coa-frontend` |
-| ผล OCR เพี้ยน/หยาบผิดปกติหลัง deploy | daemon เก่าค้าง (restart แค่ backend) → fall back Tesseract เงียบ | `pm2 restart ocr-daemon` (หรือ `restart all`) |
+| ไฟล์สแกน error `OCR_DAEMON_DOWN` | daemon ไม่ขึ้น/ตายไปแล้ว | `pm2 restart ocr-daemon` (หรือ `restart all`) · `curl :8765/health` |
 | upload แรกหลัง server idle นาน ~37s | qwen3 โดน evict จาก VRAM | ปกติ — keep-warm ping ทุก 8 นาทีกันไว้แล้ว (`OLLAMA_KEEP_WARM`); ถ้ายังนานเช็ค Ollama process ขึ้นจริง |
 | daemon 500 / หาไฟล์ไม่เจอ | (เฉพาะถ้าแยก daemon ไปคนละเครื่องทีหลัง) code ใหม่ส่ง bytes แล้ว — เช็คว่า daemon เป็น code ล่าสุด | `pm2 restart ocr-daemon` |
 | client เข้า `:3000` ไม่ได้เลย | firewall ปิด / Next bind ผิด | เปิด firewall 3000+3001 · `pm2 logs coa-frontend` ดู bind |

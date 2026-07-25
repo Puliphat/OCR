@@ -1,8 +1,8 @@
-// Bridge ไป Python OCR sidecar (RapidOCR daemon) — แทน Tesseract สำหรับ COA scan
+// Bridge ไป Python OCR sidecar (RapidOCR daemon) — OCR engine ตัวเดียวของระบบสำหรับ COA scan
 // daemon: ocr-py/ocr_server.py บน :8765 (start แยกเหมือน Ollama — `npm run ocr:daemon`)
-// อ่านเลข/ตาราง COA แม่นกว่า Tesseract มาก (± ≥ ทศนิยมไม่เพี้ยน, multi-column ติด)
+// อ่านเลข/ตาราง COA ได้แม่น (± ≥ ทศนิยมไม่เพี้ยน, multi-column ติด)
 // CPU onnxruntime ~300MB → ไม่ชน memory wall แบบ vision LLM 3B
-// ถ้า daemon ล่ม/unreachable → คืน null ให้ pipeline fall back ไป Tesseract
+// ถ้า daemon ล่ม/unreachable → คืน null ให้ pipeline โยน OCR_DAEMON_DOWN (ไม่มี fallback engine)
 import axios from "axios";
 import * as fs from "fs";
 import * as os from "os";
@@ -29,7 +29,7 @@ export class RapidOcrService {
     //   เอื้อมถึง disk ของ backend ไม่ได้. path ยังส่งไปด้วยเพื่อ log/error เท่านั้น
     //   (daemon เลือก b64 ก่อน, ไม่มี b64 ค่อย fall back อ่าน path = same-machine back-compat).
     //   เดิมส่งแค่ path → daemon os.path.exists() เปิดจาก disk ตัวเอง → เครื่องอื่นหาไฟล์ไม่เจอ
-    //   → HTTP 500 → pipeline fall back Tesseract เงียบ (corpus เพี้ยนไม่รู้ตัว)
+    //   → HTTP 500 → ทั้ง request พัง (เห็นทันที ดีกว่าเพี้ยนเงียบ)
     const abs = path.resolve(imagePath);
     let imageB64: string;
     try {

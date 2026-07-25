@@ -1,4 +1,4 @@
-// Bridge ไปคุย Ollama — parse text COA → JSON (OCR ทำที่ RapidOCR sidecar/Tesseract แล้ว)
+// Bridge ไปคุย Ollama — parse text COA → JSON (OCR ทำที่ RapidOCR sidecar / text-layer แล้ว)
 // ★ Prompt ของ parseCoa อยู่ที่นี่ ★ — ปรับ rules / schema ที่นี่เมื่อ LLM parse พลาด
 import axios from "axios";
 import * as fs from "fs";

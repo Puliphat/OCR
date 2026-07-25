@@ -40,6 +40,11 @@ export default function Home() {
           headers: { "Content-Type": "multipart/form-data" },
         });
         return res.data;
+      } catch (e) {
+        // axios ให้ message เป็น "Request failed with status code 500" — ข้อความจริงอยู่ใน body
+        // ต้องดึงขึ้นมา ไม่งั้นหน้าเว็บบอกไม่ได้ว่า daemon ล่มหรือไฟล์มีปัญหา
+        const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+        throw new Error(detail || (e as Error).message);
       } finally {
         setElapsedMs(Math.round(performance.now() - start));
       }
@@ -68,11 +73,11 @@ export default function Home() {
     return () => clearInterval(iv);
   }, [isPending]);
 
-  // Auto-restart RapidOCR daemon when result used Tesseract fallback
+  // ★ daemon ล่ม → พังทั้ง request ★ (ไม่มี Tesseract fallback แล้ว — ผลเพี้ยนเงียบอันตรายกว่าพังดังๆ)
+  //   สั่ง restart daemon + poll health + ยิงไฟล์เดิมซ้ำให้อัตโนมัติ. เงื่อนไขเดิมดูจาก ocrEngine ของ
+  //   "ผลที่สำเร็จ" ซึ่งตอนนี้ไม่มีทางเกิด → ย้ายมาดูจาก error code ที่ backend ส่งมาแทน
   useEffect(() => {
-    if (!data) return;
-    const hasTesseract = data.reports.some((r) => r.ocrEngine === "tesseract");
-    if (!hasTesseract) return;
+    if (!isError || !error?.message.startsWith("OCR_DAEMON_DOWN")) return;
 
     // Clear any stale poll
     if (pollIntervalRef.current !== null) {
@@ -108,13 +113,11 @@ export default function Home() {
       }
     }, 1500);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [isError, error]);
 
-  // Clear daemonStatus once re-upload finishes (new result won't have tesseract)
+  // ยิงซ้ำสำเร็จแล้ว (มีผลออกมา) → เลิกโชว์สถานะ daemon
   useEffect(() => {
-    if (daemonStatus === "uploading" && data && !data.reports.some((r) => r.ocrEngine === "tesseract")) {
-      setDaemonStatus(null);
-    }
+    if (daemonStatus === "uploading" && data) setDaemonStatus(null);
   }, [data, daemonStatus]);
 
   // Cleanup poll interval on unmount
@@ -189,10 +192,19 @@ export default function Home() {
         </HelperBar>
       )}
 
-      {/* error */}
+      {/* error — daemon ล่มแยกข้อความ + บอกว่ากำลังกู้ให้อัตโนมัติ (ผู้ใช้จะได้ไม่กด Analyze รัวๆ) */}
       {isError && (
         <HelperBar variant="error" style={{ marginTop: 20 }}>
-          {error?.message ?? "Something went wrong while analyzing."}
+          {error?.message.startsWith("OCR_DAEMON_DOWN") ? (
+            <>
+              <strong style={{ color: "var(--ink)" }}>OCR daemon ไม่ทำงาน</strong> — ไฟล์สแกนอ่านไม่ได้จนกว่าจะเริ่ม daemon
+              {daemonStatus === "restarting" && " · กำลังสั่งเริ่มให้อัตโนมัติ…"}
+              {daemonStatus === "uploading" && " · daemon ขึ้นแล้ว กำลังวิเคราะห์ใหม่…"}
+              {daemonStatus === null && " · เริ่มเองได้ที่ backend: npm run ocr:daemon"}
+            </>
+          ) : (
+            error?.message ?? "Something went wrong while analyzing."
+          )}
         </HelperBar>
       )}
 
@@ -221,7 +233,6 @@ export default function Home() {
                 elapsedMs={i === 0 ? elapsedMs : null}
                 index={i}
                 total={data.reports.length}
-                daemonStatus={daemonStatus}
               />
             ))}
           </div>

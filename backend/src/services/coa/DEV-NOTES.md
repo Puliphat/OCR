@@ -21,7 +21,7 @@ honest **SKIP/needsReview** (หรือ drop row) ดีกว่า PASS/FAIL
   3 FAIL ปลอม เพราะ restructure text ที่ป้อน LLM). **guard #9 = ทางที่ถูก** (post-LLM, geometry ดิบ, ไม่แตะ text ที่ LLM เห็น)
 
 ## Pipeline order (`coa-pipeline.ts runCoaPipeline`)
-1. `extractText` — text-layer (`pdf-text-extractor`) → **RapidOCR sidecar :8765** (+ rotation auto-correct) → Tesseract fallback
+1. `extractText` — text-layer (`pdf-text-extractor`) → **RapidOCR sidecar :8765** (+ rotation auto-correct) → ล้ม = throw `OCR_DAEMON_DOWN`/`OCR_EMPTY_RESULT` (ไม่มี fallback engine)
 2. `ollama.parseCoa` — qwen3:4b (LLM parse → RawCoaItem[])
 3. `dropUngroundedItems` — anti-hallucination (ตัด row ที่ไม่มีใน OCR)
 4. `recoverSpecsFromOcr` — เติม spec ที่ LLM หล่น (เฉพาะ row spec ว่าง)
@@ -54,7 +54,7 @@ cd C:\local-repo\OCR\backend && npm run dev
 cd C:\local-repo\OCR\frontend && npm run dev          # http://localhost:3000
 ```
 - CLI batch: `cd backend && npx ts-node src/scripts/test-coa.ts` (ทุกไฟล์ใน uploads/) → log ที่ `coa-logs/run.log` + JSON ต่อไฟล์
-- ★ daemon ต้องการ **absolute path** — ส่ง relative → 500 → fall back Tesseract (ผลเพี้ยน, ไม่ใช่ของจริง)
+- ★ daemon ต้องการ **absolute path** — ส่ง relative → 500 → ทั้ง request พัง (ไม่มี fallback ให้ผลเพี้ยนแล้ว)
 - diagnostic geometry: `npx ts-node src/scripts/dump-tokens.ts <file>` → dump RapidOCR tokens+boxes
 - debug ต่อ run: `coa-logs/_last-ocr.txt` (OCR ที่ใช้จริง) + `_last-ollama.txt` (LLM parse). **overwrite ทุก run** → รันไฟล์เดียวถ้าจะดู
 

@@ -21,7 +21,7 @@ export interface CoaReport {
   page?: number;
   rows: CoaRow[];
   summary: { pass: number; fail: number; skip: number; total: number };
-  ocrEngine?: "text-layer" | "rapidocr" | "tesseract";
+  ocrEngine?: "text-layer" | "rapidocr";
 }
 
 export interface UploadResponse {

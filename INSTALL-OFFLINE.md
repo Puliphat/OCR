@@ -206,7 +206,7 @@ cd frontend; npm run build; cd ..     # เฉพาะถ้าแก้ FE (Ne
 pm2 restart all                        # ★ ทั้งหมด — ไม่ใช่แค่ backend ★
 ```
 > ★ ต้อง `pm2 restart all` — contract OCR แก้ทั้ง backend (ส่ง bytes) + daemon (decode).
-> restart แค่ backend ทิ้ง daemon เก่า = fall back Tesseract เงียบ = OCR หยาบลง
+> restart แค่ backend ทิ้ง daemon เก่า = ไฟล์สแกนพังทั้งใบ (ไม่มี fallback engine แล้ว)
 
 ---
 
@@ -216,7 +216,7 @@ pm2 restart all                        # ★ ทั้งหมด — ไม่
 |---|---|---|
 | client upload error/ค้าง แต่ server เองใช้ได้ | `.env.local` ใส่ `localhost` หรือลืม build ใหม่ | ตั้ง IP จริง → `npm run build` → `pm2 restart coa-frontend` |
 | OCR daemon start ขึ้น "downloading model..." | ลืม copy models เข้า venv (ขั้น 3) | รัน `install-ocr-offline.ps1` ใหม่ หรือ copy `models\*` เข้า `venv\Lib\site-packages\rapidocr\models\` |
-| ผล OCR หยาบ/เพี้ยนผิดปกติ | daemon ล่ม → fall back Tesseract เงียบ | `curl :8765/health` ต้อง `{"ok":true}` · `pm2 restart ocr-daemon` |
+| ไฟล์สแกนขึ้น `OCR daemon ไม่ทำงาน` | daemon ล่ม (ไม่มี fallback engine — ตั้งใจให้พังดังๆ) | `curl :8765/health` ต้อง `{"ok":true}` · `pm2 restart ocr-daemon` |
 | daemon กิน RAM เยอะ | HQ engine (v5 server) preload | ตั้ง `COA_OCR_HQ_PRELOAD=false` ใน ecosystem block `ocr-daemon` → `pm2 restart ocr-daemon` |
 | upload แรกหลัง idle นาน ~37s | qwen3 โดน evict จาก RAM/VRAM | ปกติ — keep-warm ping กันไว้แล้ว; เช็ค Ollama tray รันจริง |
 | **ทุกใบช้าผิดปกติ (นาที ไม่ใช่วินาที)** | LLM รันบน CPU ไม่ใช่ GPU | `ollama ps` → ถ้า `100% CPU`: ปลดของที่กิน VRAM (`ollama ps` ตัวอื่น → `ollama stop <ชื่อ>`) แล้วลองใหม่. ไม่มี GPU เลย = ช้าแบบนี้ตามสเปก |
