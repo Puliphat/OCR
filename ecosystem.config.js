@@ -21,6 +21,8 @@ module.exports = {
         OLLAMA_URL: "http://localhost:11434/api/generate",
         OLLAMA_MODEL: "qwen3:4b",
         OCR_SIDECAR_URL: "http://127.0.0.1:8765", // daemon อยู่เครื่องเดียวกัน → localhost
+        // COA_OCR_HQ_SPECULATE: ห้ามเปิดตราบใดที่ daemon อยู่เครื่องเดียวกับ Ollama — วัดแล้วช้าลง
+        //   (HQ OCR ของ RapidOCR แย่ง CPU กับ Ollama). เปิดได้เฉพาะตอนย้าย daemon ไปเครื่องอื่นใน LAN
       },
     },
     {

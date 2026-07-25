@@ -24,6 +24,9 @@
 - Windows **x64** (native binary ใน bundle ผูก arch นี้)
 - **Node.js ≥ v18** — ลงแล้ว (เช็ค `node -v`)
 - **pm2** — ลงแล้ว (เช็ค `pm2 -v`) → ใช้ pm2 เป็นตัวคุม process (ทางหลักในเอกสารนี้)
+- **GPU NVIDIA ว่าง ≥ 4 GB VRAM (แนะนำแรง)** — qwen3:4b กิน ~3.9 GB. ไม่มี GPU ระบบยังทำงานได้ครบ
+  แต่ LLM ตกไปรันบน CPU = **ช้าลง ~11x** (วัดจริง 94 → 8.6 tok/s) → COA 1 ใบจาก ~10-20s เป็น ~2-8 นาที
+  ดูวิธีตรวจที่ขั้น 8 · RAM ต้องเหลือ ≥ 6 GB (Ollama 3-4 GB + OCR daemon 0.5-1 GB + Node 1 GB)
 - ไม่ต้องต่อเน็ต / ไม่ต้อง admin (installer เป็น per-user ทั้งคู่)
 
 ---
@@ -171,7 +174,7 @@ boot persist (server รีสตาร์ท pm2 ขึ้นเอง): ลง
 
 ---
 
-## 8. Verify (5 เช็ค)
+## 8. Verify (6 เช็ค)
 
 ```powershell
 # บน server
@@ -179,10 +182,17 @@ curl http://localhost:8765/health      # OCR daemon: {"ok":true}
 curl http://localhost:11434/api/tags    # Ollama: มี qwen3:4b
 pm2 status                              # 3 online, restart count ไม่พุ่ง
 
+# ★ เช็ค GPU — ทำหลัง upload ใบแรก (model ต้องถูกโหลดก่อนถึงจะเห็น) ★
+ollama ps                               # คอลัมน์ PROCESSOR ต้องเป็น "GPU" ไม่ใช่ "CPU"
+
 # บน client เครื่องอื่นในวง LAN
 #   browser -> http://192.168.1.50:3000   (IP server)
 #   upload COA จริง 1 ใบ -> ต้องได้ตาราง PASS/FAIL/SKIP (ไม่ค้าง/ไม่ error)
 ```
+
+> ★ **`ollama ps` ขึ้น `100% CPU` = ระบบยังใช้ได้แต่ช้า ~11x** — เครื่องนี้ไม่มี GPU หรือ VRAM ไม่พอ
+> (qwen3:4b ต้องการ ~3.9 GB). ถ้ามีการ์ดแต่ยังขึ้น CPU: มีอย่างอื่นกิน VRAM อยู่ (เกม/embedding model
+> ค้างใน Ollama) → `ollama stop <ตัวนั้น>` แล้ว upload ใหม่. ตรวจตั้งแต่วันติดตั้ง อย่ารอ user บ่นว่าช้า
 
 ---
 
@@ -209,6 +219,8 @@ pm2 restart all                        # ★ ทั้งหมด — ไม่
 | ผล OCR หยาบ/เพี้ยนผิดปกติ | daemon ล่ม → fall back Tesseract เงียบ | `curl :8765/health` ต้อง `{"ok":true}` · `pm2 restart ocr-daemon` |
 | daemon กิน RAM เยอะ | HQ engine (v5 server) preload | ตั้ง `COA_OCR_HQ_PRELOAD=false` ใน ecosystem block `ocr-daemon` → `pm2 restart ocr-daemon` |
 | upload แรกหลัง idle นาน ~37s | qwen3 โดน evict จาก RAM/VRAM | ปกติ — keep-warm ping กันไว้แล้ว; เช็ค Ollama tray รันจริง |
+| **ทุกใบช้าผิดปกติ (นาที ไม่ใช่วินาที)** | LLM รันบน CPU ไม่ใช่ GPU | `ollama ps` → ถ้า `100% CPU`: ปลดของที่กิน VRAM (`ollama ps` ตัวอื่น → `ollama stop <ชื่อ>`) แล้วลองใหม่. ไม่มี GPU เลย = ช้าแบบนี้ตามสเปก |
+| เคยเร็วอยู่แล้วจู่ๆ ช้าทั้งเครื่อง | GPU timeout 1 ครั้งเคยทำให้ตกไป CPU ถาวร | แก้ที่โค้ดแล้ว (ROUND 19 — latch เฉพาะ crash จริง + ปล่อย CPU runner ทิ้ง). ถ้ายังเจอบน build เก่า: `pm2 restart coa-backend` |
 | client เข้า `:3000` ไม่ได้เลย | firewall ปิด | เปิด firewall 3000+3001 (ขั้น 6) · `pm2 logs coa-frontend` |
 | pm2 ไม่มี/พัง | ลง offline ไม่ได้ (global npm) | ใช้ `start-all.ps1` แทน (ไม่พึ่ง pm2) |
 
@@ -221,5 +233,8 @@ pm2 restart all                        # ★ ทั้งหมด — ไม่
 3. **layout sibling** — `backend/ frontend/ ocr-py/` ต้องอยู่ root เดียวกัน (`ecosystem.config.js` อ้าง relative)
 4. **pm2 restart all** ตอน deploy — ไม่ใช่แค่ backend (contract OCR 2 ฝั่ง)
 5. **node_modules bundle มาแล้ว** — ห้าม `npm install` ทับ (registry บล็อก + จะพัง native binary)
+6. **เช็ค `ollama ps` ว่าขึ้น GPU ตั้งแต่วันติดตั้ง** — ตก CPU = ช้า 11x แต่ระบบไม่ error อะไรเลย จับไม่ได้ถ้าไม่ดู
+7. **ห้ามเปิด `COA_OCR_HQ_SPECULATE=true` บน single-server** — วัดแล้วช้าลง (HQ OCR แย่ง CPU กับ Ollama).
+   ตัวนี้มีไว้ตอนแยก OCR daemon ไปคนละเครื่องเท่านั้น
 
 > เอกสารนี้ = source of truth สำหรับติดตั้งหน้างาน. DEPLOY.md = architecture + runbook ทั่วไป (ไม่เจาะ offline)
