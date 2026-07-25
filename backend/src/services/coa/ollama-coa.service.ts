@@ -166,21 +166,32 @@ ${text}
         dumpOllamaRaw(rawStr);
         const parsed = JSON.parse(rawStr);
         if (!parsed || !Array.isArray(parsed.items)) return null;
+        // ★ ปล่อย CPU runner ทิ้งหลังใช้เสร็จ ★ — Ollama (0.32.3) reuse runner ตาม "ชื่อ model" โดยไม่สน
+        //   ว่า num_gpu ต่างกัน → runner ที่ num_gpu:0 สร้างไว้จะรับ call ถัดไปทั้งหมดต่อ แม้ call นั้น
+        //   ไม่ได้ขอ CPU (วัดจริง: ค้างบน CPU 8.6 tok/s · หลัง unload โหลดกลับลง GPU 94 tok/s = 11x)
+        //   ทำเฉพาะตอนไม่ latch (fallback ชั่วคราวจาก timeout) — ถ้า GPU พังจริงก็ต้องอยู่ CPU ต่อไป
+        if (a.label === "cpu" && !gpuDisabled) void this.releaseRunner();
         return parsed as RawCoa;
       } catch (error: any) {
         lastErr = error?.response?.data?.error ?? error?.message ?? String(error);
         // retry บน CPU เฉพาะตอน GPU attempt พังด้วย signal จริงของ VRAM/runner/timeout
         //   regex แคบ (เลี่ยง false-positive จาก "gpu"/"system memory" ลอยๆ ใน 400/รายงานอื่น)
         //   CPU retry ตอน GPU พังปลอดภัยเสมอ. ไม่ retry: JSON พัง / 400 / ECONNREFUSED (CPU ก็แก้ไม่ได้)
-        const gpuRetriable =
-          a.label === "gpu" &&
-          /cuda|llama runner|runner process|terminated|out of memory|timeout|etimedout/i.test(
-            lastErr
-          );
+        const gpuCrashed = /cuda|llama runner|runner process|terminated|out of memory/i.test(
+          lastErr
+        );
+        const gpuTimedOut = /timeout|etimedout|ECONNABORTED/i.test(lastErr);
+        const gpuRetriable = a.label === "gpu" && (gpuCrashed || gpuTimedOut);
         if (gpuRetriable) {
-          gpuDisabled = true;
+          // ★ latch เฉพาะ hard-crash ★ — timeout แปลว่า "call นี้ช้า" ไม่ใช่ "GPU ใช้ไม่ได้". เดิม latch
+          //   ทั้งคู่ → 1 timeout = ทุก call ที่เหลือ *ทั้ง process* วิ่ง CPU ถาวร. วัดจริงบน corpus:
+          //   timeout ครั้งเดียวที่ 1F1710 p4 ทำให้ไฟล์หลังจากนั้นช้า ~8x (PR1950W_4064 25s → 199s,
+          //   4A 23s → 163s) และ server ที่รันยาวจะช้าไปทั้งวันจนกว่าจะ restart
+          if (gpuCrashed) gpuDisabled = true;
           console.warn(
-            `[ollama-coa] GPU attempt failed (${lastErr.slice(0, 90)}) → retry on CPU (num_gpu:0)`
+            `[ollama-coa] GPU attempt failed (${lastErr.slice(0, 90)}) → retry on CPU (num_gpu:0)${
+              gpuCrashed ? " · ปิด GPU ทั้ง process (crash)" : " · call ถัดไปยังลอง GPU ตามเดิม (timeout)"
+            }`
           );
           continue;
         }
@@ -191,6 +202,21 @@ ${text}
     // ถึงตรงนี้ได้เฉพาะกรณี GPU พัง→ตก CPU แต่ array หมด (กันพลาด — ปกติ return ในลูป)
     console.error(`[ollama-coa] parse failed (all attempts): ${lastErr}`);
     return null;
+  }
+
+  // unload model ทันที (keep_alive 0) — ใช้ปล่อย CPU runner ที่เกิดจาก fallback ทิ้ง (ดูเหตุผลใน parseCoa)
+  //   fire-and-forget: พังก็ไม่เป็นไร (แค่ยังช้าต่ออีก 10 นาทีจนหมด keep_alive เอง)
+  private async releaseRunner(): Promise<void> {
+    try {
+      await axios.post(
+        this.generateUrl,
+        { model: this.model, keep_alive: 0 },
+        { timeout: 10_000 }
+      );
+      console.warn(`[ollama-coa] ปล่อย CPU runner แล้ว — call ถัดไปโหลดกลับลง GPU`);
+    } catch {
+      /* ไม่สำคัญ */
+    }
   }
 
   // ping 1 token คง model ใน VRAM — ★ options ต้องตรง parseCoa (num_ctx 8192) ★ ไม่งั้น Ollama

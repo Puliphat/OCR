@@ -272,5 +272,43 @@ check(
   `(downgraded=${rDigit.downgraded.length})`
 );
 
+// ★ เคสจริง D-2072 (OCR ตัวจริง) ★ — header row ไม่มีค่าของตัวเอง (มีแค่เลขลำดับ "3" ใน cell แรก)
+//   spec/result อยู่ sub-row bullet ข้างล่าง → ต้องคง PASS ทั้งคู่ (เคยถูก downgrade ผิดตอนใส่ขอบ sub-row)
+const D2072_OCR = [
+  "Inspection Item  |  Criteria  |  Result",
+  "1  |  Viscosity (cP/23°C)  |  7±3  |  6.6  |  0",
+  "2  |  Solid Content (%)  |  26.0 ± 2.0  |  27.06  |  0",
+  "3  |  Shear Strength (kgf/cm²)*",
+  "- Room Temperature  |  120 ± 30  |  124.9  |  0",
+  "- Heat Resistance (200°C)  |  ≥ 50  |  136.5",
+  "4  |  Wetting Test  |  spot on surface.  |  Don't have air  |  Passed",
+].join("\n");
+const d2072 = [
+  row({ name: "Shear Strength (kgf/cm²)*", specRaw: "120 ± 30", min: 90, max: 150, result: 124.9, resultRaw: "124.9" }),
+  row({ name: "Shear Strength (kgf/cm²)*", specRaw: "≥ 50", min: 50, result: 136.5, resultRaw: "136.5" }),
+];
+const rD2072 = downgradeUngroundedPasses(d2072, D2072_OCR);
+check(
+  "D-2072 header row + sub-row bullet (ค่าอยู่บรรทัด '- Room Temperature') → คง PASS ทั้ง 2",
+  rD2072.downgraded.length === 0 && d2072.every((r) => r.status === "PASS"),
+  `(downgraded=${rD2072.downgraded.length})`
+);
+
+// ★ sub-row ต้องไม่ทะลุไปแถวอื่น ★ — header ล้วนเหมือนกัน แต่บรรทัดถัดไปเป็น item อื่น (ไม่ใช่ bullet,
+//   ชื่อไม่แชร์ token) ที่แบกค่ายืมมา → ต้อง downgrade (ไม่งั้นค่าของแถวอื่นจะ validate PASS ปลอมให้)
+const HEADER_LEAK_OCR = [
+  "3  |  Shear Strength (kgf/cm²)*",
+  "Peel Adhesion (N/25mm)  |  20 Max  |  15  |  0",
+].join("\n");
+const headerLeak = [
+  row({ name: "Shear Strength (kgf/cm²)*", specRaw: "20 Max", max: 20, result: 15, resultRaw: "15" }),
+];
+const rLeak = downgradeUngroundedPasses(headerLeak, HEADER_LEAK_OCR);
+check(
+  "header row + บรรทัดถัดไปเป็น item อื่น (ไม่ใช่ sub-row) → ยัง downgrade",
+  rLeak.downgraded.length === 1 && headerLeak[0].status === "SKIP",
+  `(downgraded=${rLeak.downgraded.length})`
+);
+
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);

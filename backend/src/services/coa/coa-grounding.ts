@@ -390,11 +390,12 @@ export function downgradeUngroundedPasses(
   const lineNums = lines.map(parseNumTokens);
   // cells ของแต่ละบรรทัด normalize เป็น alnum ล้วน — ใช้ glue-match (ชื่อแถวติดกันเป็น cell เดียว)
   const cellNorm = new RegExp(`[^a-z0-9${CJK}]+`, "g");
+  const splitCells = (l: string) => (l.includes("|") ? l.split("|") : l.split(/\s{2,}/));
   const lineCells = lines.map((l) =>
-    (l.includes("|") ? l.split("|") : l.split(/\s{2,}/)).map((c) =>
-      c.toLowerCase().replace(cellNorm, "")
-    )
+    splitCells(l).map((c) => c.toLowerCase().replace(cellNorm, ""))
   );
+  // label = token ของ "cell แรก" (ช่องชื่อรายการ) — ใช้ตัดขอบ sub-row scan ให้ไม่ข้ามไปแถวอื่น
+  const lineLabels = lines.map((l) => anchorTokens(splitCells(l)[0] ?? ""));
 
   for (const r of rows) {
     if (r.status !== "PASS") continue;
@@ -469,11 +470,32 @@ export function downgradeUngroundedPasses(
     // เช็ค sub-row: บรรทัดชื่อเป็น section header (มีแค่เลขลำดับ = "data number") result จริงอยู่ sub-row
     //   ข้างล่าง. เช่น D-2072 "Shear Strength" header ไม่มี result · sub-row "- Room Temperature" +
     //   "- Heat Resistance (200°C)" ถือ result. ยืนยันโดยเช็คว่า result (+ bound ถ้ามีด้านเดียว) อยู่ sub-row ใกล้ๆ
+    //
+    // ★ ขอบเขต sub-row (สำคัญ — ไม่มีขอบ = guard ตายทั้งตัว) ★ ถ้าปล่อยให้ scan ข้ามไปแถวอื่นได้
+    //   มันจะไปเจอ "ค่าที่ LLM ยืมมา" พอดี (ค่ายืมอยู่บรรทัดแถวอื่นเสมอ) แล้ว validate ผ่าน → deceptive
+    //   PASS รอดทุกเคส (guard ตายสนิท). 2 ด่าน:
+    //   ด่าน 1 — บรรทัด anchor ต้องเป็น "header ล้วน" คือไม่มีเลขของตัวเองนอก cell แรก (cell แรก = ช่อง
+    //     ชื่อ/เลขลำดับ). D-2072 "3 | Shear Strength (kgf/cm²)*" = header จริง (spec/result อยู่ sub-row
+    //     ข้างล่าง) · "Sieve Residue on 500μ | 0.3 | 3 Max. | Success" มีค่าครบในบรรทัดตัวเอง → ค่าของ
+    //     แถวนี้ต้องอยู่บรรทัดนี้ ห้ามไปหาที่อื่น
+    //   ด่าน 2 — บรรทัด sub-row ต้องเป็น continuation: bullet ("- Room Temperature") / label ที่แชร์ token
+    //     กับชื่อแถวนี้ / เลขล้วน. เจอชื่อ item อื่น → หยุด
+    const isHeaderLine = (li: number) => {
+      const cells = splitCells(lines[li]);
+      const hasOwn = (toks: NumToken[]) => toks.some((tk) => !nameNums.has(tk.digits));
+      // ไม่มี delimiter ชัด → แยก cell ไม่ได้ → ถือว่าเป็นบรรทัด data ถ้ามีเลขของตัวเอง (conservative)
+      if (cells.length <= 1) return !hasOwn(lineNums[li]);
+      return !cells.slice(1).some((c) => hasOwn(parseNumTokens(c)));
+    };
     if (!validated) {
       outerSubrow: for (let i = 0; i < lines.length; i++) {
         if (scores[i] !== bestScore) continue;
+        if (!isHeaderLine(i)) continue; // บรรทัดมีค่าของตัวเอง → ไม่ใช่ header → ห้ามยืมค่าบรรทัดอื่น
         for (let li = i + 1; li < Math.min(i + 8, lines.length); li++) {
           if (/^\d+\s*[|]/.test(lines[li])) break; // เจอ item ลำดับถัดไป → หยุด
+          const label = lineLabels[li].filter((t) => /[a-z]/.test(t) || HAS_CJK.test(t));
+          const bullet = /^\s*[-–—•*]/.test(lines[li]); // sub-row marker
+          if (!bullet && label.length && !label.some((t) => nameSig.includes(t))) break;
           const subLt = lineNums[li];
           const rHit = resultNums.some((v) => valuePresent(v, subLt));
           const sHit = boundVal == null || valuePresent(boundVal, subLt);

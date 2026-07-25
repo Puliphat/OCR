@@ -723,3 +723,58 @@ user: "มีเคสที่เป็นภาษาจีนด้วย อ
 - 126P = ระดับเดียวกับ baseline ประวัติศาสตร์ ROUND 15 (126P/0F/15S rows=141) ที่ drift หายไปช่วง 21→25 ก.ค.
 
 **pre-existing ที่ไม่ได้แตะ (ยืนยันด้วยการ stash โค้ดรอบนี้ออกแล้วรัน = fail เหมือนกันเป๊ะ):** `coa-pass-guard.test.ts` fail 6 เช็ค ทั้งหมดเป็นเคส "ควร downgrade PASS ที่ยกเลขข้ามแถวแต่ไม่ downgrade" (`downgraded=0`) — pass-guard อ่อนกว่าที่ test คาด. ไม่อยู่ในสโคปรอบนี้ ต้องตามแยก
+
+## FIX ROUND 19 (2026-07-25, pass-guard ที่ตายอยู่ + LLM ตกไปรัน CPU ทั้ง session)
+
+user: "ไล่ปรับต่อได้เลยถ้ายังไม่ดี ดู performance ของมันด้วยนะ" → 2 แกน: ปิด 6 fail ที่ค้างจาก ROUND 18 + วัด/แก้ perf
+
+### (A) pass-guard: sub-row scan ไม่มีขอบเขต = guard ตายสนิท
+
+6 เช็คที่ fail ใน `coa-pass-guard.test.ts` มาจาก **สาเหตุเดียว** — fallback "sub-row check" ใน `downgradeUngroundedPasses`
+ไล่ดู 8 บรรทัดถัดจากบรรทัด anchor โดยหยุดแค่เมื่อเจอ `^\d+\s*|` (เลขลำดับ item ถัดไป) เท่านั้น
+
+บน COA จริงบรรทัดถัดไปคือ **แถวอื่น** ไม่ใช่ sub-row → และ "ค่าที่ LLM ยกข้ามแถวมา" ก็อยู่บรรทัดแถวอื่นนั่นแหละ
+→ sub-row check เจอค่าตรงพอดีทุกครั้ง → validate ผ่าน → **deceptive PASS รอด 100%** (guard ทำงานเฉพาะเคสที่ค่ายืมไม่อยู่ใน 8 บรรทัดถัดไป = แทบไม่มี)
+
+**แก้ — 2 ด่าน** (`coa-grounding.ts`):
+1. **บรรทัด anchor ต้องเป็น header ล้วน** — ไม่มีเลขของตัวเองนอก cell แรก (cell แรก = ช่องชื่อ/เลขลำดับ)
+   - D-2072 `3 | Shear Strength (kgf/cm²)*` = header จริง (spec/result อยู่ sub-row bullet ข้างล่าง) → เข้า sub-row ได้
+   - `Sieve Residue on 500μ | 0.3 | 3 Max. | Success` มีค่าครบในบรรทัดตัวเอง → ค่าของแถวนี้ต้องอยู่บรรทัดนี้ ห้ามไปหาที่อื่น
+   - บรรทัดไม่มี delimiter (แยก cell ไม่ได้) → ถือว่าเป็น data line ถ้ามีเลขของตัวเอง (conservative)
+2. **บรรทัด sub-row ต้องเป็น continuation** — bullet (`- Room Temperature`) / label ที่แชร์ token กับชื่อแถวนี้ / เลขล้วน. เจอชื่อ item อื่น → หยุด
+
+**เคสจริงที่แก้รอบแรกแล้วพัง (สำคัญ):** ด่าน 2 อย่างเดียวทำ D-2072 Shear Strength 2 แถวกลายเป็น false SKIP (4P→2P)
+เพราะ sub-row จริงของมัน (`- Room Temperature`) ไม่แชร์ token กับชื่อแถว (`Shear Strength (kgf/cm²)*`) เลย
+→ ตัวแยกที่ถูกไม่ใช่ label แต่คือ **บรรทัด anchor มีค่าของตัวเองหรือเปล่า** = ที่มาของด่าน 1
+
+**fixture ใหม่ 2 เคส** (เคสนี้หลุดเพราะไม่มี coverage): D-2072 OCR ตัวจริง (header + bullet sub-row → คง PASS ทั้ง 2)
+และ header + บรรทัดถัดไปเป็น item อื่นที่แบกค่ายืม (→ ยัง downgrade) · `coa-pass-guard.test.ts` **21→23 เช็ค ผ่านหมด**
+
+### (B) perf: LLM ตกไปรัน CPU ทั้ง session (11x ช้ากว่า)
+
+โปรไฟล์ต่อ stage (เติม timing ลง `_validate/verify-4b-only.ts` ผ่าน ProgressFn ตัวเดียวกับที่ UI ใช้) ชี้ว่า **parse = 85%** ของเวลาทั้ง pipeline
+`ollama ps` ยืนยัน: `qwen3:4b size_vram=0` (CPU) ทั้งที่ VRAM ว่าง 6.7/8.1 GB — วัด throughput ได้ **8.6 tok/s**
+
+**2 ชั้นซ้อนกัน** (`ollama-coa.service.ts`):
+1. `gpuDisabled` เป็น module-global **latch ถาวรทั้ง process** และ regex retriable รวมคำว่า `timeout` ด้วย
+   → GPU timeout **ครั้งเดียว** = ทุก LLM call ที่เหลือวิ่ง CPU ตลอดกาล (server ที่รันยาว = ช้าไปทั้งวันจน restart)
+   **แก้:** latch เฉพาะ hard-crash (`cuda|llama runner|runner process|terminated|out of memory`) · timeout = "call นี้ช้า" ไม่ใช่ "GPU ใช้ไม่ได้" → retry CPU รอบนั้นแล้วจบ
+2. Ollama 0.32.3 **reuse runner ตามชื่อ model โดยไม่สน `num_gpu` ที่ต่างกัน** → CPU runner ที่ `num_gpu:0` สร้างไว้รับ call ถัดไปทั้งหมด แม้ call นั้นไม่ได้ขอ CPU (ยืนยันด้วยการยิงเองหลายครั้งแบบไม่ส่ง num_gpu — ยังได้ 8.6 tok/s จนกด unload ถึงหาย)
+   **แก้:** หลัง CPU attempt สำเร็จและไม่ได้ latch → `releaseRunner()` ยิง `keep_alive:0` ปล่อย runner ทิ้ง (fire-and-forget)
+
+**วัดจริงหลังแก้:** 8.6 → **94.4 tok/s** (11x) · vram 0 → 3.87 GB
+
+หลักฐานที่ตรงกันจาก corpus run: ไฟล์ก่อน 1F1710 timeout เร็วปกติ (Z99 15.8s · TXAX 7.4s) ไฟล์หลังจากนั้นช้าทั้งแถบ (4A 163s · PR1950W_4064 **199s**)
+
+### gate (corpus16, เครื่องเดียววันเดียว)
+| | PASS | FAIL | SKIP | rows | needsReview | TOTAL | avg/file |
+|---|---|---|---|---|---|---|---|
+| baseline ROUND 18 | 126 | 0 | 16 | 142 | 53 | — | — |
+| ระหว่างทาง (CPU latch + sub-row ด่าน 2 อย่างเดียว) | 112 | 0 | 14 | 126 | 37 | 1120s | 70.0s |
+| **after ROUND 19** | **126** | **0** | **12** | 138 | 53 | **329s** | **20.6s** |
+
+**PASS เท่าเดิม · SKIP ลด 4 · 0 FAIL · 0 deceptive · needsReview เท่าเดิมเป๊ะ (ไม่ over-flag)** · BE tsc 0 · 14 test suite ผ่านครบ
+- ต่างจาก baseline แค่ 2 จุด: **RI-015 9P/5S→11P/3S** (ดีขึ้น) · **1F1710 p4 14P/2S→12P/0S** = ตัวแกว่งประจำ corpus (เคยวัดได้ 11–14P บนโค้ดเดียวกัน) · อีก 19 ไฟล์-หน้า **เท่ากันเป๊ะ**
+- **D-2072 4P/1S = เท่า baseline** → sub-row fix ไม่กินของจริง
+- perf: **3.4x** โดยรวม · 1F1710 521s→83.7s (p4 กลับมา 12P จาก 0P ที่เคย timeout) · PR1950W_4064 199s→13.3s (15x) · parse stage 948s→167s
+- stage mix ใหม่: parse 51% · hq 28% · ocr 17% · render/read 4% (เดิม parse กิน 85%)
