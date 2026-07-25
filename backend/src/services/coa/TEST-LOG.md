@@ -888,3 +888,49 @@ token OCR ที่ map ลง column band — เลื่อนได้ → �
 
 ต่างจาก ROUND 20 แค่ 2 จุด: **+KGP-H65 7P/0F/0S** (ของใหม่) และ **1F1710 p4 12P→13P** (ตัวแกว่งประจำ corpus,
 เคยวัดได้ 11–14P บนโค้ดเดียวกัน) · อีก 20 ไฟล์-หน้า **เท่ากันเป๊ะ** · 0 FAIL · 0 deceptive · BE tsc 0 · 14 suite ผ่านครบ
+
+---
+
+## ROUND 22 — structural = ตัวเลข extract ไม่ใช่ recognize → เลิกกัน OCR risk ที่ไม่มีจริง
+
+**ต้นเรื่อง:** user อัพ KGP-H65 ผ่าน UI จริง → เห็น 4/7 แถวติดธง ⚠ ทั้งที่ค่าตรงใบจริงทุกแถวและตรงตรา
+合格 ของ QA เอง → "ค่าที่มาจากการกู้แม่นมาก ไม่ต้องตรวจซ้ำ ให้เป็น PASS เลยก็ได้"
+
+**ขุดจาก log จริงก่อนแก้** (ธงไม่ได้มาจาก "การกู้" อย่างที่ tooltip เขียน):
+
+| แถว | spec | result | ตัวบล็อก margin-green |
+|---|---|---|---|
+| 粒度 D90 | ≤50 | 29.0 | **G3'** decimal-shift (29 = integer → กลัวเป็น 290) |
+| 粒度 D90 | ≤70 | 62.0 | **G2** margin 12.9% < 30% |
+| SiO2+CaO | ≥94 | 96.85 | **G2** margin 2.9% |
+| Fe2O3 | ≤0.5 | 0.40 | **G2** margin 25% |
+
+**ราก:** `gridSource="structural"` ตั้งได้เฉพาะหน้า `engine="text-layer"` เท่านั้น (`extractTextPerPage`)
+= ตัวเลข **ดึงจาก text layer ของ PDF ตรงๆ ไม่ผ่าน OCR** + คอลัมน์ยืนยันด้วย ruling line ของ pdfplumber.
+แต่ G2/G3'/G4 ทั้งชุดออกแบบมากัน **ความพังของ OCR** (digit scramble / ทศนิยมหาย / คอลัมน์เดา) —
+path นี้ไม่มีความเสี่ยงนั้นเลย → กันของที่ไม่มีอยู่จริง → ธงเฟ้อ (KGP 4/7 แถว) → คนเลิกเชื่อธง
+
+**แก้ (`coa-pipeline.ts`):** keep-best flag site ใช้ `structuralPassNeedsAmber` แทน `isNearSpecBoundary`
+เฉพาะ `isStructural` — เขียวได้ทุกแถว **ยกเว้นค่าตรงขอบ spec พอดี** (`res === min || res === max` —
+กู้ผิด 1 หลักพลิก verdict ทันที). ★ ไม่แตะ path อื่น: `spatial` / `scanned-vector` (คอลัมน์เดา หรือเลขมาจาก
+OCR) ยัง amber เสมอ · guard-driven amber (sieve-recovery, DuPont spec-column, boundary-promote,
+downgrade ทุกตัว) ไม่ถูกแตะเพราะแก้ที่ flag site ไม่ได้แก้ `applyMarginGreen` ★
+
+**FE bug พ่วง (`ResultRow.tsx`):** `title={row.reason || "ต้องตรวจ — …"}` → แถว PASS สะอาด (`reason` ว่าง)
+ตกมาโชว์ tooltip "ต้องตรวจ" ด้วย = บอกให้ตรวจทั้งที่ไม่ต้อง (และเป็นเหตุที่ user เข้าใจว่าธงมาจาก "การกู้").
+fallback ยิงเฉพาะ `isReview` แล้ว
+
+### gate (corpus 17)
+| | PASS | FAIL | SKIP | rows | needsReview | TOTAL |
+|---|---|---|---|---|---|---|
+| ROUND 21 | 134 | 0 | 12 | 146 | 49 | 361s |
+| **ROUND 22** | **133** | **0** | **11** | **144** | **41** | 333s |
+
+**needsReview 49 → 41 (−16%)** · KGP-H65 `needsReview +0 · clean-green +7` = 4 ธงหายครบ ตรงเป้า
+verdict ต่าง −1P/−1S/−2rows = **1F1710 p4 drift ล้วน** (band 11–14P เดิม) — พิสูจน์ว่าไม่ใช่ผลของ patch:
+flag loop รัน **หลัง** `gridBeatsFlat` ตัดสินไปแล้ว และ `needsReview` ไม่มี consumer ไหนอ่านไปเปลี่ยน status
+(`summarize` นับจาก status · `applyMarginGreen` clear-only) → patch เปลี่ยน status ไม่ได้เชิงโครงสร้าง
+
+**41 ธงที่เหลือ = ของจริงล้วน:** boundary-exact 4 (D50 3.5/2~3.5, AL2O3 0.5/0~0.5, MGO, Residue) ·
+DuPont spec-column 27 (1F1710 9 หน้า × 3 — spec มาจาก spatial) · sieve-reconstruct 2 · interval-result 2 ·
+one-sided บนไฟล์ scan 6 · 0 FAIL · 0 deceptive · BE+FE tsc 0 · 14 suite ผ่านครบ

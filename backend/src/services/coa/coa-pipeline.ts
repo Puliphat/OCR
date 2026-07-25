@@ -419,6 +419,21 @@ function isNearSpecBoundary(r: EvaluatedItem): boolean {
   return res <= r.min + band || res >= r.max - band;
 }
 
+// ★ structural grid → digits are EXTRACTED, not recognized ★ (ROUND 22)
+//   gridSource="structural" ตั้งได้เฉพาะหน้า engine="text-layer" (ดู extractTextPerPage) = ตัวเลขดึงจาก
+//   text layer ของ PDF ตรงๆ + คอลัมน์ยืนยันด้วย ruling line ของ pdfplumber → ความเสี่ยงที่ margin-green
+//   G2–G4 กันอยู่ (digit scramble / ทศนิยมหาย / คอลัมน์เดา) เป็นความเสี่ยงของ OCR ล้วน ซึ่ง path นี้ไม่มี.
+//   ใช้ isNearSpecBoundary กับ path นี้ = ตี one-sided เป็น amber ทั้งที่ตัวเลขเชื่อได้ (KGP-H65: 4/7 แถว
+//   ⚠ ทั้งที่ตรงใบจริง + ตรงตรา 合格 ของ QA เอง) → ธงเฟ้อ คนเลิกเชื่อธง = อันตรายกว่าไม่มีธง
+//   ★ ยังคง amber: ค่าตรงขอบ spec พอดี (res === bound) — recovery ผิด 1 หลักพลิก verdict ทันที ★
+//   ★ ไม่แตะ path อื่น: spatial / scanned-vector (คอลัมน์เดา หรือเลขมาจาก OCR) ยัง amber เสมอ ★
+function structuralPassNeedsAmber(r: EvaluatedItem): boolean {
+  const res = typeof r.result === "number" ? r.result : Number(r.result);
+  if (!Number.isFinite(res)) return true;
+  if (r.min == null && r.max == null) return true; // ไม่มีขอบให้เทียบ → ไม่ปล่อยเขียว
+  return res === r.min || res === r.max;
+}
+
 // ★ Margin-green policy (Track 2 + scanned-vector) ★ — CLEAR-ONLY: sets needsReview=false on PASS
 //   rows that are safely away from spec bounds. Never sets needsReview=true (only guards do that).
 //   Five gates must ALL pass:
@@ -921,8 +936,8 @@ async function runFlatGridBest(
       //   grid PASS ที่ "flat ยืนยันไม่ได้" (row ใหม่ หรือ name/spec/result ต่างจาก flat PASS) ต้องไม่เป็น
       //   เขียวเงียบ. ขึ้นกับ provenance ของ column:
       //   • spatial (rapidocr): column INFERRED → amber เสมอ (พิสูจน์ mapping ไม่ได้)
-      //   • structural (pdfplumber ruling-line): column geometry-VERIFIED → balanced amber — clean-green
-      //     เฉพาะค่าอยู่กลางช่วง spec 2 ด้าน (ห่างขอบ); one-sided/ใกล้ขอบ/อ่านไม่ได้ → amber.
+      //   • structural (pdfplumber ruling-line): column geometry-VERIFIED + ตัวเลขจาก text layer (ไม่ผ่าน
+      //     OCR) → clean-green ได้ ยกเว้นค่าตรงขอบ spec พอดี (structuralPassNeedsAmber)
       //     = แก้ over-flag ที่ราก: column เชื่อได้แล้ว ค่าปลอดภัยจริง → ไม่ต้อง "ต้องตรวจ" ทุกแถว
       const flatPassKeys = new Set(
         flatReport.rows.filter((r) => r.status === "PASS").map(passKey)
@@ -931,7 +946,7 @@ async function runFlatGridBest(
       let greenlit = 0;
       for (const r of gridReport.rows) {
         if (r.status === "PASS" && !flatPassKeys.has(passKey(r))) {
-          const amber = isStructural ? isNearSpecBoundary(r) : true;
+          const amber = isStructural ? structuralPassNeedsAmber(r) : true;
           if (amber) {
             r.needsReview = true;
             surfaced++;
@@ -951,7 +966,7 @@ async function runFlatGridBest(
         amberBefore - gridReport.rows.filter((r) => r.needsReview).length;
       console.log(
         `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${surfaced}${
-          isStructural ? ` · clean-green +${greenlit} (structural mid-range)` : ""
+          isStructural ? ` · clean-green +${greenlit} (structural, text-layer digits)` : ""
         }${marginCleared > 0 ? ` · margin-green เคลียร์ ${marginCleared}` : ""}`
       );
       return gridReport;

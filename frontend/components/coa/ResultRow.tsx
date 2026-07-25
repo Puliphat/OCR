@@ -32,9 +32,13 @@ export default function ResultRow({ row }: { row: CoaRow }) {
       <div className="row-bound">{fmtNum(row.min)}</div>
       <div className="row-bound">{fmtNum(row.max)}</div>
       <div className="row-result">{row.resultRaw ?? fmtNum(row.result)}</div>
+      {/* fallback ใช้ได้เฉพาะแถวที่ปักธงจริง — เดิมแถว PASS สะอาด (reason ว่าง) ก็ตกมาโชว์ "ต้องตรวจ" */}
       <div
         className={"row-status" + statusClass}
-        title={row.reason || "ต้องตรวจ — ค่ามาจากการกู้/อ่านคอลัมน์ใหม่ ยืนยันกับใบจริง"}
+        title={
+          row.reason ||
+          (isReview ? "ต้องตรวจ — ค่ามาจากการกู้/อ่านคอลัมน์ใหม่ ยืนยันกับใบจริง" : undefined)
+        }
       >
         {isReviewPass ? (
           <>
