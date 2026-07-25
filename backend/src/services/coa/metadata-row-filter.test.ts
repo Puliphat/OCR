@@ -73,6 +73,19 @@ console.log("\n[DROP] junk metadata rows ต้องถูกกรองออ
   expect('drop "Item" (exact header)', dropped.length === 1 && kept.length === 0, true);
 }
 
+{
+  // ชื่อหัวเอกสารที่ LLM ดึงมาเป็นรายการ (PR1950W ให้ "Certificate of Compliance" เป็น SKIP row)
+  const cases: string[] = [
+    "Certificate of Compliance",
+    "Certificate of Analysis",
+    "certificate of conformance",
+  ];
+  for (const name of cases) {
+    const { kept, dropped } = filterMetadataRows([junk(name)]);
+    expect(`drop "${name}"`, dropped.length === 1 && kept.length === 0, true);
+  }
+}
+
 // ─── กลุ่ม KEEP ───────────────────────────────────────────────────────────────
 console.log("\n[KEEP] rows ปกติและ edge case ต้องไม่ถูกกรองออก");
 

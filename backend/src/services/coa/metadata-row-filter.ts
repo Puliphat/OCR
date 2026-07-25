@@ -14,6 +14,9 @@ const METADATA_PATTERNS: RegExp[] = [
   /^accept$/i,
   // "Item" เฉยๆ — header ของตาราง (ต้อง exact: ห้าม match "Items tested" / "Item No.")
   /^item$/i,
+  // "Certificate of Compliance/Analysis" — ชื่อหัวเอกสารที่ LLM ดึงมาเป็นรายการ (PR1950W)
+  //   ไม่มีใบไหนตั้งชื่อรายการทดสอบแบบนี้ → ปลอดภัยที่จะตัด (ยังต้องผ่านเงื่อนไข "ไม่มี spec" อยู่ดี)
+  /^certificate\s+of\s+/i,
 ];
 
 export interface FilterResult {

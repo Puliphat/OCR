@@ -936,10 +936,19 @@ async function runFlatGridBest(
           }
         }
       }
+      // ★ margin-green ต้องรันซ้ำหลังปักธง ★ — applyMarginGreen รันไปแล้วใน runExtractionPass แต่ธงข้างบน
+      //   ปักทีหลัง → แถว grid-won ไม่เคยผ่าน gate ค่า/คอลัมน์เลย. isNearSpecBoundary ตี one-sided
+      //   (≤max/≥min) เป็น amber เสมอ แม้ค่าห่างขอบไกล (PR1950W_4064 Moisture 0.5 vs ≤1.2 = ห่าง 140%
+      //   ของค่า). evaluator ก็เขียนกำกับไว้ว่า "margin-green ใน pipeline จะเคลียร์ให้เอง" → เรียกซ้ำที่นี่
+      //   ให้ path นี้ใช้ G0–G4 ชุดเดียวกับ path อื่น. CLEAR-ONLY + G0 กัน spatial (column inferred) ไว้แล้ว
+      const amberBefore = gridReport.rows.filter((r) => r.needsReview).length;
+      applyMarginGreen(gridReport.rows, engine, gridSource);
+      const marginCleared =
+        amberBefore - gridReport.rows.filter((r) => r.needsReview).length;
       console.log(
         `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${surfaced}${
           isStructural ? ` · clean-green +${greenlit} (structural mid-range)` : ""
-        }`
+        }${marginCleared > 0 ? ` · margin-green เคลียร์ ${marginCleared}` : ""}`
       );
       return gridReport;
     }
@@ -1052,27 +1061,29 @@ async function processPage(
 export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn): Promise<CoaReport[]> {
   const filename = path.basename(filePath).replace(/^\d+-/, "");
   const pages = await extractTextPerPage(filePath, onProgress);
-  // ★ HQ prefetch (perf) ★ — สั่ง HQ OCR ไว้ล่วงหน้าระหว่าง LLM ทำงาน พอถึงคิว HQ ก็ได้ผลเลยไม่ต้องรอ ~10s
-  //   เปิดด้วย COA_OCR_HQ_SPECULATE=true เฉพาะตอน daemon อยู่คนละเครื่อง (LAN) — เครื่องเดียวกัน OCR จะแย่ง CPU กับ LLM แล้วช้าลงแทน
+  // ★ HQ prefetch (perf) ★ — HQ OCR (CPU, ~10s) วิ่งขนานกับ LLM parse (GPU) ของหน้าเดียวกัน →
+  //   พอถึงคิว HQ challenger ผลรออยู่แล้ว ไม่ต้องรอ OCR อีกรอบ.
+  //   ★ JIT ต่อหน้า ★ ยิงตอนเริ่ม process หน้านั้น ไม่ใช่ยิงทุกหน้าพร้อมกันตอนเริ่มไฟล์ — daemon มี lock
+  //   เดียว (default+HQ) → ยิงรวดเดียวทำให้หน้าที่ต้องใช้ HQ จริงไปต่อท้ายคิวของหน้าที่ไม่ได้ใช้ = ไม่ทันกิน
+  //   ★ default ปิด — วัดจริงบน corpus (ROUND 20): เปิดแล้วช้าลง 329s→340s ★ hq stage ลง 93s→49s จริง
+  //   แต่ ocr +18s / parse +33s: HQ engine (v5-server) กิน CPU จนเบียด Ollama เอง (LLM อยู่ GPU ก็ยังใช้
+  //   CPU tokenize/sample) + เบียด default OCR ของไฟล์ถัดไป. คุ้มเฉพาะตอน daemon อยู่คนละเครื่อง (LAN)
+  //   → COA_OCR_HQ_SPECULATE=true เปิดตอนนั้น
   const speculate = OCR_HQ_FALLBACK_ENABLED && process.env.COA_OCR_HQ_SPECULATE === "true";
-  const hqPrefetch = new Map<number, ReturnType<RapidOcrService["extractTextBoth"]>>();
-  if (speculate) {
-    const svc = new RapidOcrService();
-    for (const pg of pages) {
-      if (pg.engine === "rapidocr" && pg.imagePath && pg.text.trim()) {
-        const p = svc.extractTextBoth(pg.imagePath, true);
-        p.catch(() => {}); // กัน error จาก promise ที่ไม่ได้ใช้
-        hqPrefetch.set(pg.page, p);
-      }
-    }
-  }
+  const hqSvc = speculate ? new RapidOcrService() : null;
   const reports: CoaReport[] = [];
   for (const pg of pages) {
     dumpDebug("_last-ocr.txt", pg.text); // debug, overwrite per page
     if (!pg.text.trim()) continue;        // skip blank pages (pinned)
+    // หน้า scanned เท่านั้นที่ HQ challenger แตะได้ (ดู processPage) → หน้า text-layer ไม่ต้อง prefetch
+    let hqPrefetch: ReturnType<RapidOcrService["extractTextBoth"]> | undefined;
+    if (hqSvc && pg.engine === "rapidocr" && pg.imagePath) {
+      hqPrefetch = hqSvc.extractTextBoth(pg.imagePath, true);
+      hqPrefetch.catch(() => {}); // กัน unhandled rejection ตอนหน้านั้นไม่ได้ใช้ HQ
+    }
     onProgress?.({ stage: "parse", page: pg.page, pages: pages.length });
     reports.push(
-      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch.get(pg.page), onProgress)
+      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress)
     );
   }
   onProgress?.({ stage: "eval" });

@@ -778,3 +778,64 @@ user: "ไล่ปรับต่อได้เลยถ้ายังไม�
 - **D-2072 4P/1S = เท่า baseline** → sub-row fix ไม่กินของจริง
 - perf: **3.4x** โดยรวม · 1F1710 521s→83.7s (p4 กลับมา 12P จาก 0P ที่เคย timeout) · PR1950W_4064 199s→13.3s (15x) · parse stage 948s→167s
 - stage mix ใหม่: parse 51% · hq 28% · ocr 17% · render/read 4% (เดิม parse กิน 85%)
+
+---
+
+## FIX ROUND 20 (2026-07-25) — margin-green ตกหล่นบน grid-won + junk row + วัด perf จนถึงเพดาน
+
+### (A) เช็ค 1F1710 ก่อน: ไม่ใช่บั๊ก
+
+ค้างมาหลายรอบว่า "p1 = 0P ทุกครั้ง" — เปิด PNG ที่ render ไว้ดูของจริงแล้วพบว่า **หน้านั้นคือ Disclaimer Statement**
+(customer/order/BOL + ข้อความปฏิเสธความรับผิด) ไม่มีตารางทดสอบเลย → 0 items = พฤติกรรมถูกต้อง ไม่ต้องแก้
+
+อีกจุดที่ดูน่าสงสัย: p2/p3/p4 ให้ค่าเดียวกันเป๊ะทุก batch (241.417 / 1.090 / 8.100) — เทียบใบจริงแล้ว
+**ซ้ำจริงในเอกสาร** (DuPont รายงานค่า statistical ของทั้ง merge, batch C31554582/86/87/90/91 ใช้ตัวเลขชุดเดียวกัน)
+→ 12P ต่อหน้าเป็นของจริง ไม่ใช่ broadcast
+
+### (B) margin-green ไม่เคยได้ทำงานกับแถวที่ grid ชนะ (ordering)
+
+`applyMarginGreen` ถูกเรียกท้าย `runExtractionPass` — แต่ธง `needsReview=true` ของ keep-best ปักใน `runFlatGridBest`
+ซึ่งเกิด **หลังจากนั้น** → แถว grid-won ไม่เคยผ่าน gate G0–G4 เลยสักครั้ง
+`isNearSpecBoundary` ตี one-sided spec (`≤max` / `≥min`) เป็น amber **เสมอ** ไม่ว่าค่าจะห่างขอบแค่ไหน
+เช่น PR1950W_4064 `Moisture 0.5 vs ≤1.2` (ห่างขอบ = 140% ของค่า) ยังติด "ต้องตรวจ"
+
+ที่ยืนยันว่าเป็นลำดับพลาดจริง ไม่ใช่นโยบาย: `coa-evaluator.ts:314` เขียนกำกับ interval path ไว้เองว่า
+*"PASS: ธง amber ไว้ก่อน … margin-green ใน pipeline จะเคลียร์ให้เองถ้าค่าห่างขอบพอและคอลัมน์เชื่อได้"*
+
+**แก้:** เรียก `applyMarginGreen` ซ้ำหลังปักธงใน keep-best. CLEAR-ONLY อยู่แล้ว + G0 กัน `spatial`
+(column inferred) ไว้ → เคลียร์ได้เฉพาะ structural/scanned-vector ที่ geometry ยืนยันคอลัมน์
+
+### (C) junk row "Certificate of Compliance"
+
+ชื่อหัวเอกสารหลุดมาเป็นรายการทดสอบ (PR1950W_4063 p2) → เพิ่ม pattern `/^certificate\s+of\s+/i`
+ใน `metadata-row-filter.ts` (ยังต้องผ่านเงื่อนไข "ไม่มี spec" ตามเดิม) + 3 fixture → 27→30 cases
+
+### (D) perf: ลองแล้ว 2 ทาง — ทั้งคู่ไม่คุ้ม เก็บผลวัดไว้กันลองซ้ำ
+
+**1. HQ OCR speculate (JIT ต่อหน้า)** — ย้าย prefetch จาก "ยิงทุกหน้าพร้อมกันตอนเริ่มไฟล์" เป็น
+"ยิงหน้านั้นตอนเริ่ม process" (daemon มี lock เดียว → ยิงรวดเดียวทำให้หน้าที่ต้องใช้ HQ จริงไปต่อท้ายคิว)
+แล้วเปิด default เพราะคิดว่าสมมติฐานเดิม ("OCR แย่ง CPU กับ LLM") ตายไปแล้วตอน LLM ขึ้น GPU (ROUND 19)
+
+**วัดจริง: ช้าลง 329s → 340s** · hq 93s→49s (prefetch ทำงานจริง) แต่ **ocr +18s · parse +33s**
+→ HQ engine (v5-server) กิน CPU จนเบียด Ollama เอง (LLM อยู่ GPU ก็ยังใช้ CPU tokenize/sample)
+และเบียด default OCR ของไฟล์ถัดไป. ไฟล์ที่ใช้ HQ จริงเร็วขึ้น (4A 26.6→17.7s · D-2072 21.8→17.9s)
+แต่ไฟล์ที่ prefetch ทิ้งเปล่าช้าลงมากกว่า → **คง opt-in** (คุ้มเฉพาะ daemon คนละเครื่อง/LAN), เก็บโครง JIT ไว้
+
+**2. ยิง LLM ขนานข้ามหน้า** — วัด Ollama ตรงๆ: 2 request ขนาน 3.9s vs serial 4.7s = **เร็วขึ้นแค่ 17%**
+(GPU saturated อยู่แล้ว ไม่ใช่ 2x) → แปลงเป็น pipeline จริงได้ ~5% แลกกับ log interleave +
+race บน `gpuDisabled` latch/`releaseRunner` → **ไม่ทำ**
+
+**เพดานปัจจุบัน:** parse 55% = GPU saturated · hq 26% = ซ่อนใต้ parse ไม่ได้บนเครื่องเดียว ·
+ocr 16% = ลดได้ก็ต่อเมื่อยอมแลก accuracy (เปลี่ยน model tier / ลด render scale) → ไม่แตะ
+
+### gate (corpus16)
+| | PASS | FAIL | SKIP | rows | needsReview | TOTAL |
+|---|---|---|---|---|---|---|
+| ROUND 19 | 126 | 0 | 12 | 138 | 53 | 329s |
+| JIT speculate (ทดลอง) | 126 | 0 | 12 | 138 | 53 | 340s |
+| margin-green fix | 126 | 0 | 12 | 138 | **43** | 346s |
+| **ROUND 20 (+junk filter)** | **126** | **0** | **11** | **137** | **43** | 333s |
+
+**PASS เท่าเดิม · 0 FAIL · 0 deceptive · needsReview −19%** · verdict ต่อไฟล์เหมือน ROUND 19 ทุกไฟล์
+ยกเว้น PR1950W_4063 p2 (7P/0F/1S → 7P/0F/0S) ที่ SKIP หายเพราะ junk row ถูกกรอง ไม่ใช่ verdict เปลี่ยน
+BE tsc 0 · 14 test suite ผ่านครบ · เวลา 329/340/346/333s อยู่ในแถบ run-to-run noise เดียวกัน (±5%)
