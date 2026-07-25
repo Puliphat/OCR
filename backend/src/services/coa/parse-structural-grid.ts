@@ -220,9 +220,15 @@ function splitGrid(gridText: string): string[][] {
   return rows.map((r) => (r.length < ncol ? [...r, ...Array(ncol - r.length).fill("")] : r));
 }
 
+// หัวตารางญี่ปุ่น: 試験項目 (รายการทดสอบ) · 検査項目 (รายการตรวจ) · 規格値 (เกณฑ์) · 実測値/測定値 (ค่าที่วัดได้)
+//   · 合否判定 (ผลตัดสิน) · 備考 (หมายเหตุ). ใบญี่ปุ่นเว้นวรรคระหว่างตัวอักษรเพื่อจัดหน้า ("試 験 項 目")
+//   → ต้องลบ whitespace ก่อนเทียบ ไม่งั้นไม่ match
+const CJK_HEADER_RE = /試験項目|検査項目|規格値|実測値|測定値|合否判定|備考|品名/;
+
 // a row is a HEADER when it carries no spec cell, no data number, and at least one header keyword.
 function isHeaderRow(r: string[]): boolean {
   if (r.some((c) => classifySpec(c)) || r.some((c) => isBare(c))) return false;
+  if (r.some((c) => CJK_HEADER_RE.test(nrm(c).replace(/\s+/g, "")))) return true;
   return r.some((c) => /^(item|method|spec|lot|parameter|test|result|unit|standard|grade|no\.?)\b/i.test(c));
 }
 
@@ -270,6 +276,49 @@ function resolveSpecCol(dataRows: string[][], ncol: number, resultCol: number): 
   return best;
 }
 
+// ★ sub-label column (merged-group layout) ★ — ใบที่ col0 เป็นชื่อ "กลุ่ม" ครอบหลายแถว (merged cell)
+//   แล้วมีคอลัมน์ถัดมาเป็นตัวแยกแถวจริง เช่น KGP-H65:
+//     粒度(μm) | D50 | 6.5±1.0 | 6.5 …      ← col0 มีค่าเฉพาะแถวแรกของกลุ่ม
+//              | D90 | 50以下  | 29.0 …     ← col0 ว่าง (merged) — D90 คือสิ่งเดียวที่แยกแถวนี้ออก
+//   ไม่ผนวก col1 เข้าชื่อ = ได้ "粒度(μm)" ซ้ำ 4 แถว คนอ่านแยกไม่ออกว่าแถวไหน D50/D90 (ค่าถูกแต่ไร้ป้าย)
+//   ★ gate แคบ 5 ชั้น กันไปโดนใบทรงอื่น ★ (PR1950W คอลัมน์ unit "％/sec/℃" ต้องไม่ถูกดูดเข้าชื่อ):
+//   (1) ต้องมีแถว "col0 ว่าง + มี spec ในแถวนั้น" = แถวข้อมูลที่สืบชื่อจาก merged cell ด้านบนจริง ๆ
+//       ★ ห้ามนับแค่ "col0 ว่าง" เฉย ๆ ★ — grid ของ PR1950W มีบรรทัด metadata บนหัวตาราง
+//       (" | No. 4064-08 Date Apr./06/2026 | …") ที่ col0 ว่างเหมือนกัน แต่ไม่ใช่ merged group →
+//       เคยทำให้คอลัมน์ Unit (℃/mm/sec/％) ถูกดูดเข้าชื่อ และ header "Item" กลายเป็น "Item Unit"
+//       จนรอด metadata-filter (`^item$`) ไปโผล่เป็น SKIP ปลอม
+//   (2) ไม่ใช่คอลัมน์ name/spec/result  (3) cell ไม่ใช่ spec/เลขเดี่ยว/method/unit/mesh
+//   (4) ต้องมีค่าเกินครึ่งของแถว = เป็นคอลัมน์จริง ไม่ใช่หมายเหตุประปราย
+//   (5) ★ ต้องมีค่าต่างกัน ≥2 แบบ ★ — คอลัมน์ 合否判定 ที่เป็น "合格" ซ้ำทุกแถวแยกแถวไม่ได้ ตกข้อนี้
+//   คืน -1 = ไม่มี → ชื่อเป็นพฤติกรรมเดิมเป๊ะ
+function resolveSubLabelCol(
+  dataRows: string[][],
+  ncol: number,
+  resultCol: number,
+  specCol: number
+): number {
+  // (1) merged-group จริง = แถวที่ไม่มีชื่อของตัวเอง แต่มี spec (แถวข้อมูลที่สืบชื่อจากด้านบน)
+  const hasMergedDataRow = dataRows.some(
+    (r) => !nrm(r[0] ?? "") && r.some((c) => classifySpec(c))
+  );
+  if (!hasMergedDataRow) return -1;
+  for (let j = 1; j < ncol; j++) {
+    if (j === resultCol || j === specCol) continue; // (2)
+    const vals: string[] = [];
+    for (const row of dataRows) {
+      const c = nrm(row[j] ?? "");
+      if (!c) continue;
+      if (classifySpec(c) || isBare(c) || isMethod(c) || isUnitCell(c) || isMesh(c)) continue; // (3)
+      if (c.length > 20) continue; // ป้ายแยกแถวสั้นเสมอ — ข้อความยาว = หมายเหตุ
+      vals.push(c);
+    }
+    if (vals.length < 2 || vals.length < dataRows.length / 2) continue; // (4)
+    if (new Set(vals).size < 2) continue; // (5)
+    return j;
+  }
+  return -1;
+}
+
 // ทิศของคอลัมน์ spec — "upper" (le/lt ส่วนใหญ่), "lower" (ge/gt ส่วนใหญ่), "mixed" (ไม่ชัด)
 // ใช้แยก bare-0 ใน spec col → specMax หรือ specMin อย่างน้อย 1 hit ต่างฝ่ายก็ mixed → abstain
 function specColDirection(dataRows: string[][], specCol: number): "upper" | "lower" | "mixed" {
@@ -290,7 +339,13 @@ function specColDirection(dataRows: string[][], specCol: number): "upper" | "low
 
 // Parse a pdfplumber structural grid into RawCoa with NO LLM. orient is informational: pdf_table.py
 // has already transposed transposed COAs, so the grid is always items-as-rows by the time we see it.
-export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawCoa {
+// source: "structural" = เส้นตารางจริงจาก pdfplumber (text-layer) — cell เชื่อถือได้
+//         "scanned-vector" = token OCR ที่ map ลง column band — cell เลื่อนได้ → ปิดฟีเจอร์ที่พึ่งตำแหน่ง cell
+export function parseStructuralGrid(
+  gridText: string,
+  _orient: GridOrient,
+  source: "structural" | "scanned-vector" = "structural"
+): RawCoa {
   const rows = splitGrid(gridText);
   if (rows.length === 0) return { product: null, lotNo: null, items: [] };
   const ncol = rows[0].length;
@@ -322,6 +377,11 @@ export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawC
   // specCol + direction — ใช้กู้ bare-number ในคอลัมน์ spec ที่ classifySpec ข้ามไป (เช่น spec=0)
   const specCol = resolveSpecCol(dataRows, ncol, resultCol);
   const specDir = specCol >= 0 ? specColDirection(dataRows, specCol) : "mixed";
+  // ป้ายแยกแถวใต้ชื่อกลุ่ม merged (D50/D90/Fe2O3) — -1 ถ้าใบนี้ไม่ใช่ layout นั้น
+  // ★ structural เท่านั้น ★ — scanned-vector สร้าง cell จาก token OCR ที่เลื่อนได้ ต่อป้ายแล้วชื่อมั่ว
+  //   (PR1950W_4063 ได้ "Softening point 125℃ mm" ทั้งที่แถวนั้นคือ Flow) — เส้นตารางจริงเท่านั้นที่เชื่อ cell ได้
+  const subLabelCol =
+    source === "structural" ? resolveSubLabelCol(dataRows, ncol, resultCol, specCol) : -1;
 
   const items: RawCoaItem[] = [];
   let section = "";
@@ -344,7 +404,9 @@ export function parseStructuralGrid(gridText: string, _orient: GridOrient): RawC
 
     const base = col0 && !isMesh(col0) ? col0 : section;
     const mesh = meshIdx >= 0 ? row[meshIdx] : "";
-    const name = mesh ? `${base} ${mesh}`.trim() : base;
+    // ป้ายท้ายชื่อ: mesh (+100/-325) มาก่อนตามพฤติกรรมเดิม · ไม่มี mesh จึงใช้ sub-label ของ merged group
+    const suffix = mesh || (subLabelCol >= 0 ? nrm(row[subLabelCol] ?? "") : "");
+    const name = suffix ? `${base} ${suffix}`.trim() : base;
     const method = methodIdx >= 0 ? row[methodIdx] : null;
     const unit = unitIdx >= 0 ? unitText(row[unitIdx]) : null;
     const resultRaw = resultCol >= 0 ? row[resultCol] ?? "" : "";

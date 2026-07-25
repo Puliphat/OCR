@@ -531,7 +531,11 @@ async function runExtractionPass(
   let llmRawLabel: string | null;
   if (isDeterministicGrid) {
     console.log(`  [grid-parser] parsing (deterministic ${gridSource ?? "structural"}, ${gridOrient ?? "normal"})…`);
-    raw = parseStructuralGrid(llmInput, gridOrient ?? "normal");
+    raw = parseStructuralGrid(
+      llmInput,
+      gridOrient ?? "normal",
+      gridSource === "scanned-vector" ? "scanned-vector" : "structural"
+    );
     llmModelLabel = "deterministic-grid-parser";
     llmRawLabel = JSON.stringify(raw, null, 2);
     console.log(`  [grid-parser] parsed ${raw.items?.length ?? 0} items (${gridSource ?? "structural"})`);

@@ -139,5 +139,95 @@ check(
   `statuses=${amEval2.map((e) => e.status).join(",")}`
 );
 
+console.log("\n[6] KGP-H65 merged-group layout → ป้ายแยกแถว (D50/D90) ต้องเข้าไปอยู่ในชื่อ");
+// ใบจริง 関西マテック 試験成績表: col0 = ชื่อกลุ่ม merged, col1 = ตัวแยกแถว, col4 = 合否判定 (ค่าเดียวซ้ำ)
+const KGP = [
+  "試 験 項 目 |  | 規格値 | 実測値 | 合否判定 | 備考",
+  "粒度(μm) | D50 | 6.5±1.0 | 6.5 | 合格 | レーザー回折散乱式測定 測定機器：LMS-30",
+  " | D90 | 50以下 | 29.0 | 合格 | ",
+  " | D50 | 13.0±3.0 | 13.3 | 合格 | レーザー回折散乱式測定 測定機器：S3500",
+  " | D90 | 70以下 | 62.0 | 合格 | ",
+  "嵩密度 | g/ml | 0.23±0.06 | 0.23 | 合格 | JIS K-3362",
+  "化学成分(%) | SiO2+CaO | 94以上 | 96.85 | 合格 | 蛍光X線装置",
+  " | Fe2O3 | 0.5以下 | 0.40 | 合格 | ",
+].join("\n");
+const kgp = parseStructuralGrid(KGP, "normal");
+const kgpNames = kgp.items.map((i) => i.name);
+// 7 แถว · ทุกชื่อมีป้ายต่อท้าย ไม่เหลือ "粒度(μm)" เปล่า ๆ ที่แยกแถวไม่ออก
+//   (D50/D90 ซ้ำคู่ได้จริง — ใบนี้วัด 2 เครื่อง LMS-30 / S3500 คนละ spec 6.5±1.0 vs 13.0±3.0)
+check(
+  "7 แถว ทุกชื่อมีป้ายแยก (ไม่มีชื่อกลุ่มเปล่า)",
+  kgp.items.length === 7 && !kgpNames.some((n) => n === "粒度(μm)" || n === "化学成分(%)"),
+  `names=${kgpNames.join(" | ")}`
+);
+check("粒度(μm) D50 ตัวแรก", kgpNames[0] === "粒度(μm) D50", `got ${kgpNames[0]}`);
+check("แถว merged สืบชื่อกลุ่ม → 粒度(μm) D90", kgpNames[1] === "粒度(μm) D90", `got ${kgpNames[1]}`);
+check("化学成分(%) Fe2O3", kgpNames[6] === "化学成分(%) Fe2O3", `got ${kgpNames[6]}`);
+check("嵩密度 g/ml", kgpNames[4] === "嵩密度 g/ml", `got ${kgpNames[4]}`);
+// 合否判定 ("合格" ซ้ำทุกแถว = distinct 1) ต้องไม่ถูกเลือกเป็นป้าย
+check("ไม่ดูด 合格 (judgement) เข้าชื่อ", !kgpNames.some((n) => n.includes("合格")), kgpNames.join(" | "));
+const kgpEval = kgp.items.map(evaluateItem);
+check(
+  "7 แถว PASS หมด (ตรงกับ 合格 ในใบจริง)",
+  kgpEval.every((e) => e.status === "PASS"),
+  kgpEval.map((e) => `${e.name}=${e.status}`).join(", ")
+);
+// 以上/以下 = ทิศกลับกัน อ่านผิดทิศเมื่อไหร่ PASS พลิกเป็น FAIL ทันที
+const sio2 = kgp.items.find((i) => i.name.includes("SiO2"));
+check("94以上 → specMin (ไม่ใช่ max)", sio2?.specMin === 94 && sio2?.specMax == null, `min=${sio2?.specMin} max=${sio2?.specMax}`);
+const fe = kgp.items.find((i) => i.name.includes("Fe2O3"));
+check("0.5以下 → specMax (ไม่ใช่ min)", fe?.specMax === 0.5 && fe?.specMin == null, `min=${fe?.specMin} max=${fe?.specMax}`);
+
+// ★ regression ★ grid จริงของ PR1950W_4064 มีบรรทัด metadata บนหัวตารางที่ col0 ว่าง (ไม่ใช่ merged group)
+//   เคยทำให้ป้าย activate → ชื่อกลายเป็น "Softening point ℃" และ header "Item" → "Item Unit"
+//   ซึ่งรอด metadata-filter (`^item$`) ไปโผล่เป็น SKIP ปลอม
+const PR4064_REAL = [
+  "Certificate of Compliance Shimodate Plant Quality Assurance Dept. |  |  |  |  |  | ",
+  " | No. 4 0 6 4-08 Date Apr./06/2026 |  |  |  |  | ",
+  "Item |  | Unit | Treatment Condition | Specification | Test result | ",
+  "Appearance |  | - | A | Powder without foreign body | GOOD | ",
+  "Softening point |  | ℃ | A | 105〜115 | 113 | ",
+  "Flow |  | mm | 125ﾟC | 10〜35 | 15 | ",
+  "Moisture |  | ％ | A | ≦1.2 | 0.5 | ",
+].join("\n");
+const pr = parseStructuralGrid(PR4064_REAL, "normal").items.map((i) => i.name);
+check(
+  "[regression] metadata row ที่ col0 ว่าง ไม่นับเป็น merged group",
+  !pr.some((n) => /℃|mm|％|Unit/.test(n)),
+  pr.join(" | ")
+);
+check(
+  "[regression] header 'Item' ไม่ถูกต่อป้าย (metadata-filter ต้องยังตัดได้)",
+  !pr.some((n) => /^Item\s/.test(n)),
+  pr.join(" | ")
+);
+
+// sentinel: col0 ครบทุกแถว (ไม่มี merged) → ห้าม activate ป้าย แม้จะมีคอลัมน์ text ว่าง ๆ อยู่
+const NO_MERGE = [
+  "Item | Unit | Specification | Test result",
+  "Softening point | ℃ | 105〜115 | 113",
+  "Flow | mm | 10〜35 | 15",
+  "Gelation time | sec | 30〜55 | 35",
+].join("\n");
+const nm = parseStructuralGrid(NO_MERGE, "normal").items.map((i) => i.name);
+check(
+  "[sentinel] ไม่มี merged cell → ชื่อไม่ถูกต่อท้าย",
+  nm.every((n) => !/℃|mm|sec/.test(n)),
+  nm.join(" | ")
+);
+
+// ★ regression ★ scanned-vector สร้าง cell จาก token OCR ที่เลื่อนได้ → ห้ามต่อป้าย
+//   (PR1950W_4063 เคยได้ "Softening point 125℃ mm" ทั้งที่แถวนั้นคือ Flow)
+const kgpScanned = parseStructuralGrid(KGP, "normal", "scanned-vector").items.map((i) => i.name);
+check(
+  "[regression] scanned-vector → ไม่ต่อป้าย (cell เชื่อไม่ได้)",
+  kgpScanned.every((n) => !/D50|D90|Fe2O3|SiO2/.test(n)),
+  kgpScanned.join(" | ")
+);
+check(
+  "structural → ต่อป้าย (เทียบกับบรรทัดบน = ต่างกันจริง)",
+  parseStructuralGrid(KGP, "normal", "structural").items[0].name === "粒度(μm) D50"
+);
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
