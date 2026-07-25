@@ -120,19 +120,21 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
     }
   }
 
-  // ขอบบน: ≤ / ≦ / <= / Max.
+  // ขอบบน: ≤ / ≦ / <= / Max. / 以下 (ใบญี่ปุ่น 試験成績表 เช่น "50以下" = ไม่เกิน 50)
   {
     const leSym = cleaned.match(new RegExp(`^(?:≤|≦|<=)\\s*(${NUM})$`));
     const leSuffix = cleaned.match(new RegExp(`^(${NUM})\\s*Max\\.?$`, "i"));
-    const m = leSym || leSuffix;
+    const leJp = cleaned.match(new RegExp(`^(${NUM})\\s*以下$`));
+    const m = leSym || leSuffix || leJp;
     if (m) return { op: "le", value: toNum(m[1]), raw: original };
   }
 
-  // ขอบล่าง: ≥ / ≧ / >= / Min.
+  // ขอบล่าง: ≥ / ≧ / >= / Min. / 以上 (ใบญี่ปุ่น เช่น "94以上" = ไม่ต่ำกว่า 94)
   {
     const geSym = cleaned.match(new RegExp(`^(?:≥|≧|>=)\\s*(${NUM})$`));
     const geSuffix = cleaned.match(new RegExp(`^(${NUM})\\s*Min\\.?$`, "i"));
-    const m = geSym || geSuffix;
+    const geJp = cleaned.match(new RegExp(`^(${NUM})\\s*以上$`));
+    const m = geSym || geSuffix || geJp;
     if (m) return { op: "ge", value: toNum(m[1]), raw: original };
   }
 

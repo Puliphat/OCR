@@ -18,6 +18,7 @@ import {
   applyHeaderDirectionHints,
 } from "./spec-recovery";
 import { recoverResultsFromOcr } from "./result-recovery";
+import { recoverResultMinMax } from "./result-minmax-recovery";
 import { recoverAverageColumn } from "./avg-column-recovery";
 import { recoverSpecificationColumn } from "./spec-column-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
@@ -341,17 +342,42 @@ function hasCollapseSymptom(rpt: CoaReport): boolean {
 const passCount = (rpt: CoaReport): number =>
   rpt.rows.filter((r) => r.status === "PASS").length;
 
-// ★ multiset: นับ PASS ต่อชื่อ row (ไม่ใช่ Set) — ตาราง sieve มีชื่อซ้ำได้ (RI-015 "Particle Size" ×4)
-//   Set เดิมยุบชื่อซ้ำเหลือ 1 → superset check เพี้ยน → grid อาจทิ้ง flat PASS เงียบ. multiset กันได้
-function passNameCounts(rpt: CoaReport): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const r of rpt.rows) {
-    if (r.status !== "PASS") continue;
-    // ยุบ whitespace ทั้งหมด: flat/structural สะกดชื่อเว้นวรรคต่างกัน ("Ba SO4"="BaSO4","D 100"="D100")
-    const k = r.name.replace(/\s+/g, "").toLowerCase();
-    m.set(k, (m.get(k) ?? 0) + 1);
+// ชื่อ row สำหรับเทียบ PASS ข้าม variant — ยุบ whitespace + μ/µ + วรรคตอน (คง latin/digit/CJK)
+//   flat/structural/HQ สะกดชื่อไม่เหมือนกัน: "Ba SO4"="BaSO4" · "D 100"="D100" ·
+//   ★ v5 "Residue on sieve(106m)" vs mobile "(106 μ m)" ★ (บั๊ก TEST-LOG ROUND 15 item 2 — μ ทำ HQ
+//   ที่ชนะจริง 7P>6P ถูก reject เพราะนับว่า "PASS เดิมหาย")
+function passNameKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[\sµμ]+/g, "")
+    .replace(/[^a-z0-9぀-ヿ一-鿿]/g, "");
+}
+
+// fingerprint ค่า+เกณฑ์ของ PASS row — ใช้เมื่อชื่อเทียบกันไม่ได้เลย เพราะ incumbent อ่านชื่อผิด
+//   (KGP-H65: flat หยิบ unit มาเป็นชื่อ "g/ml" ขณะ grid อ่านถูก "嵩密度" — แถวเดียวกัน ค่า+เกณฑ์ตรงเป๊ะ)
+//   ครบชุด (result+min+max) จึงบังเอิญตรงกันข้ามแถวได้ยาก → ปลอดภัยพอจะใช้เป็น fallback
+function passValueKey(r: EvaluatedItem): string {
+  return `${r.result ?? ""}|${r.min ?? ""}|${r.max ?? ""}`;
+}
+
+// ★ PASS-preservation ★ — challenger ต้องเก็บ PASS เดิมของ incumbent ครบทุกแถว
+//   จับคู่ 1:1 แบบ greedy (= multiset โดยธรรมชาติ → ตาราง sieve ชื่อซ้ำ RI-015 "Particle Size" ×4
+//   ยังนับแยกแถวถูก) · เกณฑ์จับคู่: ชื่อ normalize ตรง **หรือ** ค่า+เกณฑ์ตรง
+function preservesPasses(challenger: CoaReport, incumbent: CoaReport): boolean {
+  const pool = challenger.rows.filter((r) => r.status === "PASS");
+  const used = new Set<number>();
+  for (const need of incumbent.rows) {
+    if (need.status !== "PASS") continue;
+    const nk = passNameKey(need.name);
+    let hit = pool.findIndex((c, i) => !used.has(i) && passNameKey(c.name) === nk);
+    if (hit < 0) {
+      const vk = passValueKey(need);
+      hit = pool.findIndex((c, i) => !used.has(i) && passValueKey(c) === vk);
+    }
+    if (hit < 0) return false; // PASS เดิมหายจริง → challenger แพ้
+    used.add(hit);
   }
-  return m;
+  return true;
 }
 
 // identity ของ PASS row (name + spec + result + verdict) — ใช้เช็คว่า grid PASS "ตรงกับ" flat PASS ไหม
@@ -371,11 +397,7 @@ function passKey(r: EvaluatedItem): string {
 //   (3) grid เพิ่ม PASS รวม. ไม่ครบ → คง flat → 0 regression. (ZP10: grid 1P < flat 4P → คง flat)
 function gridBeatsFlat(grid: CoaReport, flat: CoaReport): boolean {
   if (grid.summary.fail > 0) return false;
-  const gc = passNameCounts(grid);
-  const fc = passNameCounts(flat);
-  for (const [name, fn] of fc) {
-    if ((gc.get(name) ?? 0) < fn) return false; // grid ต้องเก็บ PASS เดิมของ flat ครบ (ต่อชื่อ)
-  }
+  if (!preservesPasses(grid, flat)) return false;
   return passCount(grid) > passCount(flat);
 }
 
@@ -633,6 +655,19 @@ async function runExtractionPass(
           .join(", ")}`
       );
     }
+  }
+
+  // ★ Result-side Min|Max recovery (deterministic, header-anchored) ★ — ใบที่ฝั่งผลแตกเป็น 2 คอลัมน์
+  //   Min|Max (ไม่มีคอลัมน์ result เดี่ยว เช่น RB220) → ค่าที่วัดได้เป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง.
+  //   qwen3:4b map พลาดทุกรัน → กู้จาก header เอง. ★ ABSTAIN ถ้าไม่เจอโครง Results/Limits + Min./Max. ★
+  //   รันท้ายสุดก่อน eval (เหมือน spec-column) เพื่อไม่ให้ pass อื่นทับ spec/result ที่แก้แล้ว
+  const minMaxRec = recoverResultMinMax(raw.items ?? [], text);
+  if (minMaxRec.overridden.length > 0) {
+    console.log(
+      `  [result-minmax] กู้ result เป็นช่วง Min|Max ${minMaxRec.overridden.length} รายการ: ${minMaxRec.overridden
+        .map((o) => `${o.name}(${o.resultMin}–${o.resultMax} vs ${o.specMin ?? "-"}~${o.specMax ?? "-"})`)
+        .join(", ")}`
+    );
   }
 
   const evaluated = evaluateCoa({

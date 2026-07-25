@@ -107,6 +107,9 @@ function classifySpec(c: string): SpecCells | null {
   if (m) return { specMax: toNum(m[1]) };
   m = s.match(new RegExp(`^(?:≥|≧|>=|>)\\s*(${NUM})$`));
   if (m) return { specMin: toNum(m[1]) };
+  // suffix ญี่ปุ่น (試験成績表 คอลัมน์ 規格値): "50以下" = ไม่เกิน 50 → upper · "94以上" = ไม่ต่ำกว่า 94 → lower
+  m = s.match(new RegExp(`^(${NUM})\\s*(以下|以上)$`));
+  if (m) return m[2] === "以下" ? { specMax: toNum(m[1]) } : { specMin: toNum(m[1]) };
   return null;
 }
 

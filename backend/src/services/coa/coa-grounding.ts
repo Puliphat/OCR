@@ -28,14 +28,24 @@ interface NumToken {
   digits: string;
 }
 
-// alpha token (≥3) ของชื่อ — ตัดเลข/อักขระทิ้ง, lower-case (รับ latin + ไทย)
+// ★ CJK (ญี่ปุ่น/จีน) ★ — hiragana+katakana U+3040-30FF, kanji U+4E00-9FFF
+//   ใบ 試験成績表 ญี่ปุ่นเขียนชื่อรายการเป็น CJK ล้วน (粒度, 嵩密度, 化学成分) — regex latin+ไทย เดิม
+//   ตัดทิ้งหมด → ชื่อกลายเป็นค่าว่าง → grounding ตัดแถวที่ถูกต้องว่าเป็น hallucination (เคสจริง KGP-H65)
+const CJK = "\\u3040-\\u30ff\\u4e00-\\u9fff";
+const HAS_CJK = new RegExp(`[${CJK}]`);
+// CJK เขียนติดกันไม่มีช่องว่าง → token 2 ตัวอักษรคือ "คำเต็ม" แล้ว (粒度 = particle size) และ dense พอ
+//   ที่จะไม่ชนบังเอิญ (kanji 2 ตัว ≈ ล้านคู่) → ยอมรับ ≥2 เฉพาะ token ที่มี CJK
+const MIN_TOKEN = 3;
+const longEnough = (t: string) => t.length >= MIN_TOKEN || (t.length >= 2 && HAS_CJK.test(t));
+
+// alpha token ของชื่อ — ตัดเลข/อักขระทิ้ง, lower-case (รับ latin + ไทย + CJK)
 function nameTokens(name: string): string[] {
   return name
     .toLowerCase()
-    .replace(/[^a-z฀-๿]+/g, " ")
+    .replace(new RegExp(`[^a-z฀-๿${CJK}]+`, "g"), " ")
     .trim()
     .split(/\s+/)
-    .filter((t) => t.length >= 3);
+    .filter(longEnough);
 }
 
 // เลขทุกตัวใน value (รับ string/number/{avg,min,max,raw}) → string token เลขดิบ
@@ -96,11 +106,11 @@ function buildPipeBlocks(ocrText: string): string[][] {
   return blocks;
 }
 
-// token ตัวอักษร ≥2 ของชื่อ (รับ symbol ธาตุ Cu/Zn) — ใช้ผูกชื่อกับ block
+// token ตัวอักษร ≥2 ของชื่อ (รับ symbol ธาตุ Cu/Zn + CJK) — ใช้ผูกชื่อกับ block
 function nameSignal(name: string): string[] {
   return (name ?? "")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(new RegExp(`[^a-z0-9${CJK}]+`, "g"), " ")
     .trim()
     .split(/\s+/)
     .filter((t) => t.length >= 2);
@@ -123,7 +133,10 @@ function isTransposedGrounded(
   if (!sig.length) return false; // ไม่มี name signal → ไม่ ground (กัน fabricated)
   for (const block of blocks) {
     // ★ name precondition ★ — ชื่อ row ต้องโผล่ใน block นี้ (กัน row ที่ LLM ตั้งชื่อมั่ว)
-    const blockNorm = block.join(" ").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const blockNorm = block
+      .join(" ")
+      .toLowerCase()
+      .replace(new RegExp(`[^a-z0-9${CJK}]+`, "g"), "");
     if (!sig.some((t) => blockNorm.includes(t))) continue;
     const cells = block.map((l) => l.split("|").map((c) => parseNumTokens(c)));
     const maxCols = Math.max(...cells.map((c) => c.length));
@@ -152,9 +165,11 @@ function isGrounded(
 ): boolean {
   // 1. name grounding — whole-word (latin) หรือ substring เฉพาะ token ยาว ≥5 (เผื่อไทย/ชื่อยาว)
   //    ไม่ substring token สั้น (3-4) กัน "tin" ไปแมตช์ "testing", "iron" แมตช์ "environment"
+  //    CJK: ยอม substring ที่ ≥2 — ocrWords เป็น latin-only และคำ CJK ไม่มีช่องว่างให้ตัดเป็น word
   for (const t of nameTokens(item.name ?? "")) {
     if (ocrWords.has(t)) return true;
     if (t.length >= 5 && ocrNoSpace.includes(t)) return true;
+    if (t.length >= 2 && HAS_CJK.test(t) && ocrNoSpace.includes(t)) return true;
   }
   // 2. number co-location — result และ spec ต้องอยู่ "บรรทัดเดียวกัน"
   const resultNums = numberTokens(item.result);
@@ -340,11 +355,11 @@ export interface PassGuardResult {
 export const PASS_DOWNGRADE_REASON =
   "ค่าผลอาจมาจากแถวอื่น (ไม่ตรงกับชื่อรายการในเอกสาร) — เทียบกับใบจริง";
 
-// token ของชื่อสำหรับ anchor — เก็บเลขไว้ (500/350/150 คือตัวแยกแถว sieve), lower-case latin+digit
+// token ของชื่อสำหรับ anchor — เก็บเลขไว้ (500/350/150 คือตัวแยกแถว sieve), lower-case latin+digit+CJK
 function anchorTokens(s: string): string[] {
   return s
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(new RegExp(`[^a-z0-9${CJK}]+`, "g"), " ")
     .trim()
     .split(/\s+/)
     .filter((t) => t.length >= 2 || /\d/.test(t));
@@ -374,9 +389,10 @@ export function downgradeUngroundedPasses(
   const lineSigs = lines.map((l) => new Set(anchorTokens(l)));
   const lineNums = lines.map(parseNumTokens);
   // cells ของแต่ละบรรทัด normalize เป็น alnum ล้วน — ใช้ glue-match (ชื่อแถวติดกันเป็น cell เดียว)
+  const cellNorm = new RegExp(`[^a-z0-9${CJK}]+`, "g");
   const lineCells = lines.map((l) =>
     (l.includes("|") ? l.split("|") : l.split(/\s{2,}/)).map((c) =>
-      c.toLowerCase().replace(/[^a-z0-9]+/g, "")
+      c.toLowerCase().replace(cellNorm, "")
     )
   );
 

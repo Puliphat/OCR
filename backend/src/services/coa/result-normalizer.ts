@@ -10,10 +10,13 @@ export interface ResultValues {
 
 export interface NormalizedResult {
   value: number;
-  source: "avg" | "single" | "all_values";
+  source: "avg" | "single" | "all_values" | "interval";
   values?: number[];
   raw: string;
   bound?: { op: "lt" | "le" | "gt" | "ge"; value: number };
+  // ★ result เป็น "ช่วงที่วัดได้" (คอลัมน์ Min + Max แยกกัน ไม่มีคอลัมน์ result เดี่ยว — เคส RB220) ★
+  //   ต้องอยู่ในกรอบ spec ทั้งช่วง ไม่ใช่จุดเดียว → evaluator เทียบ 2 ขอบ (ดู evaluateInterval)
+  interval?: { min: number; max: number };
 }
 
 const NUM_RE = /-?\d+(?:[.,]\d+)?/g;
@@ -47,6 +50,25 @@ export function normalizeResult(raw: unknown): NormalizedResult | null {
     const r = raw as ResultValues;
     if (typeof r.avg === "number" && !Number.isNaN(r.avg)) {
       return { value: r.avg, source: "avg", raw: r.raw ?? String(r.avg) };
+    }
+    // ★ interval ★ — min + max ครบคู่ ไม่มี avg = ค่าที่วัดได้เป็น "ช่วง" (RB220: Results Min/Max 2 คอลัมน์)
+    //   ★ ห้ามเฉลี่ย ★ — ค่าเฉลี่ยของขอบช่วงไม่มีความหมาย และซ่อนขอบที่หลุด spec ได้ = deceptive PASS
+    //   (result [0.4,0.6] vs spec ≤0.5 → avg 0.5 ผ่านทั้งที่ max หลุด). ช่วงยุบ (min==max) → เป็นจุดเดียวปกติ
+    if (
+      typeof r.min === "number" && !Number.isNaN(r.min) &&
+      typeof r.max === "number" && !Number.isNaN(r.max)
+    ) {
+      const lo = Math.min(r.min, r.max);
+      const hi = Math.max(r.min, r.max);
+      const raw2 = r.raw ?? (lo === hi ? String(lo) : `${r.min} – ${r.max}`);
+      if (lo === hi) return { value: lo, source: "single", raw: raw2 };
+      return {
+        value: lo,
+        source: "interval",
+        values: [lo, hi],
+        raw: raw2,
+        interval: { min: lo, max: hi },
+      };
     }
     const nums = [r.avg, r.min, r.max].filter(
       (n) => typeof n === "number" && !Number.isNaN(n)

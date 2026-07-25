@@ -31,6 +31,9 @@ export interface RawCoaItem {
   specMin?: string | number | null;
   specMax?: string | number | null;
   result?: string | number | { avg?: number; min?: number; max?: number } | null;
+  // ★ ใบที่คอลัมน์ผลแตกเป็น Min|Max (ไม่มีคอลัมน์ result เดี่ยว เช่น RB220 "Results Min./Max.") ★
+  resultMin?: string | number | null;
+  resultMax?: string | number | null;
 }
 
 export interface RawCoa {

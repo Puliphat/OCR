@@ -641,3 +641,85 @@ user: หลอด progress เดิมเดาไม่ได้ว่าใ�
 **ทำ:** (1) `coa-pipeline.ts` เพิ่ม `ProgressFn` callback (optional — CLI/corpus ไม่ส่ง = พฤติกรรมเดิมเป๊ะ) จุด emit: render / ocr(page,pages) / parse(page,pages) / hq / eval. (2) `coa.routes.ts` progress Map + `GET /progress/:jobId` (TTL 10 นาที กวาด orphan); FE ส่ง jobId มากับ form. (3) FE: `ProgressPanel.tsx` ใหม่ — checklist 4 ขั้น + "หน้า n/N" + badge HQ + หลอด % monotonic (น้ำหนักตาม profile ROUND 15) + นาฬิกาวิ่ง + hint "ปกติ ~20 วิ". Playwright ยืนยันบน PR1950W จริง: OCR หน้า 2/2 → AI อ่านตาราง + badge ตรวจซ้ำละเอียดสูง โชว์ถูกจังหวะ
 
 **gate (corpus16, วันเดียวกับ ROUND 15):** 123P/0F/14S — ต่างจาก baseline เช้า (126P) เฉพาะ 3 ไฟล์ variance เดิม: RI-015 **+1P**, PR1950W p2 sieve row (flip พิสูจน์แล้ว 6/6), 1F1710 p4 แกว่ง 14/13/11/12P ภายในวันเดียวบน CLI path ที่ callback = undefined (code ไม่ต่าง) = Ollama drift ไม่ใช่ regression. **0 FAIL · 0 deceptive ทุก run** · BE tsc 0 · FE lint 0 + build ผ่าน
+
+## FIX ROUND 17 (2026-07-25, result เป็น "ช่วง Min|Max" — ใบที่ไม่มีคอลัมน์ result เดี่ยว [RB220])
+
+user: "min max ด้านซ้ายต้องอยู่ในกรอบ min max ด้านขวา = ผ่าน · หลุดกรอบต้อง FAIL" + "เช็คด้วยว่าอ่านค่ามาตรงไหม"
+
+**โครงที่แก้ (RB220 / Rockwool-Lapinus, text-layer):** ฝั่งผลแตกเป็น 2 คอลัมน์ เทียบฝั่งเกณฑ์ที่แตกเป็น 2 คอลัมน์
+```
+Batch no. | Fibre length | Results ( micron ) | Limits ( micron )
+Min. | Max. | Min. | Max.
+72700403 | 200,00 | 250,00 | 180 | 280
+72700403 | Shot > 63 μm | 0,07 | 0,28 | 0.5      ← ฝั่ง Limits มีแค่ Max
+```
+เดิมได้ PASS แต่ **บังเอิญถูก** — ดูแค่ Min (200 / 0.07) ค่า Max หายทั้งใบ
+
+**ราก 2 ชั้น:**
+1. `result-normalizer.ts` object `{min,max}` ที่ไม่มี `avg` → **เฉลี่ย** แล้วเทียบเป็นจุดเดียว = ช่องทาง deceptive PASS ตรง ๆ (result [0.4,0.6] vs spec ≤0.5 → avg 0.5 → PASS ทั้งที่ max หลุด)
+2. qwen3:4b map โครงนี้พลาด **ทุกรัน**: `result:"200,00"` + `resultMin:"250,00"` · แถว shot เอา 0,28 ไปเป็น `specRaw` → พึ่ง LLM ไม่ได้
+
+**ทำ:**
+- `result-normalizer.ts` — `{min,max}` ครบคู่ ไม่มี avg → `interval` (ห้ามเฉลี่ย). `min==max` → จุดเดียวตามปกติ
+- `coa-evaluator.ts` — `resultMin/resultMax` เข้า `CoaItemInput`; `evaluateInterval()` เทียบ **ทั้งช่วง**: between `rMin≥sMin && rMax≤sMax` · le/lt `rMax≤(<)spec` · ge/gt `rMin≥(>)spec` → **หลุดขอบใดขอบหนึ่ง = FAIL** (user decision). `result` ที่คืนออก = "ขอบที่ตัดสิน" (binding) → guard/margin-green/decimal-risk ที่คิดบนเลขเดี่ยวยังทำงานถูกทาง. spec bare-eq (ทิศหาย) → SKIP เหมือน path เดิม · ขอบ result ตรงขอบ spec พอดี → SKIP (anti-fabricated-PASS เดิม)
+- `result-minmax-recovery.ts` (ใหม่, deterministic) — กู้จาก header เอง: group-header ต้องมี cell `Results…` ซ้ายกว่า cell `Limits/Specification…` + บรรทัดถัดไปเป็น `Min./Max.` ล้วน ≥3 ช่องและเริ่มด้วย Min,Max + data line มี cell ตัวเลขล้วน ≥ จำนวน sub-header → **align จากขวา** (ตัด batch no./เลขในชื่อแถวทิ้งเอง). ไม่ครบ → no-op
+- `spec-normalizer.ts` — `以下` → le, `以上` → ge (ใบญี่ปุ่น 試験成績表; `合格` อยู่ใน JUDGMENT_TAIL แล้ว)
+- `evaluator.test.ts` — fixture RB220 + 9 interval edge case + KGP-H65 7 แถว, expected-status check **18/18 ตรง**
+
+**★ prompt ต้องคืนเป็นเดิม (บทเรียนของรอบนี้) ★** — ลองสอน LLM ด้วย field `resultMin/resultMax` + rule 4 บรรทัด → gate ได้ **104P/0F/15S rows=119** (หาย 22 rows: 1F1710 p4 เหลือ 3P จาก ~11) = prompt ยาวขึ้นทำ 4b คายแถวหายทั้ง corpus. deterministic recovery ไม่ต้องพึ่ง LLM อยู่แล้ว → **revert prompt ทั้งก้อน** (diff เหลือแค่ 3 บรรทัด type ใน `RawCoaItem`)
+
+**gate (corpus16, เครื่องเดียว รันติดกัน 2026-07-25) — apples-to-apples ผ่าน `git stash`:**
+| | PASS | FAIL | SKIP | rows | needsReview |
+|---|---|---|---|---|---|
+| baseline (โค้ดเดิม) | 114 | 0 | 14 | 128 | 38 |
+| after (โค้ดใหม่) | **114** | **0** | **14** | **128** | 41 |
+
+**status เท่ากันเป๊ะ 21/21 ไฟล์-หน้า · 0 FAIL · 0 deceptive ทั้งสองรัน · BE tsc 0**
+- `[result-minmax]` ยิง **1 ครั้งทั้ง corpus** (RB220 เท่านั้น) = abstain ทำงานจริง
+- needsReview +3 = RB220 +2 (interval PASS ตั้ง amber ให้คนยืนยันคอลัมน์ Min/Max — ตั้งใจ) + Barimite +1 (**drift**: LLM อ่าน `325 Mesh Passing` เป็น 95 ในรันหนึ่ง 98.9 ในอีกรัน → flat 5P vs 6P → keep-best flag "grid PASS ที่ flat ยืนยันไม่ได้" ต่าง 1 แถว; verdict สุดท้าย 7P/0F/0S เท่ากัน)
+- rows=128 (ไม่ใช่ 141 ของ ROUND 15/16) เกิดกับ **baseline ด้วย** → drift ระหว่าง 21→25 ก.ค. ไม่ใช่ของ patch นี้ (1F1710 p1 คาย 0 items ทั้ง 2 รัน)
+
+**RB220 ค่าที่อ่านได้ vs ใบจริง (ตามที่ user สั่งเช็คค่า ไม่ใช่แค่ verdict):**
+| แถว | text-layer ใบจริง | ระบบอ่าน | verdict |
+|---|---|---|---|
+| Fibre length | `200,00 \| 250,00 \| 180 \| 280` | result 200–250 · spec 180~280 | PASS (⊆) |
+| Shotcontent | `0,07 \| 0,28 \| 0.5` | result 0.07–0.28 · spec ≤0.5 | PASS (0.28≤0.5) |
+
+ตรงทุกตัวเลข ไม่มีการยืมเลขข้ามคอลัมน์
+
+**ใบญี่ปุ่น KGP-H65 (関西マテック wollastonite) — ยังทำไม่ได้ 1P/1F/5S, FAIL เป็น FAIL ปลอม (ใบระบุ 合格 ทั้ง 7 แถว):**
+1. flat LLM map ผิดเกือบทุกแถว — `13.0±3.0` → อ่านเป็น 13.0~3.0 (min3/max13) → result 13.3 FAIL ปลอม · D90/化学成分 เอา result ไปเป็น specMin · 嵩密度 ชื่อกลายเป็น `g/ml`. เพราะ text-layer ญี่ปุ่น flatten เป็น **1 cell ต่อบรรทัด** + D50/D90 ซ้ำ 2 ชุด (LMS-30 / S3500)
+2. **deterministic structural grid อ่านถูกแล้ว** (5.5~7.5 / 10~16 / 0.17~0.29 ตรงใบ + ชื่อ 嵩密度 ถูก) แต่ keep-best reject: flat มี PASS ชื่อ `g/ml` ที่ grid ไม่มี → นับเป็น "PASS เดิมหาย" = **บั๊กเดียวกับ ROUND 15 item 2** (เทียบชื่อ strict) โผล่ซ้ำ
+3. `coa-grounding.ts:33` `nameTokens` regex `[^a-z฀-๿]` = latin + **ไทย** เท่านั้น → ชื่อ CJK กลายเป็นค่าว่าง → grounding ตัด 5 แถวที่ถูกต้อง (D90 ×2, SiO2+CaO, Fe2O3) ว่า hallucination
+→ แก้ = grounding รองรับ CJK + keep-best normalize ชื่อ (ได้ทั้ง 106μm case เดิม) — ทั้งคู่เป็น core guard ต้องผ่าน gate เต็ม (ยังไม่ทำ)
+
+## FIX ROUND 18 (2026-07-25, ใบญี่ปุ่น 試験成績表 ทำได้ + ปลดล็อกบั๊ก keep-best ของ ROUND 15)
+
+user: "มีเคสที่เป็นภาษาจีนด้วย อันนี้ทำได้ไหม" (ไฟล์จริง = **ญี่ปุ่น** ไม่ใช่จีน: `20260527_ KGP-H65 Lot 25110901.pdf`, 関西マテック ウォラストナイト KGP-H65, text-layer 574 chars ไม่ต้อง OCR) → "แก้เลย ทั้ง 3 จุด"
+
+**ก่อนแก้: 1P/1F/5S และ FAIL เป็น FAIL ปลอม** (ใบระบุ 合格 ทั้ง 7 แถว) — 3 blocker + 1 ที่เจอเพิ่มระหว่างทาง:
+
+1. **`coa-grounding.ts` ทิ้งอักษร CJK** — `nameTokens` regex `[^a-z฀-๿]` = latin + **ไทย** เท่านั้น → ชื่อ 粒度/嵩密度/化学成分 กลายเป็นค่าว่าง → name-grounding พังทันที, number co-location ก็พัง (spec/result คนละบรรทัดใน flat) → **ตัด 5 แถวที่ถูกต้องว่า hallucination**
+   **แก้:** เพิ่ม CJK class `぀-ヿ一-鿿` ใน `nameTokens` / `nameSignal` / `blockNorm` / `anchorTokens` / `lineCells` + ยอมรับ token ยาว ≥2 เมื่อมี CJK (คำ CJK 2 ตัว = คำเต็ม เช่น 粒度, dense พอที่จะไม่ชนบังเอิญ) + name-grounding ยอม substring ≥2 สำหรับ CJK (ocrWords เป็น latin-only, คำ CJK ไม่มีช่องว่างให้ตัดเป็น word)
+2. **keep-best PASS-preservation เทียบชื่อแบบ strict** — deterministic structural grid อ่านถูกอยู่แล้ว (5.5~7.5 / 10~16 / 0.17~0.29 + ชื่อ 嵩密度 ถูก) แต่ถูก reject เพราะ flat มี PASS ชื่อ `g/ml` (หยิบ unit มาเป็นชื่อ) ที่ grid ไม่มี → นับว่า "PASS เดิมหาย" = **บั๊กเดียวกับ ROUND 15 item 2** (v5 `Residue on sieve(106m)` vs mobile `(106 μ m)`)
+   **แก้:** `passNameCounts` (multiset ต่อชื่อ) → `preservesPasses()` จับคู่ **1:1 greedy** (= multiset โดยธรรมชาติ, ชื่อซ้ำ RI-015 ×4 ยังนับแยกแถว) ด้วยเกณฑ์ `passNameKey` (ยุบ space + μ/µ + วรรคตอน, คง latin/digit/CJK) **หรือ** `passValueKey` = `result|min|max` (แถวเดียวกันที่ incumbent อ่านชื่อผิด — ครบชุด 3 ค่าจึงบังเอิญตรงข้ามแถวได้ยาก)
+3. **flat LLM map ผิดเกือบทุกแถว** (`13.0±3.0` → อ่านเป็น 13.0~3.0 → min3/max13 → result 13.3 = FAIL ปลอม · D90/化学成分 เอา result ไปเป็น specMin) เพราะ text-layer ญี่ปุ่น flatten เป็น **1 cell ต่อบรรทัด** + D50/D90 ซ้ำ 2 ชุด (LMS-30 / S3500)
+   **แก้: ไม่แตะ prompt** (ดู ROUND 17 gotcha) — พอ (1)+(2) เข้าที่ grid ที่อ่านถูกก็ชนะ keep-best แล้วทับ flat ทั้งใบ = flat ยังผิดเหมือนเดิมแต่ไม่ถูกใช้ = architecture เดิมทำงานตามที่ออกแบบ (flat = floor, challenger ชนะเมื่อดีกว่าจริง)
+4. **(เจอเพิ่ม) `parse-structural-grid.ts:classifySpec` ไม่รู้จัก `以下`/`以上`** — spec-normalizer รองรับแล้ว (ROUND 17) แต่ grid parser คัด cell ทิ้งก่อนถึง → `50以下`/`94以上`/`0.5以下` กลายเป็น specRaw=null → 4 แถว SKIP "อ่านเกณฑ์ไม่ได้"
+   **แก้:** เพิ่ม 2 บรรทัด — `^(NUM)\s*(以下|以上)$` → 以下 = specMax, 以上 = specMin
+
+**ผล KGP-H65: 7P/0F/0S — ตรงใบทุกแถว** (D50 5.5~7.5/6.5 · D90 ≤50/29 · D50 10~16/13.3 · D90 ≤70/62 · 嵩密度 0.17~0.29/0.23 · SiO2+CaO ≥94/96.85 · Fe2O3 ≤0.5/0.40) — 4 แถว one-sided ติด ⚑ ตาม amber policy เดิม
+
+**gate (corpus16, เครื่องเดียววันเดียว 2026-07-25, เทียบ baseline โค้ดเดิมที่รันไว้ก่อนหน้า):**
+| | PASS | FAIL | SKIP | rows | needsReview |
+|---|---|---|---|---|---|
+| baseline (โค้ดเดิม) | 114 | 0 | 14 | 128 | 38 |
+| after (ROUND 17+18) | **126** | **0** | 16 | 142 | 53 |
+
+**+12 PASS · 0 FAIL · 0 deceptive** · BE tsc 0 · evaluator fixture 18/18 · fail-guard/sieve/column-shift/spec-normalizer ผ่านครบ (27/10/47)
+- **1F1710 p2: 3P→12P** และ **p4: 11P→14P** · **PR1950W_4063 p2: 6P→7P = บั๊ก ROUND 15 item 2 ที่ค้างไว้ ปลดล็อกแล้ว** (HQ/grid ที่ชนะจริงได้ใช้งานแล้ว)
+- **TXAX-A 4P/1S→4P/2S ไม่ใช่การถอย** — ไฟล์นี้เป็นญี่ปุ่นอยู่แล้ว (色相/結晶相/メジアン径/かさ密度): baseline grounding ตัดแถว `色相` ทิ้งเพราะ CJK, หลังแก้แถวกลับมาเป็น honest SKIP (`spec=淡黄色` ไม่ใช่ตัวเลข) = rows +1 ไม่เสีย PASS
+- **RI-015 10P→9P = drift ต้นทาง ไม่ใช่ keep-best** — baseline อ่าน `spec=10.0~45.0` (PASS) รอบนี้ OCR/LLM ให้ `spec=10.0~4.0` → fail-guard downgrade เป็น honest SKIP+⚑ (scanned file, spec ต่างตั้งแต่ต้นทาง — การเลือก report ไม่เกี่ยว)
+- 126P = ระดับเดียวกับ baseline ประวัติศาสตร์ ROUND 15 (126P/0F/15S rows=141) ที่ drift หายไปช่วง 21→25 ก.ค.
+
+**pre-existing ที่ไม่ได้แตะ (ยืนยันด้วยการ stash โค้ดรอบนี้ออกแล้วรัน = fail เหมือนกันเป๊ะ):** `coa-pass-guard.test.ts` fail 6 เช็ค ทั้งหมดเป็นเคส "ควร downgrade PASS ที่ยกเลขข้ามแถวแต่ไม่ downgrade" (`downgraded=0`) — pass-guard อ่อนกว่าที่ test คาด. ไม่อยู่ในสโคปรอบนี้ ต้องตามแยก

@@ -13,6 +13,10 @@ export interface CoaItemInput {
   specMin?: string | number | null;
   specMax?: string | number | null;
   result?: string | number | ResultValues | null;
+  // ★ result แบบ 2 คอลัมน์ (Results Min | Results Max) — ใบที่ไม่มีคอลัมน์ result เดี่ยว เช่น RB220 ★
+  //   ครบคู่ = ค่าที่วัดได้เป็นช่วง → ต้องอยู่ในกรอบ spec ทั้งช่วง (ดู evaluateInterval)
+  resultMin?: string | number | null;
+  resultMax?: string | number | null;
 }
 
 export interface EvaluatedItem {
@@ -27,6 +31,10 @@ export interface EvaluatedItem {
   specRaw: string | null;
   resultRaw: string | null;
   needsReview: boolean; // ธงเตือนคน: ค่าน่าสงสัยว่า OCR ทศนิยมหาย (ไม่เปลี่ยน PASS/FAIL)
+  // result แบบช่วง (2 คอลัมน์) — null/ไม่มี เมื่อ result เป็นค่าเดี่ยวตามปกติ (optional: test helper สร้าง row บางส่วน)
+  //   result (ด้านบน) = "ขอบที่ตัดสิน" (binding bound) ของช่วงนี้ → guard/margin ที่คิดบนเลขเดี่ยวยังทำงานถูกทาง
+  resultMin?: number | null;
+  resultMax?: number | null;
 }
 
 // Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
@@ -41,7 +49,7 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     min: item.specMin,
     max: item.specMax,
   });
-  const result = normalizeResult(item.result);
+  const result = normalizeResult(resolveResultInput(item));
 
   const base = {
     name,
@@ -49,6 +57,8 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     method,
     specRaw: spec?.raw ?? (item.specRaw ?? null),
     resultRaw: result?.raw ?? (item.result == null ? null : String(item.result)),
+    resultMin: null as number | null,
+    resultMax: null as number | null,
   };
 
   if (!spec) {
@@ -92,6 +102,13 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
           : `bound result ${result.raw} — cannot confirm against spec ${spec.raw} (indeterminate)`,
       needsReview: verdict === "SKIP",
     };
+  }
+
+  // ★ result เป็นช่วง (คอลัมน์ Results Min | Max — ไม่มีคอลัมน์ result เดี่ยว, เคส RB220) ★
+  //   กติกา: ช่วงที่วัดได้ต้องอยู่ในกรอบ spec "ทั้งช่วง" — ขอบใดขอบหนึ่งหลุด = FAIL (ของจริงเกินเกณฑ์)
+  //   ★ ห้ามยุบเป็นค่าเฉลี่ย ★ (result-normalizer) — avg ซ่อนขอบที่หลุดได้ = deceptive PASS
+  if (result.interval) {
+    return evaluateInterval(base, result.interval, spec);
   }
 
   const { value: r } = result;
@@ -184,6 +201,117 @@ export function evaluateItem(item: CoaItemInput): EvaluatedItem {
     status: pass ? "PASS" : "FAIL",
     reason,
     needsReview: !!review,
+  };
+}
+
+// ★ result 2 คอลัมน์ (Results Min | Results Max) → object interval ให้ normalizeResult ★
+//   ครบคู่ + อ่านเป็นเลขได้ทั้งคู่เท่านั้นถึงถือเป็นช่วง (ครบคู่ชนะ result เดี่ยว — ข้อมูลมากกว่า)
+//   อ่านได้ขอบเดียว: ถ้ามี result เดี่ยวอยู่แล้วใช้ตัวนั้น ไม่งั้นใช้ขอบที่อ่านได้เป็นค่าเดี่ยว (พฤติกรรมเดิม)
+function resolveResultInput(item: CoaItemInput): CoaItemInput["result"] {
+  const lo = normalizeResult(item.resultMin ?? null);
+  const hi = normalizeResult(item.resultMax ?? null);
+  if (lo && hi) {
+    return { min: lo.value, max: hi.value, raw: `${lo.raw} – ${hi.raw}` };
+  }
+  const single = item.result;
+  if (single != null && String(single).trim() !== "") return single;
+  const only = lo ?? hi;
+  return only ? only.value : single ?? null;
+}
+
+type ItemBase = Pick<
+  EvaluatedItem,
+  "name" | "unit" | "method" | "specRaw" | "resultRaw" | "resultMin" | "resultMax"
+>;
+
+// ★ interval containment ★ — [rMin, rMax] ต้องอยู่ในกรอบ spec ทั้งช่วง
+//   between: rMin ≥ specMin AND rMax ≤ specMax · le/lt: rMax ≤ (<) spec · ge/gt: rMin ≥ (>) spec
+//   หลุดขอบใดขอบหนึ่ง → FAIL (user decision: "หลุดกรอบต้อง FAIL" — ค่าที่วัดได้จริงเกินเกณฑ์ = ของเสีย)
+//   spec เลขเดี่ยวไม่มีทิศ (eq/approx) → SKIP เหมือน path ค่าเดี่ยว (ทิศหาย = verdict เชื่อไม่ได้)
+//   result (เลขเดี่ยว) = "ขอบที่ตัดสิน" (binding) → guard/margin/decimal-risk ที่คิดบนเลขเดี่ยวยังทำงานถูกทาง
+function evaluateInterval(
+  base: ItemBase,
+  iv: { min: number; max: number },
+  spec: ParsedSpec
+): EvaluatedItem {
+  const { min: rMin, max: rMax } = iv;
+  const withIv = { ...base, resultMin: rMin, resultMax: rMax };
+
+  if (spec.op === "eq" || spec.op === "approx") {
+    return {
+      ...withIv,
+      min: spec.value ?? null,
+      max: spec.value ?? null,
+      result: null,
+      status: "SKIP",
+      reason:
+        "เกณฑ์เป็นเลขเดี่ยว ระบบไม่รู้ว่าเป็นค่าต่ำสุดหรือสูงสุด (ทิศหาย) — เทียบกับใบจริง",
+      needsReview: true,
+    };
+  }
+
+  let min: number | null = null;
+  let max: number | null = null;
+  let pass = false;
+  let binding = rMax;
+  switch (spec.op) {
+    case "between":
+      min = spec.min!;
+      max = spec.max!;
+      pass = rMin >= min && rMax <= max;
+      // ขอบที่ตัดสิน: ตัวที่หลุด (ถ้าหลุด) ไม่งั้นตัวที่ margin เหลือน้อยกว่า
+      binding =
+        rMax > max ? rMax : rMin < min ? rMin : max - rMax <= rMin - min ? rMax : rMin;
+      break;
+    case "le":
+      max = spec.value!;
+      pass = rMax <= max;
+      break;
+    case "lt":
+      max = spec.value!;
+      pass = rMax < max;
+      break;
+    case "ge":
+      min = spec.value!;
+      pass = rMin >= min;
+      binding = rMin;
+      break;
+    case "gt":
+      min = spec.value!;
+      pass = rMin > min;
+      binding = rMin;
+      break;
+  }
+
+  // Anti-fabricated-PASS (เหมือน path ค่าเดี่ยว) — ช่วง result ที่ขอบตรงกับขอบ spec พอดี น่าสงสัยว่า
+  //   ระบบอ่านคอลัมน์สลับ (เอาช่วง spec มาเป็น result) → honest SKIP ให้คนเทียบใบจริง
+  if (pass && spec.op === "between" && (rMin === min || rMax === max)) {
+    return {
+      ...withIv,
+      min,
+      max,
+      result: binding,
+      status: "SKIP",
+      reason: "ค่าผลตรงขอบเกณฑ์พอดี — ระบบอาจอ่านเกณฑ์เพี้ยน เทียบกับใบจริง",
+      needsReview: true,
+    };
+  }
+
+  const review = detectDecimalRisk(binding, spec, pass);
+  const range = `${fmtNum(rMin)}–${fmtNum(rMax)}`;
+  return {
+    ...withIv,
+    min,
+    max,
+    result: binding,
+    status: pass ? "PASS" : "FAIL",
+    reason: pass
+      ? review ??
+        `ค่าที่วัดได้เป็นช่วง ${range} อยู่ในเกณฑ์ ${spec.raw} — ยืนยันคอลัมน์ Min/Max กับใบจริง`
+      : `result ${range} outside spec ${spec.raw}` + (review ? ` — ${review}` : ""),
+    // PASS: ธง amber ไว้ก่อน (อ่านมาจาก 2 คอลัมน์ = โครงสร้างที่อนุมาน) — margin-green ใน pipeline
+    //   จะเคลียร์ให้เองถ้าค่าห่างขอบพอและคอลัมน์เชื่อได้. FAIL: ปล่อยโชว์ FAIL ตรง ๆ (อย่าซ่อนใต้ "ต้องตรวจ")
+    needsReview: pass ? true : !!review,
   };
 }
 
