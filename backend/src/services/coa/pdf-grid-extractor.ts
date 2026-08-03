@@ -47,49 +47,54 @@ const PY =
   path.join(OCR_PY_DIR, "venv", "Scripts", "python.exe");
 const SCRIPT = path.join(OCR_PY_DIR, "pdf_table.py");
 
+// ★ error code ที่ FE branch ได้ ★ — pdfplumber พัง = ผลตกเงียบ (ใบ text-layer ร่วงจาก 7P เหลือ 1P
+//   เพราะไม่มี grid challenger) ซึ่งคือ failure mode เดียวกับ OCR fallback ที่ถอดทิ้งไปแล้ว
+export const PDF_GRID_DOWN = "PDF_GRID_DOWN";
+
 // Extract per-page structural grid from a PDF. Synchronous subprocess (one-shot, not on a hot
-// path — runs once per PDF during extraction). Never throws: any failure → [] so the caller
-// silently keeps the flat-only path (grid is an optional challenger, never required).
+// path — runs once per PDF during extraction).
+// ★ THROWS เมื่อ pdfplumber ทำงานไม่ได้ (spawn ไม่ขึ้น / exit ≠ 0 / stdout ไม่ใช่ JSON) ★ — เดิม
+//   fail-soft คืน [] เงียบ ๆ ทำให้ผลตกโดยไม่มีใครรู้ (เจอจริง 31 ก.ค. 2026: ทั้ง 4 ใบ text-layer
+//   ร่วงพร้อมกัน หน้าเว็บไม่บอกอะไร) → user decision 2026-08-03: หยุดดัง ๆ เหมือน OCR_DAEMON_DOWN
+// ★ "หน้านี้ไม่มีตาราง" (source="none") ไม่ใช่ error ★ — pdfplumber ทำงานปกติ แค่ใบนี้ไม่มีเส้นตาราง
 export function extractPdfGridPerPage(filePath: string): PdfGridPage[] {
-  try {
-    const res = spawnSync(PY, [SCRIPT, filePath], {
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-      timeout: 60_000,
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-    });
-    if (res.error) {
-      console.warn(`  [pdf-grid] spawn failed: ${res.error.message}`);
-      return [];
-    }
-    if (res.status !== 0) {
-      console.warn(
-        `  [pdf-grid] pdfplumber exited ${res.status}: ${(res.stderr || "").slice(0, 200)}`
-      );
-      return [];
-    }
-    const parsed = JSON.parse(res.stdout) as {
-      pages?: any[];
-      error?: string;
-    };
-    if (parsed.error) {
-      console.warn(`  [pdf-grid] ${parsed.error}`);
-      return [];
-    }
-    // Map Python snake_case fields → TS camelCase (vector-geom fields)
-    return (parsed.pages ?? []).map((p: any): PdfGridPage => ({
-      page: p.page,
-      grid: p.grid ?? "",
-      source: p.source ?? "none",
-      orient: p.orient,
-      colEdges: p.col_edges_pt,
-      pageWidth: p.page_width,
-      pageHeight: p.page_height,
-      pageRotation: p.page_rotation,
-      tableBbox: p.table_bbox,
-    }));
-  } catch (e) {
-    console.warn(`  [pdf-grid] failed: ${(e as Error).message}`);
-    return [];
+  const res = spawnSync(PY, [SCRIPT, filePath], {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: 60_000,
+    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+  });
+  if (res.error) {
+    throw new Error(
+      `${PDF_GRID_DOWN}: เรียก pdfplumber ไม่ได้ (${res.error.message}) — ตรวจ venv ที่ ${PY} แล้วลองใหม่`
+    );
   }
+  if (res.status !== 0) {
+    throw new Error(
+      `${PDF_GRID_DOWN}: pdfplumber จบด้วยรหัส ${res.status} — ${(res.stderr || "").slice(0, 200)}`
+    );
+  }
+  let parsed: { pages?: any[]; error?: string };
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    throw new Error(
+      `${PDF_GRID_DOWN}: pdfplumber คืนค่าที่อ่านไม่ออก — ${(res.stdout || "").slice(0, 200)}`
+    );
+  }
+  if (parsed.error) {
+    throw new Error(`${PDF_GRID_DOWN}: pdfplumber แจ้ง error — ${parsed.error}`);
+  }
+  // Map Python snake_case fields → TS camelCase (vector-geom fields)
+  return (parsed.pages ?? []).map((p: any): PdfGridPage => ({
+    page: p.page,
+    grid: p.grid ?? "",
+    source: p.source ?? "none",
+    orient: p.orient,
+    colEdges: p.col_edges_pt,
+    pageWidth: p.page_width,
+    pageHeight: p.page_height,
+    pageRotation: p.page_rotation,
+    tableBbox: p.table_bbox,
+  }));
 }

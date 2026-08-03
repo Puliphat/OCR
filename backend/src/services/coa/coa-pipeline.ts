@@ -360,37 +360,22 @@ function gridBeatsFlat(grid: CoaReport, flat: CoaReport): boolean {
   return passCount(grid) > passCount(flat);
 }
 
-// ★ Balanced amber policy — "ปลอดภัยพอจะปล่อย clean-green ไหม" (Opus-reviewed) ★
-//   ปล่อย clean-green เฉพาะ spec แบบ **ช่วง 2 ด้าน (between min+max)** ที่ค่าอยู่ "กลางช่วง" ห่างขอบ.
-//   ★ one-sided (≤max / ≥min) → amber เสมอ ★ — recovery หยิบเลข stray บนบรรทัดได้ ถ้าเป็น ≥min เลขใหญ่ๆ
-//     ผ่านสบาย = อาจ hide FAIL (เลขจริงตก spec แต่ stray ผ่าน). between บังคับให้ stray ต้องตกในช่วง = เสี่ยงน้อยกว่า.
-//   ★ ช่วงยุบ (span ≈ 0, eq-like) → amber ★ — กัน band ยุบเป็น 0 แล้วเข้าใจผิดว่า "ห่างขอบ".
-//   อ่านค่าไม่ได้ / ไม่ใช่ช่วง 2 ด้าน → true (amber). near = ภายใน 5% ของความกว้างช่วง.
-const REL_TOL = 0.05;
 const VALUE_MARGIN_M = 0.30; // margin-green gate: result must be ≥30% of |result| away from the binding spec bound
-function isNearSpecBoundary(r: EvaluatedItem): boolean {
-  const res = typeof r.result === "number" ? r.result : Number(r.result);
-  if (!Number.isFinite(res)) return true;
-  if (r.min == null || r.max == null) return true; // ไม่ใช่ช่วง 2 ด้าน → ไม่ปล่อย clean-green
-  const span = r.max - r.min;
-  if (span <= Math.abs(res) * 1e-3) return true;   // ช่วงยุบ (≈eq) → ทุกค่าถือว่าใกล้ขอบ
-  const band = span * REL_TOL;
-  return res <= r.min + band || res >= r.max - band;
-}
 
 // ★ structural grid → digits are EXTRACTED, not recognized ★ (ROUND 22)
 //   gridSource="structural" ตั้งได้เฉพาะหน้า engine="text-layer" (ดู extractTextPerPage) = ตัวเลขดึงจาก
 //   text layer ของ PDF ตรงๆ + คอลัมน์ยืนยันด้วย ruling line ของ pdfplumber → ความเสี่ยงที่ margin-green
 //   G2–G4 กันอยู่ (digit scramble / ทศนิยมหาย / คอลัมน์เดา) เป็นความเสี่ยงของ OCR ล้วน ซึ่ง path นี้ไม่มี.
-//   ใช้ isNearSpecBoundary กับ path นี้ = ตี one-sided เป็น amber ทั้งที่ตัวเลขเชื่อได้ (KGP-H65: 4/7 แถว
-//   ⚠ ทั้งที่ตรงใบจริง + ตรงตรา 合格 ของ QA เอง) → ธงเฟ้อ คนเลิกเชื่อธง = อันตรายกว่าไม่มีธง
-//   ★ ยังคง amber: ค่าตรงขอบ spec พอดี (res === bound) — recovery ผิด 1 หลักพลิก verdict ทันที ★
+//   ปักธงตาม "ใกล้ขอบ" บน path นี้ = ธงเฟ้อทั้งที่ตัวเลขเชื่อได้ (KGP-H65: 4/7 แถว ⚠ ทั้งที่ตรงใบจริง
+//   + ตรงตรา 合格 ของ QA เอง) → คนเลิกเชื่อธง = อันตรายกว่าไม่มีธง
+//   ★ ค่าตรงขอบ spec พอดีก็ไม่ amber (user decision 2026-08-03): ค่าที่อยู่ในกรอบ min/max รวมค่าติดขอบ
+//     = ผ่านตามใบจริง ไม่ต้องให้คนตรวจซ้ำ · หลุดกรอบเมื่อไรถึงเป็น FAIL ★
 //   ★ ไม่แตะ path อื่น: spatial / scanned-vector (คอลัมน์เดา หรือเลขมาจาก OCR) ยัง amber เสมอ ★
 function structuralPassNeedsAmber(r: EvaluatedItem): boolean {
   const res = typeof r.result === "number" ? r.result : Number(r.result);
   if (!Number.isFinite(res)) return true;
   if (r.min == null && r.max == null) return true; // ไม่มีขอบให้เทียบ → ไม่ปล่อยเขียว
-  return res === r.min || res === r.max;
+  return false;
 }
 
 // ★ Margin-green policy (Track 2 + scanned-vector) ★ — CLEAR-ONLY: sets needsReview=false on PASS
@@ -734,7 +719,8 @@ async function runExtractionPass(
   }
 
   // ★ promote boundary-exact (เฉพาะ grid ที่ geometry ยืนยัน) ★ — evaluateCoa downgrade PASS ที่ result ตรงขอบ spec พอดี
-  //   (กัน LLM ปลอม) แต่ที่นี่ bound มาจากคอลัมน์ Lower/Upper จริง = PASS แท้ · promote SKIP→PASS คง needsReview · เฉพาะ min≠max
+  //   (กัน LLM ปลอม) แต่ที่นี่ bound มาจากคอลัมน์ Lower/Upper จริง = PASS แท้ · promote SKIP→PASS แบบ
+  //   เขียวล้วน (user decision 2026-08-03: ติดขอบแต่อยู่ในกรอบ = ผ่าน ไม่ต้องตรวจซ้ำ) · เฉพาะ min≠max
   let boundaryPromoted = 0;
   if (isDeterministicGrid) {
     for (const r of evaluated.rows) {
@@ -743,8 +729,8 @@ async function runExtractionPass(
       if (!Number.isFinite(res)) continue;
       if (res >= r.min && res <= r.max && (res === r.min || res === r.max)) {
         r.status = "PASS";
-        r.needsReview = true;
-        r.reason = "ค่าผลตรงขอบเกณฑ์พอดี (คอลัมน์ยืนยันด้วย geometry) — ผ่าน แต่ควรเหลือบดู";
+        r.needsReview = false;
+        r.reason = "ค่าผลตรงขอบเกณฑ์พอดี (คอลัมน์ยืนยันด้วย geometry) — อยู่ในเกณฑ์ ผ่าน";
         boundaryPromoted++;
       }
     }
@@ -755,30 +741,11 @@ async function runExtractionPass(
     }
   }
 
-  // result ที่กู้มาจาก OCR (result-recovery) → ★ Balanced amber policy ★
-  //   recovery มี precondition แน่นอยู่แล้ว (เจอ cell เลขเดี่ยว unique บนบรรทัด anchor unique = โครงชัด).
-  //   เดิม flag needsReview ทุกตัว → คนหน้างานต้องตรวจซ้ำหมด = ไม่ลดงาน. ปรับเป็น:
-  //   • ค่าเข้า spec ห่างขอบ → ปล่อย PASS เขียว (recovery ผิดก็ไม่พลิก verdict + ค่าตรง OCR)
-  //   • ค่าใกล้ขอบ spec (isNearSpecBoundary) → คง amber (recovery ผิดนิดเดียวพลิก PASS↔FAIL = เสี่ยงจริง)
-  //   ★ column-remap (grid-won / sieve-recovery) flag แยกที่อื่น (re-read ทั้งคอลัมน์ = เสี่ยงกว่า คง amber เสมอ) ★
-  if (recRes.names.length > 0) {
-    const recSet = new Set(recRes.names.map((n) => n.trim()));
-    for (const r of evaluated.rows) {
-      if (!recSet.has(r.name.trim()) || r.status === "SKIP") continue;
-      if (isNearSpecBoundary(r)) r.needsReview = true;
-    }
-  }
-
-  // ★ avg-column override → balanced policy (spatial + structural) ★ — override = re-read "cell เดียว"
-  //   จากคอลัมน์ Average (ไม่ใช่ทั้งคอลัมน์) → เสี่ยงต่ำ. ค่ากลางช่วง → green (override ผิดก็ไม่พลิก verdict)
-  //   · ใกล้ขอบ spec → amber (พลิก PASS↔FAIL ง่าย). ★ ต่างจาก grid keep-best (re-read ทั้งคอลัมน์ =
-  //   เสี่ยงกว่า) ที่ spatial ยังคง amber เสมอ ★
-  if (avgOverridden.size > 0) {
-    for (const r of evaluated.rows) {
-      if (!avgOverridden.has(r.name.trim()) || r.status !== "PASS") continue;
-      if (isNearSpecBoundary(r)) r.needsReview = true;
-    }
-  }
+  // ★ result-recovery / avg-column override → ไม่ปักธงแล้ว (user decision 2026-08-03) ★
+  //   ทั้งสอง path กู้ค่าแบบ "cell เดียวบนบรรทัด anchor unique" (precondition แน่น) แล้วส่งให้ evaluator
+  //   ตัดสินตามปกติ → เข้ากรอบ min/max = PASS, หลุดกรอบ = FAIL. เดิมยังปัก amber เมื่อค่าใกล้/ติดขอบ
+  //   ซึ่งหน้างานต้องตรวจซ้ำทั้งที่ค่าถูก (verify corpus 17 ไฟล์: ค่าที่ปักธงถูกตรงใบจริง 12/12).
+  //   ★ column-remap (grid-won spatial / sieve-recovery) ยังปักธงตามเดิม — re-read ทั้งคอลัมน์เสี่ยงกว่า ★
 
   // ★ spec-column (DuPont) → surface ALL detected rows ★ — the spec was re-sourced from an inferred
   //   (spatial) grid; even a corrected/unchanged spec must be human-verified, never silent clean-green.
@@ -919,10 +886,8 @@ async function runFlatGridBest(
         }
       }
       // ★ margin-green ต้องรันซ้ำหลังปักธง ★ — applyMarginGreen รันไปแล้วใน runExtractionPass แต่ธงข้างบน
-      //   ปักทีหลัง → แถว grid-won ไม่เคยผ่าน gate ค่า/คอลัมน์เลย. isNearSpecBoundary ตี one-sided
-      //   (≤max/≥min) เป็น amber เสมอ แม้ค่าห่างขอบไกล (PR1950W_4064 Moisture 0.5 vs ≤1.2 = ห่าง 140%
-      //   ของค่า). evaluator ก็เขียนกำกับไว้ว่า "margin-green ใน pipeline จะเคลียร์ให้เอง" → เรียกซ้ำที่นี่
-      //   ให้ path นี้ใช้ G0–G4 ชุดเดียวกับ path อื่น. CLEAR-ONLY + G0 กัน spatial (column inferred) ไว้แล้ว
+      //   ปักทีหลัง → แถว grid-won ไม่เคยผ่าน gate ค่า/คอลัมน์เลย → เรียกซ้ำที่นี่ให้ path นี้ใช้ G0–G4
+      //   ชุดเดียวกับ path อื่น. CLEAR-ONLY + G0 กัน spatial (column inferred) ไว้แล้ว
       const amberBefore = gridReport.rows.filter((r) => r.needsReview).length;
       applyMarginGreen(gridReport.rows, engine, gridSource);
       const marginCleared =

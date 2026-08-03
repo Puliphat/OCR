@@ -312,9 +312,9 @@ function evaluateInterval(
       ? review ??
         `ค่าที่วัดได้เป็นช่วง ${range} อยู่ในเกณฑ์ ${spec.raw} — ยืนยันคอลัมน์ Min/Max กับใบจริง`
       : `result ${range} outside spec ${spec.raw}` + (review ? ` — ${review}` : ""),
-    // PASS: ธง amber ไว้ก่อน (อ่านมาจาก 2 คอลัมน์ = โครงสร้างที่อนุมาน) — margin-green ใน pipeline
-    //   จะเคลียร์ให้เองถ้าค่าห่างขอบพอและคอลัมน์เชื่อได้. FAIL: ปล่อยโชว์ FAIL ตรง ๆ (อย่าซ่อนใต้ "ต้องตรวจ")
-    needsReview: pass ? true : !!review,
+    // PASS: ทั้งช่วงอยู่ในกรอบ spec = ผ่าน ไม่ต้องตรวจซ้ำ (user decision 2026-08-03) · ธงเหลือไว้ให้
+    //   detectDecimalRisk เท่านั้น. FAIL: ปล่อยโชว์ FAIL ตรง ๆ (อย่าซ่อนใต้ "ต้องตรวจ")
+    needsReview: !!review,
   };
 }
 

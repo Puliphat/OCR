@@ -994,3 +994,47 @@ path แก้ spec มี fixture คุมไว้แทน) · **needsReview
 
 **14 ธงที่เหลือ:** ติดขอบพอดี 5 · spatial keep-best บนไฟล์สแกน 5 · sieve reconstruct 2 · result เป็นช่วง 2
 · 0 FAIL · 0 deceptive · BE+FE tsc 0 · 14 suite ผ่าน (`spec-column-recovery` 17→27 เช็ค)
+
+---
+
+## ROUND 24 (2026-08-03) — "อยู่ในกรอบ min/max = ผ่าน" + pdf-grid ล้มต้องดังไม่ใช่เงียบ
+
+**โจทย์จากหน้างาน (user):** ธง "ต้องตรวจ" ยังเยอะเกินจะใช้จริง — ค่าที่ระบบกู้/อ่านมาแล้ว
+**ตกในกรอบ min/max รวมค่าติดขอบและใกล้ขอบ = ผ่าน ไม่ต้องให้คนตรวจซ้ำ · หลุดกรอบเมื่อไรถึงเป็น FAIL**
+(guard ที่ลด FAIL→SKIP เมื่อจับได้ว่าค่าน่าจะอ่านเพี้ยน = user สั่งคงไว้)
+
+### (ก) ตัดธง — verify ค่ากับใบจริงก่อนตัดทุกแถว
+ก่อนแตะโค้ด render ใบจริงด้วย pymupdf 150dpi แล้วเทียบทีละแถว: **ค่าที่ปักธงถูกตรงใบ 12/12**
+(Z99 D50 3.5 ใน 2.0–3.5 · AL2O3 0.50 ใน 0.00–0.50 · MGO 0.00 ใน 0.00–0.10 · Lot240521 0.3 vs "3 Max"
++ 1.3 vs "20 Max" ตรา Success · D-2072 Shear-Heat 136.5 ≥50 ตรา O · RB220 200–250 ใน 180–280
++ Shot 0.07–0.28 ≤0.5 · PR1950W_4064 ทั้ง 2 หน้า) → ตัดได้โดยไม่เดา
+
+แก้ 4 จุด:
+1. `structuralPassNeedsAmber` → `false` (structural = คอลัมน์ยืนยันด้วย ruling line + ตัวเลขจาก text layer)
+2. boundary-promote (SKIP→PASS ตรงขอบ geometry) → `needsReview=false`, reason "อยู่ในเกณฑ์ ผ่าน"
+3. **ลบ** flag block ของ result-recovery + avg-column override ทั้งก้อน พร้อม `isNearSpecBoundary`/`REL_TOL` ที่กลายเป็น orphan
+4. `evaluateInterval` PASS → `needsReview: !!review` (เดิม `pass ? true`) — override decision ROUND 17
+
+### (ข) pdf-grid ล้มแล้วเงียบ = ผลตกโดยไม่มีใครรู้
+`extractPdfGridPerPage` เดิม fail-soft คืน `[]` ทุกกรณี → ไม่มี grid challenger → เหลือ flat LLM ล้วน.
+**หลักฐานจาก log จริง 31 ก.ค. 2026 (โค้ดเดียวกับวันนี้ commit ล่าสุด 26 ก.ค.):** ใบ text-layer ร่วงพร้อมกันทั้งชุด
+— PR1950W_4064 p1 `1P/6S` p2 `0P/7S` · Suzorite `0P/3S` · KGP-H65 `6P/1S` (วันนี้ = 7P/1S, 7P/1S, 5P/1S, 7P/0S)
+→ **โยน `PDF_GRID_DOWN`** เมื่อ spawn ไม่ขึ้น / exit ≠ 0 / stdout ไม่ใช่ JSON / script แจ้ง error
+(★ `source:"none"` = ไม่มีตารางบนหน้านั้น ยังถือว่าปกติ ไม่โยน ★) + FE branch ข้อความเฉพาะเหมือน `OCR_DAEMON_DOWN`
+ยืนยัน: `OCR_PY_PYTHON` ชี้ path ผิด → หยุดจริงพร้อมบอกทางแก้ · `pdf_table.py` กับ corpus ทั้ง 17 ไฟล์ exit 0 หมด
+(6 ไฟล์คืน `source=none` = ไม่โยนผิด)
+
+### gate (corpus 17)
+| | PASS | FAIL | SKIP | rows | needsReview | TOTAL |
+|---|---|---|---|---|---|---|
+| ROUND 23 | 133 | 0 | 11 | 144 | 14 | 350s |
+| **ROUND 24** | **133** | **0** | **11** | **144** | **4** | 372s |
+
+**per-file verdict IDENTICAL ทั้ง 22 ไฟล์-หน้า** (diff ว่าง) · 0 FAIL · 0 แถวที่หลุด min/max แล้วไม่เป็น FAIL
+· BE+FE tsc 0 · unit 14 suite ผ่าน · `net -35 บรรทัด` (ก่อนรวมส่วน pdf-grid)
+**4 ธงที่เหลือ:** RI-015 ×2 (เป็น SKIP อยู่แล้ว) · PR1950W_4063 p2 ×2 (spatial — คงไว้ตั้งใจ)
+
+**บั๊กที่เจอระหว่างทาง ยังไม่แก้:** PR1950W_4063 **หน้า 2** ชื่อแถวเพี้ยน — `Softening point` โผล่ 2 ครั้ง
+(ตัวที่ 2 ที่จริงคือ `Flow` result 16 spec 10~35) · `Gelation time` ซ้ำ (ตัวที่ 2 คือ `Moisture` 0.2 vs ≤1.2)
+· หน้า 2 หายแถว `Appearance`. ค่ากับ spec จับคู่ถูก verdict จึงไม่ผิด แต่ชื่อรายการผิด = map เข้าระบบ QC จะผิดแถว
+→ **เหตุผลที่คงธง spatial ไว้**

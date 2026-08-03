@@ -202,6 +202,15 @@ export default function Home() {
               {daemonStatus === "uploading" && " · daemon ขึ้นแล้ว กำลังวิเคราะห์ใหม่…"}
               {daemonStatus === null && " · เริ่มเองได้ที่ backend: npm run ocr:daemon"}
             </>
+          ) : error?.message.startsWith("PDF_GRID_DOWN") ? (
+            /* pdfplumber ล้ม = ตัวอ่านคอลัมน์หาย → ผลจะตกเงียบถ้าปล่อยผ่าน จึงหยุดเหมือน daemon ล่ม
+               (ต่างกันตรงกู้เองไม่ได้ — ต้องไปซ่อม venv ที่ ocr-py) */
+            <>
+              <strong style={{ color: "var(--ink)" }}>ตัวอ่านตารางไม่ทำงาน</strong> — ระบบหยุดไว้ก่อนเพราะถ้าอ่านต่อ
+              ผลจะตกโดยไม่มีสัญญาณ · ตรวจ Python venv ที่ <code>ocr-py</code> แล้วลองใหม่
+              <br />
+              <span style={{ opacity: 0.75, fontSize: "0.9em" }}>{error.message}</span>
+            </>
           ) : (
             error?.message ?? "Something went wrong while analyzing."
           )}
