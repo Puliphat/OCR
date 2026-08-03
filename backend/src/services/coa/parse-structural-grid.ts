@@ -383,6 +383,11 @@ export function parseStructuralGrid(
   const subLabelCol =
     source === "structural" ? resolveSubLabelCol(dataRows, ncol, resultCol, specCol) : -1;
 
+  // ★ section carry เฉพาะ structural ★ — แถวที่ col0 ว่างยืมชื่อแถวบนได้เมื่อ cell มาจากเส้นตารางจริง
+  //   (ชื่อกลุ่ม merged แล้วแถวลูกเป็น mesh). scanned-vector สร้าง cell จาก token OCR + เส้นเวกเตอร์ที่
+  //   เหลื่อมกับภาพได้ → ชื่อสั้นหลุดคอลัมน์ไปเลย (PR1950W_4063 p2: "Flow"/"Moisture" จุดกึ่งกลาง token
+  //   ตกซ้ายเส้นแรก) → col0 ว่างเพราะ "ชื่อหาย" ไม่ใช่ "แถวลูกของกลุ่ม" → ยืมแล้วได้ชื่อผิดแบบเนียน
+  const carrySection = source === "structural";
   const items: RawCoaItem[] = [];
   let section = "";
   for (const row of dataRows) {
@@ -402,7 +407,7 @@ export function parseStructuralGrid(
       else if (unitIdx < 0 && isUnitCell(c)) unitIdx = j;
     }
 
-    const base = col0 && !isMesh(col0) ? col0 : section;
+    const base = col0 && !isMesh(col0) ? col0 : carrySection ? section : "";
     const mesh = meshIdx >= 0 ? row[meshIdx] : "";
     // ป้ายท้ายชื่อ: mesh (+100/-325) มาก่อนตามพฤติกรรมเดิม · ไม่มี mesh จึงใช้ sub-label ของ merged group
     const suffix = mesh || (subLabelCol >= 0 ? nrm(row[subLabelCol] ?? "") : "");

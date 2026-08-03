@@ -1038,3 +1038,53 @@ path แก้ spec มี fixture คุมไว้แทน) · **needsReview
 (ตัวที่ 2 ที่จริงคือ `Flow` result 16 spec 10~35) · `Gelation time` ซ้ำ (ตัวที่ 2 คือ `Moisture` 0.2 vs ≤1.2)
 · หน้า 2 หายแถว `Appearance`. ค่ากับ spec จับคู่ถูก verdict จึงไม่ผิด แต่ชื่อรายการผิด = map เข้าระบบ QC จะผิดแถว
 → **เหตุผลที่คงธง spatial ไว้**
+
+---
+
+## ROUND 25 (2026-08-03) — ชื่อแถวเพี้ยนบน scanned-vector (PR1950W_4063 หน้า 2)
+
+**อาการ:** หน้า 2 ได้ `Softening point` 2 แถว (ตัวที่ 2 ที่จริงคือ `Flow` result 16 spec 10~35),
+`Gelation time` 2 แถว (ตัวที่ 2 คือ `Moisture` 0.2), หายแถว `Appearance` — **ค่ากับ spec จับคู่ถูก
+verdict จึงไม่ผิด แต่ชื่อรายการผิด** = ส่งเข้าระบบ QC แล้วลงผิดรายการ
+
+### วินิจฉัย (debug-mantra)
+1. **repro** 3 รอบตรงกัน (gate ×2 + HTTP upload) — deterministic
+2. **ไม่ใช่ OCR** — flat text ของหน้า 2 มีชื่อครบทุกแถว ถูกต้อง 100%
+3. **gridText (scanned-vector) ต่างหากที่ชื่อหาย 3 แถว** — cell col0 ว่างสลับแถว
+4. **วัดพิกัด token จริง** (probe ชั่วคราว): ข้อความทุกแถวเริ่มที่ x≈230 เท่ากันหมด แต่เส้นคอลัมน์แรก
+   จาก vector geometry อยู่ที่ **303px** → เหลื่อมกัน ~73px
+
+| token | x span | cx | vs edge 303 |
+|---|---|---|---|
+| `Softening point` | 230–414 | 322 | ✓ col 0 |
+| `Residue on sieve(106μm)` | 232–540 | 386 | ✓ col 0 |
+| `Flow` | 228–294 | **261** | ✗ นอกกรอบ |
+| `Moisture` | 230–340 | **285** | ✗ นอกกรอบ |
+| `Appearance` | 230–376 | **303** | ✗ abstain (ตรงเส้นพอดี) |
+
+`buildScannedGrid` ตัดสินคอลัมน์ด้วย **จุดกึ่งกลาง token** → ชื่อยาวรอด ชื่อสั้นตกนอกกรอบ.
+ไม่ได้เพี้ยนแค่คอลัมน์ชื่อ — `°℃ A` ยุบ Unit+Treatment เป็นช่องเดียวแล้วช่องถัดไปว่าง = **ทั้งหน้าเลื่อน**
+★ หน้า 1 พังเหมือนกันเป๊ะ แต่ผลถูกเพราะ keep-best เลือก flat ทับ — หน้า 2 grid ดันชนะเลยโผล่ ★
+
+5. **ตัวที่ทำให้ "ชื่อว่าง" กลายเป็น "ชื่อผิด"** = section carry ใน `parse-structural-grid.ts`
+   (`const base = col0 ? col0 : section` — จำชื่อแถวล่าสุดไว้ให้แถวลูกของ merged group ยืม)
+
+### แก้
+`carrySection = source === "structural"` — scanned-vector ไม่ยืมชื่อแถวบน (เหตุผลเดียวกับที่ ROUND 21
+ปิด `resolveSubLabelCol` บน path นี้: cell ที่สร้างจาก token OCR + เส้นเวกเตอร์ที่เหลื่อมกับภาพ เชื่อไม่ได้).
+col0 ว่าง = ไม่รู้ชื่อ → แถวถูกทิ้ง (บรรทัด `if (!base && !mesh) continue`) → grid แพ้ flat → หน้า 2 ใช้ flat
+ที่อ่านถูกอยู่แล้ว. **ไม่แตะ path structural** (carry ยังทำงานให้ KGP-H65/mesh row ตามเดิม)
+
+fixture ถาวร 3 เช็ค ใน `parse-structural-grid.test.ts` (ใช้ grid จริงของ p2 ที่เหลื่อม): ไม่มีชื่อซ้ำ ·
+แถวชื่อหายต้องหายไปเลยไม่ใช่ชื่อผิด · structural ยังยืมชื่อได้ → 40→43 เช็ค
+
+### gate (corpus 17)
+| | PASS | FAIL | SKIP | rows | needsReview |
+|---|---|---|---|---|---|
+| ROUND 24 | 133 | 0 | 11 | 144 | 4 |
+| **ROUND 25** | **133** | **0** | **12** | **145** | **2** |
+
+**diff per-file เปลี่ยนไฟล์เดียว** = PR1950W_4063 p2 `7P/0F/0S → 7P/0F/1S` (แถว `Appearance` กลับมาเป็น
+honest SKIP เหมือนหน้า 1 เพราะ spec เป็นข้อความ) · อีก 21 หน้าเหมือนเดิมเป๊ะ · PASS ไม่ตก · 0 FAIL
+· 0 แถวที่หลุด min/max แล้วไม่เป็น FAIL · BE tsc 0 · unit 14 suite ผ่าน
+**ธงเหลือ 2 จาก 144 แถว** (RI-015 ×2 ซึ่งเป็น SKIP อยู่แล้ว) — จาก 14 เมื่อเช้า

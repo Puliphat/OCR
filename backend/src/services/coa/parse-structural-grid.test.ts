@@ -229,5 +229,39 @@ check(
   parseStructuralGrid(KGP, "normal", "structural").items[0].name === "粒度(μm) D50"
 );
 
+// ★ regression ★ PR1950W_4063 p2 ตัวจริง — เส้นเวกเตอร์เหลื่อมกับภาพสแกน ทำให้ชื่อสั้น (Appearance/Flow/
+//   Moisture) หลุดคอลัมน์ไปเลย เหลือ col0 ว่าง. scanned-vector ห้ามยืมชื่อแถวบนมาเติม ไม่งั้นได้
+//   "Softening point" 2 แถว (ตัวที่ 2 ที่จริงคือ Flow) ซึ่งค่าถูก/ชื่อผิด = ผิดรายการเวลาส่งเข้าระบบ QC
+const SHIFTED_4063_P2 = [
+  "Item | Unit | Treatment Condition | Specification | Test result",
+  " | A - |  | Powderwithoutforeign body | GOOD",
+  "Softening point | °℃ A |  | 105~115 | 112",
+  " | 125℃ mm |  | 10~35 | 16",
+  "Gelation time | A sec |  | 30~55 | 41",
+  " | % A |  | ≤1.2 | 0.2",
+  "Residue on sieve(106 μ m) | % A |  | ≤5.0 | 1.4",
+].join("\n");
+const shiftedNames = parseStructuralGrid(SHIFTED_4063_P2, "normal", "scanned-vector").items.map(
+  (i) => i.name
+);
+check(
+  "[regression] scanned-vector ชื่อหาย → ไม่ยืมชื่อแถวบน (ไม่มีชื่อซ้ำ)",
+  new Set(shiftedNames).size === shiftedNames.length,
+  shiftedNames.join(" | ")
+);
+check(
+  "[regression] scanned-vector ชื่อหาย → แถวนั้นหายไปเลย ไม่ใช่ชื่อผิด",
+  !shiftedNames.some((n) => /^Softening point$/.test(n) && shiftedNames.filter((x) => x === n).length > 1) &&
+    shiftedNames.length === 3,
+  `${shiftedNames.length} rows: ${shiftedNames.join(" | ")}`
+);
+// structural (เส้นตารางจริง) ยังยืมชื่อได้ตามเดิม — carry มีไว้รองรับ mesh row ใต้ชื่อกลุ่ม
+const carried = parseStructuralGrid(SHIFTED_4063_P2, "normal", "structural").items.map((i) => i.name);
+check(
+  "structural → ยังยืมชื่อแถวบนได้ (พฤติกรรมเดิม)",
+  carried.filter((n) => n.startsWith("Softening point")).length === 2,
+  carried.join(" | ")
+);
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
