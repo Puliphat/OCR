@@ -1,7 +1,11 @@
-// แผง progress ระหว่างวิเคราะห์ — โชว์ขั้นจริงจาก backend (poll /api/coa/progress/:jobId)
+// แผง progress ระหว่างรอผล — โชว์ขั้นจริงจาก backend (poll /api/coa/jobs)
 // + นาฬิกาวิ่ง + หลอดเปอร์เซ็นต์ (ห้ามถอยหลัง). mount ใหม่ทุกครั้งที่เริ่มวิเคราะห์ → state สะอาดเอง
+// ขั้น "รอคิว" โผล่เฉพาะงานที่เคยต้องรอคิวจริง — อัปคนเดียวไม่มีคิว = หน้าตาเหมือนเดิมทุกอย่าง
 import { useState } from "react";
 import { PipelineProgress } from "@/lib/types";
+import { fmtWait } from "@/lib/format";
+
+const QUEUE_STEP = { key: "queued", label: "รอคิว" } as const;
 
 const STEPS = [
   { key: "render", label: "เตรียมไฟล์" },
@@ -40,16 +44,24 @@ function pct(p: PipelineProgress | null): number {
 export default function ProgressPanel({
   progress,
   liveMs,
+  queue,
 }: {
   progress: PipelineProgress | null;
   liveMs: number;
+  queue?: { position: number; etaSec?: number } | null;
 }) {
   // หลอดห้ามถอยหลัง (ขั้นข้ามหน้า/HQ ทำ % ดิบแกว่งได้) — derived-state ระหว่าง render
-  const [target, setTarget] = useState(4);
-  const raw = pct(progress);
+  const [target, setTarget] = useState(2);
+  // เคยรอคิว = คงขั้น "รอคิว" ไว้ในรายการตลอด ไม่ให้ layout กระตุกตอนถึงคิวตัวเอง
+  const [hadQueue, setHadQueue] = useState(!!queue);
+  if (queue && !hadQueue) setHadQueue(true);
+
+  const raw = queue ? 2 : pct(progress);
   if (raw > target) setTarget(raw);
 
-  const activeIdx = progress ? STAGE_IDX[progress.stage] : 0;
+  const steps = hadQueue ? [QUEUE_STEP, ...STEPS] : STEPS;
+  const offset = hadQueue ? 1 : 0;
+  const activeIdx = queue ? 0 : (progress ? STAGE_IDX[progress.stage] : 0) + offset;
   const pageInfo =
     progress?.page && progress?.pages && progress.pages > 1
       ? `หน้า ${progress.page}/${progress.pages}`
@@ -64,7 +76,7 @@ export default function ProgressPanel({
         </div>
 
         <ol className="p-steps">
-          {STEPS.map((s, i) => {
+          {steps.map((s, i) => {
             const state = i < activeIdx ? "done" : i === activeIdx ? "active" : "pending";
             return (
               <li key={s.key} className={`p-step ${state}`}>
@@ -76,6 +88,12 @@ export default function ProgressPanel({
                   ) : null}
                 </span>
                 <span className="p-label">{s.label}</span>
+                {state === "active" && s.key === "queued" && queue && (
+                  <span className="p-queue mono">
+                    คิวที่ {queue.position}
+                    {queue.etaSec != null && ` · รออีก ${fmtWait(queue.etaSec)}`}
+                  </span>
+                )}
                 {state === "active" && pageInfo && <span className="p-page mono">{pageInfo}</span>}
                 {state === "active" && progress?.stage === "hq" && (
                   <span className="p-hq">ตรวจซ้ำละเอียดสูง</span>
@@ -92,7 +110,9 @@ export default function ProgressPanel({
 
       <div className="p-meta mono">
         <span className="p-clock">{(liveMs / 1000).toFixed(1)}s</span>
-        <span className="p-hint">ปกติ ~20 วิ · ไฟล์ scan หลายหน้า ~45 วิ</span>
+        <span className="p-hint">
+          {queue ? "ระบบทำทีละงาน — ถึงคิวแล้วจะเริ่มเอง" : "ปกติ ~20 วิ · ไฟล์ scan หลายหน้า ~45 วิ"}
+        </span>
       </div>
     </div>
   );

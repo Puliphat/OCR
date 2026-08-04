@@ -1,255 +1,238 @@
 // หน้าหลัก COA UI — orchestrator เท่านั้น (state + mutation + ประกอบ component)
 // UI แต่ละส่วนแยกไฟล์ที่ components/coa/*, สไตล์ที่ app/styles/*
-// state: idle (empty) | idle (file picked) | analyzing (mutation pending) | done (data)
-// เรียก POST /api/coa/upload ผ่าน react-query (lib/axios.ts baseURL = :3001)
+// flow: เลือกไฟล์ → POST /api/coa/upload คืน jobId ทันที (งานเข้าคิวที่ backend) → poll
+//       GET /api/coa/jobs?ids= จนทุกงานจบ. รันทีละงานเพราะ OCR/LLM มีตัวเดียว
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/axios";
-import { UploadResponse, PipelineProgress } from "@/lib/types";
+import { EnqueueResponse, JobStatus, QueueSnapshot } from "@/lib/types";
 import Topbar from "@/components/coa/Topbar";
 import Hero from "@/components/coa/Hero";
 import UploadCard from "@/components/coa/UploadCard";
 import EmptyState from "@/components/coa/EmptyState";
 import HelperBar from "@/components/coa/HelperBar";
-import ResultsCard from "@/components/coa/ResultsCard";
+import JobCard from "@/components/coa/JobCard";
+import QueueBanner from "@/components/coa/QueueBanner";
 
-type Mode = "idle" | "analyzing" | "done";
+const SESSION_KEY = "coa-job-ids";
+const MAX_FILES = 20; // ตรงกับ upload.array("file", 20) ที่ backend
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [dragover, setDragover] = useState(false);
-  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
-  const [daemonStatus, setDaemonStatus] = useState<"restarting" | "uploading" | null>(null);
-  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [liveMs, setLiveMs] = useState(0); // นาฬิกาวิ่งระหว่างรอวิเคราะห์
+  const [jobIds, setJobIds] = useState<string[]>([]);
+  // ★ เก็บสถานะงานไว้เอง ไม่ derive จาก poll ตรงๆ ★ — backend กวาด job ทิ้งหลัง 10 นาที
+  //   ถ้าผูกกับ response ล้วน ผลที่คนกำลังอ่านอยู่จะหายจากจอเอง
+  const [jobs, setJobs] = useState<Record<string, JobStatus>>({});
+  const [rejected, setRejected] = useState<EnqueueResponse["rejected"]>([]);
+  const [liveMs, setLiveMs] = useState(0); // นาฬิกาวิ่งตั้งแต่กดวิเคราะห์ (รวมเวลารอคิว)
 
-  const mutation = useMutation<UploadResponse, Error, File>({
-    mutationFn: async (f: File) => {
-      const id = crypto.randomUUID();
-      setJobId(id);
-      const form = new FormData();
-      form.append("file", f);
-      form.append("jobId", id);
-      const start = performance.now();
+  // refresh แล้วยังตามงานของตัวเองต่อได้ (คนละเรื่องกับ queue banner ที่นับงานทุกคน)
+  useEffect(() => {
+    const saved = sessionStorage.getItem(SESSION_KEY);
+    if (saved) {
       try {
-        const res = await api.post<UploadResponse>("/api/coa/upload", form, {
+        setJobIds(JSON.parse(saved));
+      } catch {
+        /* ของเก่าอ่านไม่ออกก็เริ่มใหม่ */
+      }
+    }
+  }, []);
+  useEffect(() => {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(jobIds));
+  }, [jobIds]);
+
+  const ordered = jobIds.map((id) => jobs[id]).filter(Boolean);
+  const active = ordered.some((j) => j.state === "queued" || j.state === "running");
+  const waitingForFirstStatus = jobIds.length > 0 && ordered.length === 0;
+  const busy = active || waitingForFirstStatus;
+
+  const mutation = useMutation<EnqueueResponse, Error, File[]>({
+    mutationFn: async (list: File[]) => {
+      const form = new FormData();
+      for (const f of list) form.append("file", f);
+      try {
+        const res = await api.post<EnqueueResponse>("/api/coa/upload", form, {
           headers: { "Content-Type": "multipart/form-data" },
         });
         return res.data;
       } catch (e) {
-        // axios ให้ message เป็น "Request failed with status code 500" — ข้อความจริงอยู่ใน body
-        // ต้องดึงขึ้นมา ไม่งั้นหน้าเว็บบอกไม่ได้ว่า daemon ล่มหรือไฟล์มีปัญหา
+        // axios ให้ message เป็น "Request failed with status code 400" — ข้อความจริงอยู่ใน body
         const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
         throw new Error(detail || (e as Error).message);
-      } finally {
-        setElapsedMs(Math.round(performance.now() - start));
       }
+    },
+    onSuccess: (data) => {
+      setRejected(data.rejected ?? []);
+      setJobIds(data.jobs.map((j) => j.jobId));
+      setJobs(
+        Object.fromEntries(
+          data.jobs.map((j) => [j.jobId, { jobId: j.jobId, filename: j.filename, state: "queued" as const }])
+        )
+      );
     },
   });
 
-  const { data, isPending, isError, error } = mutation;
-  const mode: Mode = isPending ? "analyzing" : data ? "done" : "idle";
-
-  // ระหว่างรอ: poll ขั้นที่ pipeline กำลังทำ ทุก ~0.45s เอามาโชว์ progress จริง
-  const { data: progress } = useQuery<PipelineProgress | null>({
-    queryKey: ["coa-progress", jobId],
-    queryFn: async () =>
-      (await api.get<{ progress: PipelineProgress | null }>(`/api/coa/progress/${jobId}`)).data.progress,
-    enabled: isPending && !!jobId,
-    refetchInterval: 450,
+  // poll สถานะทุกงานพร้อมกันครั้งเดียว — merge ทับของเดิม (งานที่หายไปแล้วคงผลไว้)
+  useQuery({
+    queryKey: ["coa-jobs", jobIds],
+    queryFn: async () => {
+      const res = await api.get<{ jobs: JobStatus[] }>(`/api/coa/jobs?ids=${jobIds.join(",")}`);
+      setJobs((prev) => {
+        const next = { ...prev };
+        for (const j of res.data.jobs) next[j.jobId] = j;
+        return next;
+      });
+      return res.data.jobs;
+    },
+    enabled: busy && jobIds.length > 0,
+    refetchInterval: 700,
     gcTime: 0,
   });
 
-  // นาฬิกาวิ่ง (0.1s tick) ระหว่าง analyzing
+  // ภาระรวมของระบบ (นับงานของทุกคน) — ดึงเฉพาะตอนมีงานของเราค้างอยู่
+  const { data: queueSnapshot } = useQuery<QueueSnapshot>({
+    queryKey: ["coa-queue"],
+    queryFn: async () => (await api.get<QueueSnapshot>("/api/coa/queue")).data,
+    enabled: busy,
+    refetchInterval: 2000,
+    gcTime: 0,
+  });
+
+  // นาฬิกาวิ่ง (0.1s tick) ระหว่างยังมีงานค้าง
   useEffect(() => {
-    if (!isPending) return;
+    if (!busy) return;
     setLiveMs(0);
     const t0 = performance.now();
     const iv = setInterval(() => setLiveMs(performance.now() - t0), 100);
     return () => clearInterval(iv);
-  }, [isPending]);
+  }, [busy]);
 
-  // ★ daemon ล่ม → พังทั้ง request ★ (ไม่มี Tesseract fallback แล้ว — ผลเพี้ยนเงียบอันตรายกว่าพังดังๆ)
-  //   สั่ง restart daemon + poll health + ยิงไฟล์เดิมซ้ำให้อัตโนมัติ. เงื่อนไขเดิมดูจาก ocrEngine ของ
-  //   "ผลที่สำเร็จ" ซึ่งตอนนี้ไม่มีทางเกิด → ย้ายมาดูจาก error code ที่ backend ส่งมาแทน
-  useEffect(() => {
-    if (!isError || !error?.message.startsWith("OCR_DAEMON_DOWN")) return;
-
-    // Clear any stale poll
-    if (pollIntervalRef.current !== null) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
+  async function cancelJob(jobId: string) {
+    try {
+      await api.delete(`/api/coa/jobs/${jobId}`);
+    } catch {
+      /* ยกเลิกไม่สำเร็จ = งานเริ่มไปแล้ว สถานะรอบหน้าจะบอกเอง */
     }
+    setJobs((prev) => ({ ...prev, [jobId]: { ...prev[jobId], state: "canceled" } }));
+  }
 
-    setDaemonStatus("restarting");
-
-    // Fire restart — best-effort, no await
-    api.post("/api/coa/ocr/restart").catch(() => undefined);
-
-    let attempts = 0;
-    const MAX_ATTEMPTS = 30;
-
-    pollIntervalRef.current = setInterval(async () => {
-      attempts += 1;
-      try {
-        const res = await api.get<{ ok: boolean }>("/api/coa/ocr/daemon-health");
-        if (res.data.ok) {
-          clearInterval(pollIntervalRef.current!);
-          pollIntervalRef.current = null;
-          setDaemonStatus("uploading");
-          if (file) mutation.mutate(file);
-        }
-      } catch {
-        // ignore transient health-check errors
-      }
-      if (attempts >= MAX_ATTEMPTS) {
-        clearInterval(pollIntervalRef.current!);
-        pollIntervalRef.current = null;
-        setDaemonStatus(null);
-      }
-    }, 1500);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isError, error]);
-
-  // ยิงซ้ำสำเร็จแล้ว (มีผลออกมา) → เลิกโชว์สถานะ daemon
-  useEffect(() => {
-    if (daemonStatus === "uploading" && data) setDaemonStatus(null);
-  }, [data, daemonStatus]);
-
-  // Cleanup poll interval on unmount
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current !== null) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
-  }, []);
-
-  function pickFile(f: File | null) {
-    if (!f) return;
-    setFile(f);
+  // เลือกหลายรอบได้ (browse ทีละชุด / ลากมาวางเพิ่ม) — สะสมไว้แล้วค่อยกด Analyze ทีเดียว
+  // ซ้ำ = ไฟล์เดิม (ชื่อ+ขนาด+เวลาแก้ล่าสุด) ข้ามไป ไม่ให้เข้าคิวสองรอบ
+  function pickFiles(list: FileList | null) {
+    const picked = Array.from(list ?? []);
+    if (picked.length === 0) return;
+    setFiles((prev) => {
+      const seen = new Set(prev.map((f) => `${f.name}|${f.size}|${f.lastModified}`));
+      const fresh = picked.filter((f) => !seen.has(`${f.name}|${f.size}|${f.lastModified}`));
+      return [...prev, ...fresh].slice(0, MAX_FILES);
+    });
+    setJobIds([]);
+    setJobs({});
+    setRejected([]);
     mutation.reset();
-    setElapsedMs(null);
   }
 
-  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    pickFile(e.target.files?.[0] ?? null);
-  }
   function onDrop(e: React.DragEvent<HTMLLabelElement>) {
     e.preventDefault();
     setDragover(false);
-    pickFile(e.dataTransfer.files?.[0] ?? null);
+    pickFiles(e.dataTransfer.files);
   }
   function onDragOver(e: React.DragEvent<HTMLLabelElement>) {
     e.preventDefault();
     setDragover(true);
   }
   function analyze() {
-    if (file && !isPending) mutation.mutate(file);
+    if (files.length > 0 && !busy) mutation.mutate(files);
   }
-  function clearFile(e: React.MouseEvent) {
+  function clearFiles(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    setFile(null);
+    setFiles([]);
+    setJobIds([]);
+    setJobs({});
+    setRejected([]);
     mutation.reset();
-    setElapsedMs(null);
     if (inputRef.current) inputRef.current.value = "";
   }
+
+  const nothingYet = ordered.length === 0 && files.length === 0 && !mutation.isError;
 
   return (
     <div className="app">
       <Topbar />
       <Hero />
 
+      <QueueBanner snapshot={busy ? queueSnapshot ?? null : null} />
+
       <UploadCard
-        file={file}
+        files={files}
         dragover={dragover}
-        isPending={isPending}
-        analyzing={mode === "analyzing"}
-        progress={progress ?? null}
-        liveMs={liveMs}
+        busy={busy}
         inputRef={inputRef}
-        onPick={onPick}
+        onPick={(e) => {
+          pickFiles(e.target.files);
+          e.target.value = ""; // เคลียร์ทิ้ง ไม่งั้นเลือกไฟล์เดิมซ้ำหลังลบออกแล้ว onChange ไม่ยิง
+        }}
         onDrop={onDrop}
         onDragOver={onDragOver}
         onDragLeave={() => setDragover(false)}
         onAnalyze={analyze}
-        onClear={clearFile}
+        onClear={clearFiles}
+        onRemove={(i) => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
       />
 
       {/* empty state — ยังไม่ได้เลือกไฟล์ */}
-      {mode === "idle" && !file && <EmptyState />}
+      {nothingYet && <EmptyState />}
 
       {/* file ready — nudge */}
-      {mode === "idle" && file && !isError && (
+      {files.length > 0 && ordered.length === 0 && !busy && !mutation.isError && (
         <HelperBar variant="ready" style={{ marginTop: 20 }}>
-          <strong style={{ color: "var(--ink)" }}>{file.name}</strong> is ready. Hit{" "}
-          <strong style={{ color: "var(--ink)" }}>Analyze</strong> to run it through the model.
+          <strong style={{ color: "var(--ink)" }}>
+            {files.length === 1 ? files[0].name : `${files.length} ไฟล์`}
+          </strong>{" "}
+          พร้อมแล้ว กด <strong style={{ color: "var(--ink)" }}>Analyze</strong> เพื่อส่งเข้าระบบ
         </HelperBar>
       )}
 
-      {/* error — daemon ล่มแยกข้อความ + บอกว่ากำลังกู้ให้อัตโนมัติ (ผู้ใช้จะได้ไม่กด Analyze รัวๆ) */}
-      {isError && (
+      {/* ไฟล์ที่ระบบไม่รับ (นามสกุลไม่รองรับ) — ไฟล์ที่เหลือยังเข้าคิวตามปกติ */}
+      {rejected.length > 0 && (
         <HelperBar variant="error" style={{ marginTop: 20 }}>
-          {error?.message.startsWith("OCR_DAEMON_DOWN") ? (
-            <>
-              <strong style={{ color: "var(--ink)" }}>OCR daemon ไม่ทำงาน</strong> — ไฟล์สแกนอ่านไม่ได้จนกว่าจะเริ่ม daemon
-              {daemonStatus === "restarting" && " · กำลังสั่งเริ่มให้อัตโนมัติ…"}
-              {daemonStatus === "uploading" && " · daemon ขึ้นแล้ว กำลังวิเคราะห์ใหม่…"}
-              {daemonStatus === null && " · เริ่มเองได้ที่ backend: npm run ocr:daemon"}
-            </>
-          ) : error?.message.startsWith("PDF_GRID_DOWN") ? (
-            /* pdfplumber ล้ม = ตัวอ่านคอลัมน์หาย → ผลจะตกเงียบถ้าปล่อยผ่าน จึงหยุดเหมือน daemon ล่ม
-               (ต่างกันตรงกู้เองไม่ได้ — ต้องไปซ่อม venv ที่ ocr-py) */
-            <>
-              <strong style={{ color: "var(--ink)" }}>ตัวอ่านตารางไม่ทำงาน</strong> — ระบบหยุดไว้ก่อนเพราะถ้าอ่านต่อ
-              ผลจะตกโดยไม่มีสัญญาณ · ตรวจ Python venv ที่ <code>ocr-py</code> แล้วลองใหม่
-              <br />
-              <span style={{ opacity: 0.75, fontSize: "0.9em" }}>{error.message}</span>
-            </>
-          ) : (
-            error?.message ?? "Something went wrong while analyzing."
-          )}
+          ข้ามไป {rejected.length} ไฟล์ — {rejected.map((r) => `${r.filename} (${r.reason})`).join(", ")}
         </HelperBar>
       )}
 
-      {/* results */}
-      {mode === "done" && data && (
-        <>
-          {data.reports.length > 1 && (
-            <div
-              style={{
-                marginTop: 20,
-                fontSize: 12,
-                color: "var(--ink-3)",
-                fontFamily: "var(--font-mono), 'JetBrains Mono', ui-monospace, monospace",
-                letterSpacing: "0.04em",
-              }}
-            >
-              พบ {data.reports.length} lot/หน้า
-            </div>
-          )}
-          <div style={{ display: "flex", flexDirection: "column", gap: data.reports.length > 1 ? 12 : 0 }}>
-            {data.reports.map((rep, i) => (
-              <ResultsCard
-                key={i}
-                report={rep}
-                logFile={data.logFile}
-                elapsedMs={i === 0 ? elapsedMs : null}
-                index={i}
-                total={data.reports.length}
-              />
-            ))}
-          </div>
-          <HelperBar variant="tip">
-            Tip — failing parameters get a red pill, rows needing human review get an amber{" "}
-            <strong>⚠ ต้องตรวจ</strong> pill, and rows that couldn&apos;t be evaluated get a muted SKIP pill. Hover a status pill for details.
-          </HelperBar>
-        </>
+      {/* อัปโหลดไม่สำเร็จตั้งแต่ต้น (ยังไม่ได้เข้าคิว) */}
+      {mutation.isError && (
+        <HelperBar variant="error" style={{ marginTop: 20 }}>
+          {mutation.error?.message ?? "ส่งไฟล์ไม่สำเร็จ"}
+        </HelperBar>
+      )}
+
+      {/* งานของเรา — เรียงตามลำดับที่ส่ง ไม่สลับที่ระหว่างทาง (การ์ดจะได้ไม่กระโดด) */}
+      {ordered.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20, marginTop: 20 }}>
+          {ordered.map((job) => (
+            <JobCard
+              key={job.jobId}
+              job={job}
+              liveMs={liveMs}
+              elapsedMs={job.durationMs ?? null}
+              showHead={ordered.length > 1}
+              onCancel={cancelJob}
+            />
+          ))}
+        </div>
+      )}
+
+      {ordered.some((j) => j.state === "done") && (
+        <HelperBar variant="tip">
+          Tip — failing parameters get a red pill, rows needing human review get an amber{" "}
+          <strong>⚠ ต้องตรวจ</strong> pill, and rows that couldn&apos;t be evaluated get a muted SKIP pill. Hover a status pill for details.
+        </HelperBar>
       )}
     </div>
   );

@@ -1,17 +1,13 @@
-// การ์ด upload — drop zone + ปุ่ม Analyze + state กำลังวิเคราะห์
+// การ์ด upload — drop zone + ปุ่ม Analyze (รับได้หลายไฟล์ ระบบจะทยอยทำทีละใบ)
+// ความคืบหน้าไปอยู่ที่ JobCard แล้ว เพราะผูกกับ "งาน" ไม่ใช่ฟอร์ม
 import type { RefObject } from "react";
 import { fmtBytes } from "@/lib/format";
-import { PipelineProgress } from "@/lib/types";
 import { IconUpload, IconX } from "./icons";
-import ProgressPanel from "./ProgressPanel";
 
 export default function UploadCard({
-  file,
+  files,
   dragover,
-  isPending,
-  analyzing,
-  progress,
-  liveMs,
+  busy,
   inputRef,
   onPick,
   onDrop,
@@ -19,13 +15,11 @@ export default function UploadCard({
   onDragLeave,
   onAnalyze,
   onClear,
+  onRemove,
 }: {
-  file: File | null;
+  files: File[];
   dragover: boolean;
-  isPending: boolean;
-  analyzing: boolean;
-  progress: PipelineProgress | null;
-  liveMs: number;
+  busy: boolean;
   inputRef: RefObject<HTMLInputElement | null>;
   onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onDrop: (e: React.DragEvent<HTMLLabelElement>) => void;
@@ -33,6 +27,7 @@ export default function UploadCard({
   onDragLeave: () => void;
   onAnalyze: () => void;
   onClear: (e: React.MouseEvent) => void;
+  onRemove: (index: number) => void;
 }) {
   return (
     <div className="card">
@@ -47,6 +42,7 @@ export default function UploadCard({
             ref={inputRef}
             type="file"
             accept=".pdf,.png,.jpg,.jpeg"
+            multiple
             style={{ display: "none" }}
             onChange={onPick}
           />
@@ -58,35 +54,45 @@ export default function UploadCard({
               {dragover ? "Drop it here" : "Drop a PDF or click to browse"}
             </div>
             <div className="drop-sub">
-              .pdf · .png · .jpg · supplier COA / spec sheet
+              {files.length > 0
+                ? `เลือกแล้ว ${files.length} ไฟล์ · เลือกเพิ่มได้ (สูงสุด 20) แล้วกด Analyze ทีเดียว`
+                : ".pdf · .png · .jpg · เลือกได้หลายไฟล์ ระบบทยอยทำทีละใบ"}
             </div>
-            {file && (
-              <div className="file-chip">
-                <span className="file-chip-pdf">
-                  {file.name.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG"}
-                </span>
-                <span>{file.name}</span>
-                <span className="mono" style={{ color: "var(--ink-3)" }}>
-                  · {fmtBytes(file.size)}
-                </span>
-                <span className="x" onClick={onClear} aria-label="Remove file">
-                  <IconX />
-                </span>
+            {files.length > 0 && (
+              <div className="file-chips">
+                {files.map((f, i) => (
+                  <div className="file-chip" key={`${f.name}-${i}`}>
+                    <span className="file-chip-pdf">
+                      {f.name.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG"}
+                    </span>
+                    <span className="file-chip-name" title={f.name}>
+                      {f.name}
+                    </span>
+                    <span className="mono" style={{ color: "var(--ink-3)" }}>
+                      · {fmtBytes(f.size)}
+                    </span>
+                    <span
+                      className="x"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        files.length === 1 ? onClear(e) : onRemove(i);
+                      }}
+                      aria-label={`Remove ${f.name}`}
+                    >
+                      <IconX />
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
         </label>
-        <button
-          className="btn primary"
-          disabled={!file || isPending}
-          onClick={onAnalyze}
-        >
-          {isPending ? "Analyzing…" : "Analyze"}
+        <button className="btn primary" disabled={files.length === 0 || busy} onClick={onAnalyze}>
+          {busy ? "Analyzing…" : files.length > 1 ? `Analyze (${files.length})` : "Analyze"}
           <span className="arrow">→</span>
         </button>
       </div>
-
-      {analyzing && <ProgressPanel progress={progress} liveMs={liveMs} />}
     </div>
   );
 }

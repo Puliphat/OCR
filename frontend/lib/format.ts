@@ -13,6 +13,12 @@ export function fmtBytes(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
 }
 
+/** วินาทีที่ต้องรอ → ข้อความหยาบๆ ("ไม่ถึงนาที" / "~3 นาที") — ไม่โชว์วินาทีเพราะเป็นค่าประมาณ */
+export function fmtWait(sec: number): string {
+  if (sec < 60) return "ไม่ถึงนาที";
+  return `~${Math.round(sec / 60)} นาที`;
+}
+
 /** เวลาปัจจุบันโซน Asia/Bangkok เช่น "29 May 2026, 13:07 ICT" */
 export function nowIctString(): string {
   const d = new Date();

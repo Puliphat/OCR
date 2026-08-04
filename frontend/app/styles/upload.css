@@ -57,6 +57,17 @@
   margin-top: 2px;
   font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
 }
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.file-chip-name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .file-chip {
   display: inline-flex;
   align-items: center;
@@ -233,6 +244,7 @@
   50% { opacity: 0.35; transform: scale(0.7); }
 }
 .p-page { font-size: 11px; color: var(--ink-3); }
+.p-queue { font-size: 11px; color: var(--accent); font-weight: 600; }
 .p-hq {
   font-size: 11px;
   background: var(--warn-soft);

@@ -24,16 +24,41 @@ export interface CoaReport {
   ocrEngine?: "text-layer" | "rapidocr";
 }
 
-export interface UploadResponse {
-  reports: CoaReport[];
-  logFile: string;
-}
-
-// ขั้นของ pipeline ที่ backend รายงานระหว่างวิเคราะห์ (poll GET /api/coa/progress/:jobId)
+// ขั้นของ pipeline ที่ backend รายงานระหว่างวิเคราะห์
 export type PipelineStage = "render" | "ocr" | "parse" | "hq" | "eval";
 
 export interface PipelineProgress {
   stage: PipelineStage;
   page?: number;
   pages?: number;
+}
+
+// ── คิวงาน ── งานถูกเข้าคิวที่ backend แล้วรันทีละงาน (poll GET /api/coa/jobs?ids=)
+export type JobState = "queued" | "running" | "done" | "error" | "canceled";
+
+export interface JobStatus {
+  jobId: string;
+  filename: string;
+  state: JobState;
+  position?: number; // queued: ลำดับในคิว (1 = คิวถัดไป)
+  ahead?: number;
+  etaSec?: number; // undefined = ยังไม่มีสถิติพอจะประมาณ
+  progress?: PipelineProgress; // running
+  reports?: CoaReport[]; // done
+  logFile?: string; // done
+  durationMs?: number; // done: เวลาวิเคราะห์จริง ไม่รวมเวลารอคิว
+  error?: string; // error
+}
+
+// POST /api/coa/upload → 202
+export interface EnqueueResponse {
+  jobs: { jobId: string; filename: string }[];
+  rejected: { filename: string; reason: string }[];
+}
+
+// GET /api/coa/queue — ภาพรวมคิวทั้งระบบ (ทุกคนเห็นเหมือนกัน)
+export interface QueueSnapshot {
+  running: number;
+  waiting: number;
+  paused: boolean;
 }
