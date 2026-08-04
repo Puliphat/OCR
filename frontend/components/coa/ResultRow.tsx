@@ -1,6 +1,6 @@
 // หนึ่งแถวในตารางผล — Item / Unit / Min / Max / Result / Status
 import type { CoaRow } from "@/lib/types";
-import { fmtNum } from "@/lib/format";
+import { fmtNum, fmtResult } from "@/lib/format";
 
 export default function ResultRow({ row }: { row: CoaRow }) {
   const isReview = row.needsReview === true;
@@ -31,7 +31,10 @@ export default function ResultRow({ row }: { row: CoaRow }) {
       <div className="row-unit">{row.unit ?? "—"}</div>
       <div className="row-bound">{fmtNum(row.min)}</div>
       <div className="row-bound">{fmtNum(row.max)}</div>
-      <div className="row-result">{row.resultRaw ?? fmtNum(row.result)}</div>
+      {/* จอโชว์เลขที่ตีความแล้ว (จุดทศนิยม "." เสมอ) · hover เห็นข้อความตามใบไว้เทียบ */}
+      <div className="row-result" title={row.resultRaw ?? undefined}>
+        {fmtResult(row)}
+      </div>
       {/* fallback ใช้ได้เฉพาะแถวที่ปักธงจริง — เดิมแถว PASS สะอาด (reason ว่าง) ก็ตกมาโชว์ "ต้องตรวจ" */}
       <div
         className={"row-status" + statusClass}

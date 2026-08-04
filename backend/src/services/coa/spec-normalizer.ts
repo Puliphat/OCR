@@ -1,5 +1,7 @@
 // ★ แก้บ่อยที่สุด ★ — แปลง spec string จากใบ COA → {op, min/max/value}
 // เจอ format ใหม่ที่ไม่เข้า? เพิ่ม branch ใน normalizeSpec + เพิ่ม fixture ที่ evaluator.test.ts
+import { NUM_PATTERN, toNum } from "./numeric";
+
 export type SpecOp =
   | "between"
   | "le"
@@ -17,25 +19,15 @@ export interface ParsedSpec {
   raw: string;
 }
 
-const NUM = String.raw`-?\d+(?:[.,]\d+)?`;
+// regex ทุกตัวที่นี่ anchor ที่ $ — pattern ต้องกิน token ทั้งตัว ("1,494.80") ไม่งั้น match ไม่ติด
+//   แล้วคืน null = SKIP ทั้งแถว (ดู numeric.ts)
+const NUM = NUM_PATTERN;
 
 // คำตัดสิน/ผลรวมท้าย cell ที่ LLM เล็กชอบลากมาปนใน specRaw (เช่น "20 Max Success") →
 // regex spec anchored ที่ $ จึง match ไม่ได้ → normalizeSpec คืน null → ตกไปใช้ bare specMin/Max
 // (ทิศมั่ว = fabricated FAIL). ตัดทิ้งท้ายก่อน parse ให้ "20 Max Success" → "20 Max"
 const JUDGMENT_TAIL =
   /\s*\b(success(?:ful)?|pass(?:ed)?|accept(?:ed|able)?|good|ok|qualified|conform(?:ed|ing)?|合格|ผ่าน)\b[\s.]*$/i;
-
-// EU decimal vs US thousands: ถ้ามี comma แต่ไม่มี period → comma คือทศนิยม (0,28 → 0.28)
-// ถ้ามีทั้ง 2 → comma คือ thousands ให้ strip ออก (1,000.5 → 1000.5)
-function toNum(s: string): number {
-  let cleaned = s.trim();
-  if (cleaned.includes(",") && !cleaned.includes(".")) {
-    cleaned = cleaned.replace(/,/g, ".");
-  } else {
-    cleaned = cleaned.replace(/,/g, "");
-  }
-  return Number(cleaned);
-}
 
 // OCR มัก misread เลขเป็นตัวอักษรทรงคล้าย (7→T, 0→O/Q, 1→l/I, 5→S, 8→B, 6→G, 9→g, 2→Z)
 // ใช้ "เฉพาะ" ตอนซ่อมค่าที่บริบทเป็นเลขชัด (range 2 ฝั่ง ที่ทั้งคู่มี digit จริง) — ไม่ใช้ทั่วไป
@@ -57,9 +49,19 @@ function stripUnits(s: string): string {
     .trim();
 }
 
+// ★ NaN guard ★ — NUM รับตัวคั่นหลายกลุ่ม (`*`) จึง match string ที่ toNum อ่านไม่ออกได้ เช่น OCR ต่อเลข
+//   ติดกันเป็น "10.045.0" (จริงคือ 10.0 กับ 45.0 คนละคอลัมน์) → NaN. คืน null = "อ่านเกณฑ์ไม่ได้ → SKIP"
+//   ซึ่งเป็นพฤติกรรมเดิมก่อนขยาย regex — ห้ามปล่อย NaN ออกไปเป็น ParsedSpec (ทำ guard ปลายทางเพี้ยนเงียบ)
+export function normalizeSpec(raw: unknown): ParsedSpec | null {
+  const p = parseSpec(raw);
+  if (!p) return null;
+  const vals = [p.value, p.min, p.max].filter((v): v is number => v != null);
+  return vals.some((v) => !Number.isFinite(v)) ? null : p;
+}
+
 // Parse spec จากคอลัมน์เดียว (เช่น "275-425", "≤ 0.2", "26 ± 2")
 // ลำดับ branch สำคัญ — ± ก่อน range เพราะ "26 ± 2" ก็เข้า regex range ได้
-export function normalizeSpec(raw: unknown): ParsedSpec | null {
+function parseSpec(raw: unknown): ParsedSpec | null {
   if (raw == null) return null;
   let s = String(raw).trim();
   if (!s) return null;

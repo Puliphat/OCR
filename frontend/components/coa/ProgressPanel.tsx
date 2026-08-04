@@ -10,11 +10,11 @@ const QUEUE_STEP = { key: "queued", label: "รอคิว" } as const;
 const STEPS = [
   { key: "render", label: "เตรียมไฟล์" },
   { key: "ocr", label: "อ่านตัวอักษร (OCR)" },
-  { key: "parse", label: "AI อ่านตาราง" },
+  { key: "parse", label: "LLM อ่านตาราง" },
   { key: "eval", label: "เทียบเกณฑ์ Spec" },
 ] as const;
 
-// stage จาก backend → ขั้นใน STEPS (hq = ยังอยู่ขั้น AI แต่ตรวจซ้ำละเอียดสูง)
+// stage จาก backend → ขั้นใน STEPS (hq = ยังอยู่ขั้น LLM แต่ตรวจซ้ำละเอียด)
 const STAGE_IDX: Record<PipelineProgress["stage"], number> = {
   render: 0,
   ocr: 1,
@@ -23,7 +23,7 @@ const STAGE_IDX: Record<PipelineProgress["stage"], number> = {
   eval: 3,
 };
 
-// % คร่าวๆ ตามน้ำหนักเวลาจริงที่วัดไว้ (OCR ~ครึ่งแรก, AI อ่านตาราง = ก้อนใหญ่สุด)
+// % คร่าวๆ ตามน้ำหนักเวลาจริงที่วัดไว้ (OCR ~ครึ่งแรก, LLM อ่านตาราง = ก้อนใหญ่สุด)
 function pct(p: PipelineProgress | null): number {
   if (!p) return 4;
   const frac = p.page && p.pages ? (p.page - 0.5) / p.pages : 0.5;
@@ -96,7 +96,7 @@ export default function ProgressPanel({
                 )}
                 {state === "active" && pageInfo && <span className="p-page mono">{pageInfo}</span>}
                 {state === "active" && progress?.stage === "hq" && (
-                  <span className="p-hq">ตรวจซ้ำละเอียดสูง</span>
+                  <span className="p-hq">ตรวจซ้ำละเอียด</span>
                 )}
               </li>
             );

@@ -6,6 +6,24 @@ export function fmtNum(n: number | null): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, "");
 }
 
+/**
+ * ค่าผลสำหรับ "แสดงบนจอ" — ใช้เลขที่ระบบตีความแล้ว จุดทศนิยมเป็น "." เสมอ
+ * ★ ต่างจาก resultRaw ที่เก็บข้อความตามใบ ★ ใบยุโรปเขียน "200,00 – 250,00" ซึ่งคนไทยอ่านสับสน
+ *   (นึกว่า 20000) → จอโชว์ "200 – 250" ส่วน resultRaw ยังเก็บของเดิมไว้ครบใน tooltip + DB
+ * ค่าที่ไม่ใช่ตัวเลข ("White" / "<15" / "K2Ti6O13") ไม่มีเลขให้แปลง → ใช้ข้อความตามใบตรง ๆ
+ */
+export function fmtResult(row: {
+  result: number | null;
+  resultMin?: number | null;
+  resultMax?: number | null;
+  resultRaw: string | null;
+}): string {
+  const { resultMin: lo, resultMax: hi } = row;
+  if (lo != null && hi != null && lo !== hi) return `${fmtNum(lo)} – ${fmtNum(hi)}`;
+  if (row.result != null) return fmtNum(row.result);
+  return row.resultRaw ?? "—";
+}
+
 /** bytes → "B" / "KB" / "MB" อ่านง่าย */
 export function fmtBytes(bytes: number): string {
   if (bytes < 1024) return bytes + " B";

@@ -386,6 +386,7 @@ function structuralPassNeedsAmber(r: EvaluatedItem): boolean {
 //   G2 margin = clearance/|result| >= VALUE_MARGIN_M
 //   G3' integer decimal-shift guard (both directions, mirrors detectDecimalRisk)
 //   G4 decimal-present: if binding bound is fractional, resultRaw must contain a decimal point
+//   G5 ambiguous-thousands: comma ที่อ่านได้ 2 ทาง (1,500) → ค่าอาจเพี้ยน 1000 เท่า margin จึงไม่มีความหมาย
 function applyMarginGreen(
   rows: EvaluatedItem[],
   engine: OcrEngine,
@@ -401,6 +402,9 @@ function applyMarginGreen(
   for (const r of rows) {
     // Only clear amber flags (skip rows that are already clean-green or not PASS)
     if (!r.needsReview || r.status !== "PASS") continue;
+
+    // G5: ธง ambiguous-thousands ล้างไม่ได้ — ถ้า comma เป็นหลักพันจริง ค่าเพี้ยน 1000 เท่า margin ไร้ความหมาย
+    if (r.ambiguousThousands) continue;
 
     const res = r.result;
     if (res == null || !Number.isFinite(res) || res === 0) continue; // G2 needs finite nonzero result

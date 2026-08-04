@@ -1,5 +1,7 @@
 // แปลง result จาก LLM → number ตัวเดียวสำหรับเทียบ spec
 // รับได้ทั้ง number / string / object {avg,min,max,raw} — ใช้ avg เป็นหลัก
+import { NUM_PATTERN, toNum } from "./numeric";
+
 export interface ResultValues {
   avg?: number;
   min?: number;
@@ -19,18 +21,9 @@ export interface NormalizedResult {
   interval?: { min: number; max: number };
 }
 
-const NUM_RE = /-?\d+(?:[.,]\d+)?/g;
-
-// EU decimal (0,28 → 0.28) vs US thousands (1,000 → 1000) — sync logic กับ spec-normalizer
-function toNum(s: string): number {
-  let cleaned = s.trim();
-  if (cleaned.includes(",") && !cleaned.includes(".")) {
-    cleaned = cleaned.replace(/,/g, ".");
-  } else {
-    cleaned = cleaned.replace(/,/g, "");
-  }
-  return Number(cleaned);
-}
+const NUM_RE = new RegExp(NUM_PATTERN, "g");
+// result แบบ bound ล้วน: "<15", "≤0.01", "≥ 95" — ทั้ง string ต้องเป็น comparator + เลข (ไม่มี unit ต่อท้าย)
+const BOUND_RE = new RegExp(String.raw`^\s*(<=|≤|≦|<|>=|≥|≧|>)\s*(${NUM_PATTERN})\s*$`);
 
 function extractNumbers(s: string): number[] {
   const matches = String(s).match(NUM_RE);
@@ -90,10 +83,11 @@ export function normalizeResult(raw: unknown): NormalizedResult | null {
   // result แบบ bound: "<15", "≤0.01", "≦ 0.2", ">50", "≥ 95"
   // ทั้ง string ต้องเป็น comparator + เลข เท่านั้น (ไม่มี unit ต่อท้าย — เข้มงวด)
   {
-    const m = s.match(/^\s*(<=|≤|≦|<|>=|≥|≧|>)\s*(-?\d+(?:[.,]\d+)?)\s*$/);
-    if (m) {
+    const m = s.match(BOUND_RE);
+    const num = m ? toNum(m[2]) : NaN;
+    // NaN = ตัวคั่นหลายกลุ่มที่อ่านไม่ออก (OCR ต่อเลขติดกัน) → ตกไป path ปกติ ไม่ปั้น bound จากค่าเสีย
+    if (m && Number.isFinite(num)) {
       const sym = m[1];
-      const num = toNum(m[2]);
       const op: "lt" | "le" | "gt" | "ge" =
         sym === "<" ? "lt" :
         sym === "<=" || sym === "≤" || sym === "≦" ? "le" :

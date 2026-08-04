@@ -2,6 +2,7 @@
 // Logic ไม่พึ่ง LLM เลย เปลี่ยน rule ที่นี่ได้โดยไม่ต้อง re-run pipeline
 import { ParsedSpec, normalizeSpecFromCandidate } from "./spec-normalizer";
 import { normalizeResult, ResultValues } from "./result-normalizer";
+import { hasUnpinnedAmbiguity, pickScale, readAsThousands, siblingMagnitude } from "./numeric";
 
 export type Status = "PASS" | "FAIL" | "SKIP";
 
@@ -38,11 +39,81 @@ export interface EvaluatedItem {
   // แถวนี้ spec มาจาก DuPont double-min/max layout (spec-column-recovery) — ใช้เป็นเป้าของ
   //   cross-page reconciliation เท่านั้น (เอกสารซ้ำบล็อกเดิมหลายหน้า → หน้ายันกันเองได้)
   specDupont?: boolean;
+  // แถวนี้มีตัวเลข comma ที่อ่านได้ 2 ทาง (ดู hasAmbiguousThousands) — verdict ยืนบนสมมติฐาน "comma = ทศนิยม"
+  //   ค่าอาจเพี้ยน 1000 เท่า → margin ไม่มีความหมาย (margin-green ห้ามล้างธงนี้ ดู applyMarginGreen G5)
+  ambiguousThousands?: boolean;
+}
+
+// ★ Ambiguous thousands ★ — "1,500" แยกไม่ออกว่าเป็น EU decimal (1.5) หรือ US thousands (1500)
+//   toNum เลือก EU เสมอ (ถูกกับ corpus ปัจจุบัน: 200,00 · 0,28 · 12,097 = ทศนิยมจริง)
+//   หา anchor มาพินสเกล 2 ชั้น แล้วค่อยยกธง — ★ ยกธงเฉพาะที่ตัดสินไม่ได้จริง ๆ ★ (ธงเยอะ = คนต้องตรวจซ้ำหมด
+//   = OCR ไม่ได้ลดงานหน้างาน) ชั้น 1 เลขตัวอื่นในกลุ่มเดียวกัน (ดู hasUnpinnedAmbiguity) · ชั้น 2 ขอบเกณฑ์
+export function evaluateItem(item: CoaItemInput): EvaluatedItem {
+  const core = evaluateItemCore(item);
+
+  const resultRaw =
+    typeof item.result === "object" && item.result !== null
+      ? (item.result as ResultValues).raw
+      : item.result;
+  const resultAmbiguous = hasUnpinnedAmbiguity(resultRaw, item.resultMin, item.resultMax);
+  const specAmbiguous = hasUnpinnedAmbiguity(item.specRaw, item.specMin, item.specMax);
+  if (!resultAmbiguous && !specAmbiguous) return core;
+
+  // ค่าผลที่กลุ่มตัวเองพินสเกลไม่ได้ → ยืม magnitude ของ "เกณฑ์" มาตัดสิน (ทิศเดียวเท่านั้น)
+  //   เกณฑ์กำกวมด้วย = ไม่มีหลักให้ยึด (และ ÷1000 ทั้ง 2 ฝั่ง verdict เท่าเดิมอยู่แล้ว) → ยกธงอย่างเดียว
+  //   result เป็น object = ค่าถูก LLM แปลงเป็น number มาแล้ว เขียน token ใหม่ไม่ได้ → ยกธงอย่างเดียว
+  const canRescale =
+    resultAmbiguous &&
+    !specAmbiguous &&
+    typeof item.result !== "object" &&
+    siblingMagnitude(resultRaw, item.resultMin, item.resultMax) == null;
+  const reading = canRescale ? pickThousandsReading(core) : null;
+
+  if (reading === "eu") return core; // magnitude ยืนยันว่าเป็นทศนิยม = ไม่กำกวมแล้ว ไม่ต้องเตือน
+  if (reading === "us") {
+    // อ่านใหม่เป็นหลักพันแล้วให้ core ตัดสินซ้ำทั้งเส้น (ไม่มี logic ขนาน) · resultRaw คงข้อความบนใบไว้
+    const rescaled = evaluateItemCore({
+      ...item,
+      result: readAsThousands(item.result),
+      resultMin: readAsThousands(item.resultMin),
+      resultMax: readAsThousands(item.resultMax),
+    });
+    const note = `อ่าน "${core.resultRaw ?? ""}" เป็นหลักพันตามสเกลของเกณฑ์`;
+    return {
+      ...rescaled,
+      resultRaw: core.resultRaw,
+      reason: rescaled.reason ? `${rescaled.reason} — ${note}` : note,
+    };
+  }
+
+  const note =
+    "ตัวเลขมี comma คั่น อ่านได้ 2 ทาง (1,500 = 1.5 หรือ 1500) — ระบบอ่านเป็นทศนิยม เทียบกับใบจริง";
+  return {
+    ...core,
+    ambiguousThousands: true,
+    needsReview: true,
+    reason: core.reason ? `${core.reason} — ${note}` : note,
+  };
+}
+
+// เลือกสเกลของค่าผลจาก magnitude ของขอบเกณฑ์ (ดู pickScale ใน numeric.ts)
+//   คืน null = ตัดสินไม่ได้ (SKIP อยู่แล้ว / ไม่มีค่าเลขเดี่ยว / เกณฑ์ไม่มีขอบให้ยึด)
+function pickThousandsReading(core: EvaluatedItem): "eu" | "us" | null {
+  if (core.status === "SKIP") return null;
+  const eu = core.result;
+  if (eu == null || !Number.isFinite(eu) || eu === 0) return null;
+  // ขอบเกณฑ์ 2 ข้างใช้ geometric mean · ตัด 0 ทิ้ง ("0~2" ต้องได้ 2 ไม่ใช่ 0) · ไม่เหลือขอบ = ไม่มีหลักให้ยึด
+  const bounds = [core.min, core.max]
+    .filter((v): v is number => v != null && Number.isFinite(v) && v !== 0)
+    .map(Math.abs);
+  if (bounds.length === 0) return null;
+  const anchor = Math.sqrt(Math.min(...bounds) * Math.max(...bounds));
+  return pickScale(Math.abs(eu), anchor);
 }
 
 // Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
 // spec อ่านไม่ออก → SKIP "spec not parseable", result ไม่ใช่ตัวเลข → SKIP "result not numeric"
-export function evaluateItem(item: CoaItemInput): EvaluatedItem {
+function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
   const name = (item.name ?? "").trim() || "(unknown)";
   const unit = item.unit?.toString().trim() || null;
   const method = item.method?.toString().trim() || null;

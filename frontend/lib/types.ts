@@ -11,7 +11,10 @@ export interface CoaRow {
   reason: string;
   needsReview?: boolean;
   specRaw: string | null;
-  resultRaw: string | null;
+  resultRaw: string | null; // ข้อความตามใบ ("200,00 – 250,00") — จอโชว์ผ่าน fmtResult ไม่โชว์ตรง ๆ
+  // ค่าผลที่เป็นช่วง (ใบที่มีคอลัมน์ Results Min|Max เช่น RB220) — null เมื่อผลเป็นค่าเดี่ยว
+  resultMin?: number | null;
+  resultMax?: number | null;
 }
 
 export interface CoaReport {

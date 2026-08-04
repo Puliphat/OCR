@@ -111,7 +111,30 @@ const kgpH65 = evaluateCoa({
   ],
 });
 
-for (const r of [inolob, teijin, txax, d2072, failing, rb220, intervals, kgpH65]) {
+// Mock: comma ที่กำกวมระหว่าง EU decimal กับ US thousands — ★ ไม่เปลี่ยนค่า/verdict แค่ยกธง ★
+//   corpus จริงเป็นทศนิยมทุกตัว (200,00 · 0,28 · 1,420) → เดาทิศไม่ได้ ต้องให้คนเทียบใบจริง
+const commas = evaluateCoa({
+  filename: "synthetic-comma.pdf",
+  items: [
+    { name: "กำกวม 1,500",        specRaw: "≤ 2,000",     result: "1,500" },
+    { name: "กำกวม ในช่วง spec",   specRaw: "0.920~1,420", result: "1.090" },
+    { name: "EU decimal 2 หลัก",   specRaw: "180-280",     resultMin: "200,00", resultMax: "250,00" },
+    // 2 ตัวคั่น = comma คือหลักพันชัดเจน → ต้องได้ 1494.8 (regression: เคยแตกเป็น [1.494, 80] เฉลี่ย 40.747)
+    { name: "2 ตัวคั่น ไม่กำกวม",    specRaw: "≤ 2000",      result: "1,494.80" },
+    { name: "2 ตัวคั่น ฝั่ง spec",   specRaw: "1,000.5-2,000.5", result: "1500.25" },
+    { name: "วันที่ ไม่ใช่หลักพัน",  specRaw: "≤ 10",        result: "07,2026" },
+    // ── magnitude rule: เกณฑ์ไม่กำกวม → ใช้สเกลของเกณฑ์ตัดสินสเกลของค่าผล (ตัดสินได้ = ไม่ต้องเตือน) ──
+    { name: "สเกลชี้หลักพัน",       specRaw: "1400-1600",   result: "1,500" },
+    { name: "สเกลชี้ทศนิยม",        specRaw: "≤ 2",         result: "1,500" },
+    // ★ ไม่ใช่ "เลือกอันที่ PASS" ★ — ทั้ง 1.2 และ 1200 หลุดเกณฑ์ กติกายังต้องให้ FAIL ที่เลขถูกสเกล
+    { name: "หลักพันแล้วยัง FAIL",   specRaw: "1400-1600",   result: "1,200" },
+    { name: "สเกลชี้หลักพัน (ge)",   specRaw: "≥ 1000",      result: "1,200" },
+    // เกณฑ์กำกวมเอง → ห้ามเลื่อนสเกลเกณฑ์เข้าหาค่าผล (ของหลุด spec จะลากเกณฑ์มาหาตัวเอง = PASS ปลอม)
+    { name: "เกณฑ์กำกวม ห้ามเดา",    specRaw: "1,400~1,600", result: "1.5" },
+  ],
+});
+
+for (const r of [inolob, teijin, txax, d2072, failing, rb220, intervals, kgpH65, commas]) {
   console.log(formatReport(r));
 }
 
@@ -150,3 +173,34 @@ for (const rep of [rb220, intervals, kgpH65]) {
   }
 }
 console.log(bad === 0 ? "\nINTERVAL FIXTURES: all match" : `\nINTERVAL FIXTURES: ${bad} MISMATCH`);
+
+// ── ambiguous-thousands: ต้องยกธงเฉพาะ comma+3หลักที่ไม่มีจุดในตัวเดียวกัน (status ต้องไม่เปลี่ยน) ──
+const expectFlag: Record<string, { flag: boolean; status: Status; value: number }> = {
+  "กำกวม 1,500":       { flag: true,  status: "PASS", value: 1.5 },
+  // 0.920 ในช่องเดียวกันพินสเกลให้ 1,420 = 1.42 → ไม่กำกวมแล้ว ห้ามเตือน (ใบจริง 1F1710)
+  "กำกวม ในช่วง spec":  { flag: false, status: "PASS", value: 1.09 },
+  "EU decimal 2 หลัก":  { flag: false, status: "PASS", value: 200 },
+  "2 ตัวคั่น ไม่กำกวม":  { flag: false, status: "PASS", value: 1494.8 },
+  "2 ตัวคั่น ฝั่ง spec": { flag: false, status: "PASS", value: 1500.25 },
+  "วันที่ ไม่ใช่หลักพัน": { flag: false, status: "PASS", value: 7.2026 },
+  "สเกลชี้หลักพัน":      { flag: false, status: "PASS", value: 1500 },
+  "สเกลชี้ทศนิยม":       { flag: false, status: "PASS", value: 1.5 },
+  "หลักพันแล้วยัง FAIL":  { flag: false, status: "FAIL", value: 1200 },
+  "สเกลชี้หลักพัน (ge)":  { flag: false, status: "PASS", value: 1200 },
+  "เกณฑ์กำกวม ห้ามเดา":   { flag: true,  status: "PASS", value: 1.5 },
+};
+let badFlag = 0;
+console.log("");
+for (const row of commas.rows) {
+  const want = expectFlag[row.name];
+  if (!want) continue;
+  const got = row.ambiguousThousands === true;
+  const ok = got === want.flag && row.status === want.status && row.result === want.value;
+  if (!ok) badFlag++;
+  console.log(
+    `${ok ? "✓" : "✗"} ${row.name.padEnd(22)} flag want=${String(want.flag).padEnd(5)} got=${String(got).padEnd(5)} status=${row.status} value want=${want.value} got=${row.result ?? "-"}`
+  );
+}
+console.log(
+  badFlag === 0 ? "COMMA FIXTURES: all match" : `COMMA FIXTURES: ${badFlag} MISMATCH`
+);
