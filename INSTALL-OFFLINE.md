@@ -104,13 +104,20 @@ Get-ChildItem C:\coa-setup -Recurse -File | Measure-Object Length -Sum |
 # ต้องได้ 86 ไฟล์ · 4.67 GB — ขาดไปแม้แต่ไฟล์เดียว = copy ไม่ครบ ให้รัน robocopy ซ้ำ
 ```
 
-เลขไม่ตรง → หาว่าโฟลเดอร์ไหนขาด (เทียบกับ 9 / 68 / 9 ในผังข้างบน) แล้ว robocopy เฉพาะตัวนั้นซ้ำ:
+เลขไม่ตรง → หาว่าโฟลเดอร์ไหนขาด แล้ว robocopy เฉพาะตัวนั้นซ้ำ:
 ```powershell
 Get-ChildItem C:\coa-setup -Directory | ForEach-Object {
   $m = Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum
   "{0,-20} {1,3} ไฟล์  {2,15:N0} bytes" -f $_.Name, $m.Count, $m.Sum }
-# ollama-offline  9 · 3,923,474,498 | ocr-offline 68 · 407,344,986 | coa-app-offline 9 · 679,199,981
 ```
+
+| โฟลเดอร์ | ไฟล์ | bytes |
+|---|---|---|
+| `ollama-offline` | 9 | 3,923,474,498 |
+| `ocr-offline` | 68 | 407,344,986 |
+| `coa-app-offline` | 9 | ~679 M (ไม่ fix — มีสำเนา `INSTALL-OFFLINE.md` อยู่ข้างใน ขยับทุกครั้งที่แก้เอกสาร) |
+
+**ยึด "จำนวนไฟล์" เป็นหลัก ไม่ใช่ byte** — 2 โฟลเดอร์แรกเป็นของนิ่ง byte ต้องตรงเป๊ะ
 ⚠️ ขาดใน `ollama-offline\models` แม้ไฟล์เดียว = `ollama list` ขึ้นตารางเปล่าโดยไม่บอกสาเหตุ — อย่าข้ามไปขั้น 2
 
 ---
