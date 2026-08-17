@@ -21,8 +21,11 @@
 | 2 | `ocr-offline\` | 388 MB | Python + RapidOCR + models (OCR สำหรับ scanned COA) |
 | 3 | `coa-app-offline\` | 648 MB | Node app: backend + frontend (มี node_modules ครบ) + **Node runtime zip** |
 
-รวม **~4.7 GB** · แถม `COA-Offline-Install-Guide.html` = คู่มือฉบับมีรูป เปิดออฟไลน์ได้
-(เนื้อหาเดียวกับไฟล์นี้ แต่ทำมาให้คนหน้างานทำตามทีละขั้น — แก้ที่นี่แล้วอย่าลืม re-build ตัว HTML)
+รวม **86 ไฟล์ · 4.67 GB** · เอกสารที่ต้องอ่านคือไฟล์นี้ไฟล์เดียว (สำเนาอยู่ใน `coa-app-offline\` ด้วย)
+
+> เคยมี `COA-Offline-Install-Guide.html` (คู่มือฉบับมีรูป) แถมมาในชุด — **เลิกทำแล้ว 17 ส.ค. 2026**
+> เพราะไม่มีตัว build ในโปรเจกต์ ต้องปั้นมือทุกรอบ แล้วมันค้างเป็นเนื้อหาเก่าทันทีที่แก้ไฟล์นี้
+> (รูปในนั้นเป็นหน้าจอแอป ไม่ใช่ขั้นตอนติดตั้ง — เปิดแอปถ่ายใหม่ได้)
 
 **เครื่อง server หน้างานต้องมี (prerequisite):**
 - Windows **x64** (native binary ใน bundle ผูก arch นี้)
@@ -71,10 +74,9 @@ npm -v       # ต้องขึ้นเลขเวอร์ชัน
 
 ```
 C:\coa-setup\
-├── ollama-offline\      3.74 GB
-├── ocr-offline\         388 MB
-├── coa-app-offline\     648 MB
-└── COA-Offline-Install-Guide.html
+├── ollama-offline\      3.74 GB    9 ไฟล์
+├── ocr-offline\         388 MB    68 ไฟล์
+└── coa-app-offline\     648 MB     9 ไฟล์
 ```
 
 ต้นทาง = **`C:\coa-setup\`** บนเครื่อง dev (ชื่อเดียวกันทั้งสองฝั่ง) — ย้ายออกจาก OneDrive แล้ว
@@ -99,8 +101,17 @@ robocopy "\\tsclient\C\coa-setup" C:\coa-setup /E /R:2 /W:5 /MT:8
 ```powershell
 Get-ChildItem C:\coa-setup -Recurse -File | Measure-Object Length -Sum |
   ForEach-Object { "$($_.Count) ไฟล์ · $([math]::Round($_.Sum/1GB,2)) GB" }
-# ต้องได้ 87 ไฟล์ · 4.67 GB — ขาดไปแม้แต่ไฟล์เดียว = copy ไม่ครบ ให้รัน robocopy ซ้ำ
+# ต้องได้ 86 ไฟล์ · 4.67 GB — ขาดไปแม้แต่ไฟล์เดียว = copy ไม่ครบ ให้รัน robocopy ซ้ำ
 ```
+
+เลขไม่ตรง → หาว่าโฟลเดอร์ไหนขาด (เทียบกับ 9 / 68 / 9 ในผังข้างบน) แล้ว robocopy เฉพาะตัวนั้นซ้ำ:
+```powershell
+Get-ChildItem C:\coa-setup -Directory | ForEach-Object {
+  $m = Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum
+  "{0,-20} {1,3} ไฟล์  {2,15:N0} bytes" -f $_.Name, $m.Count, $m.Sum }
+# ollama-offline  9 · 3,923,474,498 | ocr-offline 68 · 407,344,986 | coa-app-offline 9 · 679,199,981
+```
+⚠️ ขาดใน `ollama-offline\models` แม้ไฟล์เดียว = `ollama list` ขึ้นตารางเปล่าโดยไม่บอกสาเหตุ — อย่าข้ามไปขั้น 2
 
 ---
 
