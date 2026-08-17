@@ -8,12 +8,19 @@
 //   frontend/ : npm install && npm run build         (ตั้ง NEXT_PUBLIC_API_BASE_URL ใน .env.local ก่อน build)
 //   ocr-py/   : python -m venv venv && venv\Scripts\pip install -r requirements.txt
 //   firewall  : เปิด 3000 (FE) + 3001 (BE) ให้ LAN client เข้าถึง — 8765/11434 ไม่ต้องเปิด (localhost)
+//
+// ★ ทุก path ในไฟล์นี้ต้อง absolute ผ่าน __dirname ★
+// pm2 resolve `cwd` และ `interpreter` จาก cwd ของ "ตัว pm2 ตอนถูกเรียก" ไม่ใช่ที่เราสั่ง —
+// หน้างานติดตั้ง pm2 เป็น **Windows service** (cwd = C:\Windows\System32) → relative path ชี้ผิดที่ทั้งหมด.
+// __dirname = โฟลเดอร์ที่ ecosystem.config.js อยู่ → ย้าย deploy root ไปไหนก็ยังถูก
+const path = require("path");
+
 module.exports = {
   apps: [
     {
       // Express API (ts-node — ไม่มี build step). bind 0.0.0.0 default → LAN client เข้าได้ (เปิด firewall 3001)
       name: "coa-backend",
-      cwd: "./backend",
+      cwd: path.join(__dirname, "backend"),
       script: "node_modules/ts-node/dist/bin.js",
       args: "src/index.ts",
       env: {
@@ -28,10 +35,16 @@ module.exports = {
     {
       // RapidOCR Python daemon. เครื่องเดียวกับ backend → bind 127.0.0.1 พอ (ไม่ต้อง expose LAN)
       name: "ocr-daemon",
-      cwd: "./ocr-py",
+      cwd: path.join(__dirname, "ocr-py"),
       script: "ocr_server.py",
       args: "8765",
-      interpreter: "./venv/Scripts/python.exe",
+      // ★ absolute ★ — เขียน "./venv/..." แล้วตายด้วย
+      //   [PM2][ERROR] Error: Interpreter ./venv/Scripts/python.exe is NOT AVAILABLE in PATH.
+      // pythonw.exe (ไม่ใช่ python.exe) = ไม่จอง console → ไม่มีหน้าต่างดำโผล่บนเครื่อง server
+      // ทดสอบแล้วว่า log ยังเข้า pm2 ครบ (pm2 ต่อ pipe ให้ ไม่ได้พึ่ง console ของ process)
+      // ⚠️ แลกมาด้วย: ถ้า venv พัง pythonw ตายเงียบ — pm2 log ว่างทั้ง out/error ไม่มีเบาะแสเลย
+      //    ตอน debug ให้สลับเป็น python.exe ชั่วคราว error ถึงจะโผล่ (ดู INSTALL-OFFLINE.md §10)
+      interpreter: path.join(__dirname, "ocr-py", "venv", "Scripts", "pythonw.exe"),
       env: {
         OCR_BIND_HOST: "127.0.0.1",
         COA_OCR_MODEL_TYPE: "mobile",
@@ -42,7 +55,7 @@ module.exports = {
     {
       // Next.js (production). ต้อง `next build` ก่อน. bind 0.0.0.0 default → LAN client เข้าได้ (เปิด firewall 3000)
       name: "coa-frontend",
-      cwd: "./frontend",
+      cwd: path.join(__dirname, "frontend"),
       script: "node_modules/next/dist/bin/next",
       args: "start",
       env: {
