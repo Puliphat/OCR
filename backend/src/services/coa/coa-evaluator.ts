@@ -111,14 +111,14 @@ function pickThousandsReading(core: EvaluatedItem): "eu" | "us" | null {
   return pickScale(Math.abs(eu), anchor);
 }
 
-// Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
-// spec อ่านไม่ออก → SKIP "spec not parseable", result ไม่ใช่ตัวเลข → SKIP "result not numeric"
 // ข้อความ → กุญแจเทียบ (ตัดตัวพิมพ์/ช่องว่าง/เครื่องหมาย เก็บ latin+เลข+CJK) — สั้นกว่า 2 ตัว = เทียบไม่ได้
-function textKey(s: string | null): string {
+export function textKey(s: string | null): string {
   const k = (s ?? "").toLowerCase().replace(/[^a-z0-9぀-ヿ一-鿿]+/g, "");
   return k.length >= 2 ? k : "";
 }
 
+// Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
+// spec อ่านไม่ออก → SKIP "spec not parseable", result ไม่ใช่ตัวเลข → SKIP "result not numeric"
 function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
   const name = (item.name ?? "").trim() || "(unknown)";
   const unit = item.unit?.toString().trim() || null;

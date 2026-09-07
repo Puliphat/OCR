@@ -22,6 +22,9 @@ import { recoverAverageColumn } from "./avg-column-recovery";
 import { recoverSpecificationColumn, reconcileDupontSpecs } from "./spec-column-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
 import { realignTransposedLabels } from "./transposed-label-recovery";
+import { dropUngroundedSpecBounds } from "./spec-bound-grounding";
+import { recoverSpecPairs } from "./spec-pair-recovery";
+import { recoverSplitTextRows } from "./text-row-recovery";
 import { recoverSieveTableResults, recoverMissingSieveRows } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
 import {
@@ -555,6 +558,16 @@ async function runExtractionPass(
     raw.items = metaFilter.kept;
   }
 
+  // ตัดขอบเกณฑ์ที่ไม่ได้อยู่ในบรรทัดของแถวตัวเอง (LLM ข้ามช่องว่างแล้วยืมเลขของแถวถัดไป)
+  const boundFix = dropUngroundedSpecBounds(raw.items ?? [], text);
+  if (boundFix.fixed.length > 0) {
+    console.log(
+      `  [spec-bound] ตัดขอบที่ไม่อยู่ในแถว ${boundFix.fixed.length} รายการ: ${boundFix.fixed
+        .map((f) => `${f.name}(${f.from}→${f.to})`)
+        .join(", ")}`
+    );
+  }
+
   // กู้คืน spec ที่ LLM (โมเดลเล็ก) หล่นทิ้งบางรัน — เติมเฉพาะ row ที่ spec ว่าง ★ ไม่ทับของเดิม ★
   const rec = recoverSpecsFromOcr(raw.items ?? [], text);
   if (rec.recovered > 0) {
@@ -606,6 +619,16 @@ async function runExtractionPass(
     } catch (e) {
       console.warn(`  [header-direction] skipped:`, (e as Error).message);
     }
+  }
+
+  // เกณฑ์สองช่องที่ขีดกลางหายตอน OCR — อ่าน header ของใบว่าช่องไหนคือค่าผล ช่องท้ายที่เหลือคือเกณฑ์
+  const pairs = recoverSpecPairs(raw.items ?? [], text);
+  if (pairs.paired.length > 0) {
+    console.log(
+      `  [spec-pair] เติมขอบเกณฑ์ที่ขาด ${pairs.paired.length} รายการ: ${pairs.paired
+        .map((p) => `${p.name}(${p.from}→${p.to})`)
+        .join(", ")}`
+    );
   }
 
   // ★ Specification-column recovery (DuPont double Min/Max) ★ — runs LAST before eval so no later pass
@@ -746,6 +769,16 @@ async function runExtractionPass(
     }
   }
 
+  // แถวข้อความที่ OCR ตัดเกณฑ์กับผลคนละท่อน (色相 / APPEARANCE) — ใบเขียนไว้ทั้งสองช่องอยู่แล้ว
+  const textRows = recoverSplitTextRows(evaluated.rows, text);
+  if (textRows.recovered.length > 0) {
+    console.log(
+      `  [text-row] แถวข้อความตรงกับใบ ${textRows.recovered.length} รายการ: ${textRows.recovered
+        .map((t) => `${t.name}(${t.spec}/${t.result})`)
+        .join(", ")}`
+    );
+  }
+
   // ตารางแนวนอนที่ชื่อกับค่าเลื่อนกัน (TAIHEIYO CMF) — จับคู่ใหม่ตามตำแหน่งช่องใน OCR
   const realign = realignTransposedLabels(evaluated.rows, text);
   if (realign.realigned.length > 0) {
@@ -781,7 +814,8 @@ async function runExtractionPass(
     passGuard.downgraded.length > 0 ||
     colShift.downgraded.length > 0 ||
     sieveRec.recovered.length > 0 ||
-    boundaryPromoted > 0
+    boundaryPromoted > 0 ||
+    textRows.recovered.length > 0
   ) {
     evaluated.summary = summarize(evaluated.rows);
   }

@@ -166,12 +166,58 @@ function looksDecodable(text: string): boolean {
   return !hasDigits || cleanNumbers > 0;
 }
 
+// ★ ภาพคลุมทั้งหน้า = สแกนที่เครื่องฝัง OCR ไว้ ★ — text-layer แบบนี้เป็นผลของ OCR ตัวอื่น
+//   ไม่ใช่ข้อความจริงของเอกสาร วัดแล้ว: HG-PP#180 = 1.00 · ใบ text-layer จริงทุกใบในคลัง ≤ 0.017
+const FULL_PAGE_IMAGE = 0.8;
+
+function mulMatrix(a: number[], b: number[]): number[] {
+  return [
+    a[0] * b[0] + a[2] * b[1],
+    a[1] * b[0] + a[3] * b[1],
+    a[0] * b[2] + a[2] * b[3],
+    a[1] * b[2] + a[3] * b[3],
+    a[0] * b[4] + a[2] * b[5] + a[4],
+    a[1] * b[4] + a[3] * b[5] + a[5],
+  ];
+}
+
+// สัดส่วนพื้นที่ของภาพใหญ่สุดในหน้า เทียบกับขนาดหน้า (0 = ไม่มีภาพ, 1 = เต็มหน้า)
+async function largestImageCoverage(page: any, OPS: any): Promise<number> {
+  let ops;
+  try {
+    ops = await page.getOperatorList();
+  } catch {
+    return 0; // อ่าน operator ไม่ได้ → ถือว่าไม่มีภาพ คงพฤติกรรมเดิม
+  }
+  const [x0, y0, x1, y1] = page.view;
+  const pageArea = Math.abs((x1 - x0) * (y1 - y0)) || 1;
+  const paints = new Set(
+    [OPS?.paintImageXObject, OPS?.paintJpegXObject, OPS?.paintImageMaskXObject].filter(
+      (v) => v !== undefined
+    )
+  );
+  let m = [1, 0, 0, 1, 0, 0];
+  const stack: number[][] = [];
+  let best = 0;
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    if (fn === OPS?.save) stack.push(m.slice());
+    else if (fn === OPS?.restore) m = stack.pop() ?? [1, 0, 0, 1, 0, 0];
+    else if (fn === OPS?.transform) m = mulMatrix(m, ops.argsArray[i]);
+    else if (paints.has(fn)) {
+      // ภาพถูกวาดในกรอบ 1x1 แล้วถูกยืดด้วย matrix → พื้นที่จริง = |det|
+      best = Math.max(best, Math.abs(m[0] * m[3] - m[1] * m[2]) / pageArea);
+    }
+  }
+  return best;
+}
+
 // Per-page extraction — คืน array ของ {text, hasUsableText} ต่อหน้า + pageCount
-// hasUsableText ต่อหน้า: ยาว >= 300 chars และ decode ออกจริง (ดู looksDecodable)
+// hasUsableText ต่อหน้า: ยาว >= 300 chars, decode ออกจริง (looksDecodable) และไม่ใช่ภาพสแกนเต็มหน้า
 export async function extractPdfTextPerPage(
   filePath: string
 ): Promise<{ pages: { text: string; hasUsableText: boolean }[]; pageCount: number }> {
-  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const { getDocument, OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const data = new Uint8Array(fs.readFileSync(filePath));
   const doc = await getDocument({
     data,
@@ -186,10 +232,17 @@ export async function extractPdfTextPerPage(
   for (let p = 1; p <= doc.numPages; p++) {
     const pageLines = await extractPageLines(doc, p);
     const text = pageLines.filter((l) => l.trim()).join("\n");
-    pages.push({
-      text,
-      hasUsableText: text.replace(/\s/g, "").length >= 300 && looksDecodable(text),
-    });
+    let usable = text.replace(/\s/g, "").length >= 300 && looksDecodable(text);
+    if (usable) {
+      const cov = await largestImageCoverage(await doc.getPage(p), OPS);
+      if (cov >= FULL_PAGE_IMAGE) {
+        console.log(
+          `  [text-layer] page ${p}: ภาพคลุมหน้า ${(cov * 100).toFixed(0)}% — text-layer มาจากสแกนเนอร์ ใช้ OCR แทน`
+        );
+        usable = false;
+      }
+    }
+    pages.push({ text, hasUsableText: usable });
   }
 
   await doc.destroy();
