@@ -118,7 +118,7 @@ ocr-py/                         ★ Python OCR sidecar ★
 
 **3 ขั้น** (อยู่ใน `backend/src/services/coa/coa-pipeline.ts`):
 
-1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 100 chars หลัง strip whitespace) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → daemon ล่ม/อ่านไม่ออก = **โยน error ไม่มี fallback**
+1. **Text extraction** (`coa/pdf-text-extractor.ts`) — ลอง PDF text-layer ก่อน (เร็ว/ฟรี) — ถ้า `hasUsableText = false` (น้อยกว่า 300 chars หลัง strip whitespace **หรือ** `looksDecodable` ตก — text-layer ที่ decode ไม่ออก เช่น font ไม่มี ToUnicode ทำตัวเลขหายเกลี้ยง) → `pdf.service.convertToImage` (หน้า 1, scale = 2000/width) → **RapidOCR sidecar** (`coa/rapidocr.service.ts` ยิง daemon :8765, คืน tokens+box → จัดเป็นแถวด้วย `reconstructText`) → daemon ล่ม/อ่านไม่ออก = **โยน error ไม่มี fallback**
 2. **LLM parse** (`coa/ollama-coa.service.ts:parseCoa`) — Ollama qwen3:4b (`think:false`), `format: "json"`, `temperature: 0`, `keep_alive: 0` — prompt บังคับ shape `{ product, lotNo, items[{name,unit,method,specRaw,specMin,specMax,result}] }` และให้ใช้ Avg column ถ้ามี
 3. **Deterministic evaluator** (`coa/coa-evaluator.ts`) → status `PASS`/`FAIL`/`SKIP` ต่อ row พร้อม `reason` + summary
 

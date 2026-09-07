@@ -145,8 +145,29 @@ async function extractPageLines(doc: any, pageNum: number): Promise<string[]> {
   return pageLines;
 }
 
+// อักขระที่ยอมรับได้ใน COA: latin, CJK, สัญลักษณ์หน่วย/เกณฑ์ที่เจอจริง — นอกเหนือจากนี้ = decode เพี้ยน
+const READABLE_CHAR =
+  /[\x20-\x7E　-ヿ一-鿿＀-￯°±≤≥≦≧µμ®²³‘’“”–—′″]/;
+// numeric token ที่ฟอร์แมตถูก เช่น 42.7 · <0.01 · ±2 · 99%
+const CLEAN_NUMBER = /^[<>≤≥≦≧+±-]?\d+(?:[.,]\d+)?%?$/;
+
+// PDF บางใบฝัง font ที่ไม่มี ToUnicode map → pdfjs ถอดได้แต่ตัวอักษรเลื่อนรหัส และตัวเลข
+// หายเกลี้ยง (CERTIFICATE → &(57,),&$7(). ปล่อยผ่าน = LLM ได้ตารางไม่มีเลขแล้วแต่งค่าเอง
+function looksDecodable(text: string): boolean {
+  const dense = text.replace(/\s/g, "");
+  if (!dense) return false;
+
+  const unreadable = [...dense].filter((c) => !READABLE_CHAR.test(c)).length;
+  if (unreadable / dense.length > 0.1) return false;
+
+  // มีตัวเลขอยู่แต่ไม่มี token ไหนอ่านเป็นจำนวนได้เลย = glyph เลื่อน ไม่ใช่ใบที่ไม่มีค่าวัด
+  const hasDigits = /\d/.test(dense);
+  const cleanNumbers = text.split(/[\s|]+/).filter((t) => CLEAN_NUMBER.test(t)).length;
+  return !hasDigits || cleanNumbers > 0;
+}
+
 // Per-page extraction — คืน array ของ {text, hasUsableText} ต่อหน้า + pageCount
-// hasUsableText ต่อหน้า: text.replace(/\s/g,"").length >= 300
+// hasUsableText ต่อหน้า: ยาว >= 300 chars และ decode ออกจริง (ดู looksDecodable)
 export async function extractPdfTextPerPage(
   filePath: string
 ): Promise<{ pages: { text: string; hasUsableText: boolean }[]; pageCount: number }> {
@@ -167,7 +188,7 @@ export async function extractPdfTextPerPage(
     const text = pageLines.filter((l) => l.trim()).join("\n");
     pages.push({
       text,
-      hasUsableText: text.replace(/\s/g, "").length >= 300,
+      hasUsableText: text.replace(/\s/g, "").length >= 300 && looksDecodable(text),
     });
   }
 
@@ -178,7 +199,7 @@ export async function extractPdfTextPerPage(
 
 // อ่านทุกหน้า เรียงเป็น line ตาม Y-coordinate (Δy > 2 = ขึ้นบรรทัดใหม่)
 // ถ้าตรวจพบ ≥ 2 column anchors → join ด้วย " | " แทน space เดียว
-// hasUsableText = true เมื่อข้อความ (ไม่นับช่องว่าง) ≥ 300 chars
+// hasUsableText = true เมื่อข้อความ (ไม่นับช่องว่าง) ≥ 300 chars และ decode ออกจริง
 // (เดิม 100 chars — เจอ PR1950W มี text-layer 135 chars ผ่าน threshold แต่ LLM parse fail
 //  เพราะ text sparse ไม่มี row table จริง ขยับเป็น 300 ให้ fallback ไป OCR แทน)
 // backward-compat: เรียก extractPdfTextPerPage แล้ว join ทุกหน้า
@@ -187,7 +208,7 @@ export async function extractPdfText(filePath: string): Promise<PdfTextResult> {
   const text = pages.map((p) => p.text).filter(Boolean).join("\n");
   return {
     text,
-    hasUsableText: text.replace(/\s/g, "").length >= 300,
+    hasUsableText: text.replace(/\s/g, "").length >= 300 && looksDecodable(text),
     pageCount,
   };
 }

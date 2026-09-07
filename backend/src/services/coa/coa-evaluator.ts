@@ -511,8 +511,29 @@ export function summarize(rows: EvaluatedItem[]): CoaReport["summary"] {
 }
 
 // Evaluate ทั้งใบ — loop เรียก evaluateItem แล้วรวม summary
+// ใบที่ไม่มีคอลัมน์เกณฑ์เลย (เช่น Imerys TIMREX) โมเดลจะ copy ค่าผลมาเป็น spec → เทียบตัวเองผ่านหมด
+//   ตัดสินระดับใบ ไม่ใช่รายแถว — บางใบมีแถวที่ค่าตรงเกณฑ์พอดีโดยชอบธรรม (RI-015 Sb "<15")
+function suppressCopiedSpec(rows: EvaluatedItem[]): EvaluatedItem[] {
+  const copied = (r: EvaluatedItem) =>
+    !!r.specRaw && r.specRaw.replace(/\s/g, "") === r.resultRaw?.replace(/\s/g, "");
+  const comparable = rows.filter((r) => r.specRaw && r.resultRaw);
+  if (comparable.length < 3) return rows;
+  if (comparable.filter(copied).length / comparable.length < 0.6) return rows;
+
+  return rows.map((r) =>
+    r.status === "PASS" && copied(r)
+      ? {
+          ...r,
+          status: "SKIP" as Status,
+          reason: "ใบนี้ไม่มีคอลัมน์เกณฑ์ — ระบบเอาค่าผลมาเทียบกับตัวเอง ต้องตั้ง spec เอง",
+          needsReview: true,
+        }
+      : r
+  );
+}
+
 export function evaluateCoa(input: CoaInput): CoaReport {
-  const rows = (input.items ?? []).map(evaluateItem);
+  const rows = suppressCopiedSpec((input.items ?? []).map(evaluateItem));
   const summary = summarize(rows);
   return {
     filename: input.filename,
