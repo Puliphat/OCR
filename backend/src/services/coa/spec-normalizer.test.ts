@@ -22,6 +22,12 @@ const cases: [string, Expect][] = [
   ["≥ 50",           { op: "ge", value: 50 }],
   ["≧ 22.5",         { op: "ge", value: 22.5 }],
   ["99.2 Min.",      { op: "ge", value: 99.2 }],
+  // ใบญี่ปุ่นแนวตั้ง (TAIHEIYO CMF): เกณฑ์อยู่ซ้าย operator → "1≧ ผล" = ผลไม่เกิน 1 (ทิศกลับกับ "≧1")
+  ["1≧",             { op: "le", value: 1 }],
+  ["0.5≥",           { op: "le", value: 0.5 }],
+  ["0.5≦",           { op: "ge", value: 0.5 }],
+  ["94≦",            { op: "ge", value: 94 }],
+  ["1=",             null], // OCR อ่าน ≧ เป็น = → ทิศไม่รู้ ห้ามเดา ต้องปล่อย SKIP
   ["< 15",           { op: "lt", value: 15 }],
   ["> 50",           { op: "gt", value: 50 }],
   ["0",              { op: "eq", value: 0 }],

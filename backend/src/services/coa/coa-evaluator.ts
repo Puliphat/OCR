@@ -113,6 +113,12 @@ function pickThousandsReading(core: EvaluatedItem): "eu" | "us" | null {
 
 // Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
 // spec อ่านไม่ออก → SKIP "spec not parseable", result ไม่ใช่ตัวเลข → SKIP "result not numeric"
+// ข้อความ → กุญแจเทียบ (ตัดตัวพิมพ์/ช่องว่าง/เครื่องหมาย เก็บ latin+เลข+CJK) — สั้นกว่า 2 ตัว = เทียบไม่ได้
+function textKey(s: string | null): string {
+  const k = (s ?? "").toLowerCase().replace(/[^a-z0-9぀-ヿ一-鿿]+/g, "");
+  return k.length >= 2 ? k : "";
+}
+
 function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
   const name = (item.name ?? "").trim() || "(unknown)";
   const unit = item.unit?.toString().trim() || null;
@@ -136,6 +142,20 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
   };
 
   if (!spec) {
+    // ★ แถวข้อความล้วน (Appearance / 色相 / K2Ti6O13) ★ — ใบเขียนเกณฑ์กับผลเป็นคำเดียวกัน = ผ่านตามใบ
+    //   ไม่ตรงกัน → SKIP ไม่ใช่ FAIL เพราะ OCR ตัดข้อความคนละท่อนได้จริง (เคส TSC APPEARANCE)
+    const specText = textKey(base.specRaw);
+    if (!result && specText && specText === textKey(base.resultRaw)) {
+      return {
+        ...base,
+        min: null,
+        max: null,
+        result: null,
+        status: "PASS",
+        reason: `ข้อความตรงกับเกณฑ์บนใบ (${base.specRaw})`,
+        needsReview: false,
+      };
+    }
     return {
       ...base,
       min: null,

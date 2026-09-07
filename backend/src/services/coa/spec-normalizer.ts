@@ -140,6 +140,23 @@ function parseSpec(raw: unknown): ParsedSpec | null {
     if (m) return { op: "ge", value: toNum(m[1]), raw: original };
   }
 
+  // ★ operator ต่อท้ายเลข (ใบญี่ปุ่นเขียนแนวตั้ง เช่น "1≧" "0.5≧") ★ — เกณฑ์อยู่ซ้าย ผลอยู่ขวา
+  //   "0.5≧ ผล" = ผลไม่เกิน 0.5 → ทิศกลับกับ operator นำหน้า (ยืนยันกับใบ TAIHEIYO CMF)
+  {
+    const m = cleaned.match(new RegExp(`^(${NUM})\\s*(≥|≧|>=|≤|≦|<=|<|>)$`));
+    if (m) {
+      const value = toNum(m[1]);
+      const op = /^(≥|≧|>=)$/.test(m[2])
+        ? "le"
+        : /^(≤|≦|<=)$/.test(m[2])
+        ? "ge"
+        : m[2] === ">"
+        ? "lt"
+        : "gt";
+      return { op: op as ParsedSpec["op"], value, raw: original };
+    }
+  }
+
   // น้อยกว่าแท้ <
   {
     const m = cleaned.match(new RegExp(`^<\\s*(${NUM})$`));

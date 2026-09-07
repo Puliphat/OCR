@@ -21,6 +21,7 @@ import { recoverResultMinMax } from "./result-minmax-recovery";
 import { recoverAverageColumn } from "./avg-column-recovery";
 import { recoverSpecificationColumn, reconcileDupontSpecs } from "./spec-column-recovery";
 import { downgradeColumnShiftedResults } from "./column-shift-recovery";
+import { realignTransposedLabels } from "./transposed-label-recovery";
 import { recoverSieveTableResults, recoverMissingSieveRows } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
 import {
@@ -743,6 +744,16 @@ async function runExtractionPass(
         `  [boundary-promote] promote ${boundaryPromoted} SKIP→PASS (geometry-verified boundary-exact)`
       );
     }
+  }
+
+  // ตารางแนวนอนที่ชื่อกับค่าเลื่อนกัน (TAIHEIYO CMF) — จับคู่ใหม่ตามตำแหน่งช่องใน OCR
+  const realign = realignTransposedLabels(evaluated.rows, text);
+  if (realign.realigned.length > 0) {
+    console.log(
+      `  [transposed-label] จับคู่ชื่อ↔ค่าใหม่ ${realign.realigned.length} แถว: ${realign.realigned
+        .map((r) => `${r.name}(${r.from}→${r.to})`)
+        .join(", ")}`
+    );
   }
 
   // ★ result-recovery / avg-column override → ไม่ปักธงแล้ว (user decision 2026-08-03) ★

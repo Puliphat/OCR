@@ -32,7 +32,9 @@ export interface SpecRecoveryResult {
 
 // ดึง spec token จาก 1 บรรทัด OCR (คืน null ถ้าไม่เจอ)
 function specFromLine(line: string): string | null {
-  let s = line.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+  // ช่องท้ายที่ว่าง/ขีด ("… | ≥ 69.0 | -") บังไม่ให้เห็น spec ที่อยู่ช่องก่อนหน้า — ตัดทิ้งก่อน
+  let s = line.replace(/(?:\|\s*[-–—]?\s*)+$/, "");
+  s = s.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
   s = s.replace(JUDGMENT, "").trim(); // ตัด "Success/ผ่าน" ท้ายออกก่อน
   s = s.replace(/[^0-9A-Za-z%.~\-–—〜～∼≤≦≥≧<>=]+$/, "").trim(); // ตัด noise ท้าย (เก็บอักขระ spec ไว้)
   const m = s.match(SPEC_TAIL);
@@ -40,7 +42,11 @@ function specFromLine(line: string): string | null {
 }
 
 function hasNoSpec(it: RawCoaItem): boolean {
-  const blank = (v: unknown) => v == null || String(v).trim() === "";
+  // "-" คือช่องเกณฑ์ว่างบนใบ (Tribotecc เขียนแบบนี้เมื่อมีขอบเดียว) ไม่ใช่เกณฑ์ที่อ่านได้
+  const blank = (v: unknown) => {
+    const s = v == null ? "" : String(v).trim();
+    return s === "" || /^[-–—]+$/.test(s);
+  };
   return blank(it.specRaw) && blank(it.specMin) && blank(it.specMax);
 }
 

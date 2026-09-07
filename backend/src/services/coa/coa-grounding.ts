@@ -161,7 +161,8 @@ function isGrounded(
   ocrWords: Set<string>,
   ocrNoSpace: string,
   lineTokens: NumToken[][],
-  pipeBlocks: string[][]
+  pipeBlocks: string[][],
+  lineNorms: string[]
 ): boolean {
   // 1. name grounding — whole-word (latin) หรือ substring เฉพาะ token ยาว ≥5 (เผื่อไทย/ชื่อยาว)
   //    ไม่ substring token สั้น (3-4) กัน "tin" ไปแมตช์ "testing", "iron" แมตช์ "environment"
@@ -178,6 +179,17 @@ function isGrounded(
     ...numberTokens(item.specMin),
     ...numberTokens(item.specMax),
   ];
+  // ★ LLM ไม่คืน result (drift ที่เห็นจริงกับ CIIR1066 หน้า 1) ★ — เกณฑ์ยังอยู่ใน OCR ครบ
+  //   keep ไว้ให้ recovery เติม result ทีหลัง: ต้องเจอเกณฑ์ครบทุกค่าในบรรทัดเดียวที่มีชื่อรายการนำหน้า
+  if (!resultNums.length && specNums.length >= 2) {
+    const sig = nameSignal(item.name ?? "");
+    for (let i = 0; i < lineTokens.length; i++) {
+      if (!lineTokens[i]?.length) continue;
+      if (!specNums.every((n) => numberMatches(n, lineTokens[i]))) continue;
+      const norm = lineNorms[i] ?? "";
+      if (sig.length && sig.some((t) => norm.includes(t))) return true;
+    }
+  }
   if (!resultNums.length || !specNums.length) return false;
   for (const lt of lineTokens) {
     if (!lt.length) continue;
@@ -202,15 +214,19 @@ export function dropUngroundedItems(
     ocrText.toLowerCase().match(/[a-z]{3,}/g) ?? []
   );
   const ocrNoSpace = ocrText.toLowerCase().replace(/\s+/g, "");
-  // number token ต่อบรรทัด (co-location)
-  const lineTokens = ocrText.split(/\r?\n/).map(parseNumTokens);
+  // number token ต่อบรรทัด (co-location) + รูป normalize ของบรรทัดเดียวกัน (ใช้เช็คว่ามีชื่อรายการนำหน้า)
+  const lines = ocrText.split(/\r?\n/);
+  const lineTokens = lines.map(parseNumTokens);
+  const lineNorms = lines.map((l) =>
+    l.toLowerCase().replace(new RegExp(`[^a-z0-9${CJK}]+`, "g"), "")
+  );
   // pipe-block สำหรับ transposed grounding (path 3)
   const pipeBlocks = buildPipeBlocks(ocrText);
 
   const kept: RawCoaItem[] = [];
   const dropped: { name: string; reason: string }[] = [];
   for (const it of items) {
-    if (isGrounded(it, ocrWords, ocrNoSpace, lineTokens, pipeBlocks)) {
+    if (isGrounded(it, ocrWords, ocrNoSpace, lineTokens, pipeBlocks, lineNorms)) {
       kept.push(it);
     } else {
       dropped.push({
