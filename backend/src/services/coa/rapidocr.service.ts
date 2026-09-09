@@ -9,6 +9,12 @@ import * as os from "os";
 import * as path from "path";
 import { ImageProcessingService } from "../image-processing.service";
 
+// daemon จอง memory ไม่พอเลยอ่านซ้ำที่ภาพย่อ — ต้องเดินทางไปถึงจุดตัดสิน ไม่ใช่แค่ log
+export interface OcrDegraded {
+  maxSide: number;
+  reason: string;
+}
+
 export interface OcrToken {
   text: string;
   score: number;
@@ -24,7 +30,13 @@ export class RapidOcrService {
 
   // ยิงรูปไป daemon → tokens พร้อม box; null ถ้า daemon ล่ม (caller fall back)
   // hq=true → daemon ใช้ HQ engine (v5-server, lazy-load) สำหรับ scanned page ที่อ่านเพี้ยน
-  async ocrTokens(imagePath: string, hq = false): Promise<OcrToken[] | null> {
+  //   sink = ที่รับธง degraded (daemon อ่านซ้ำที่ภาพย่อ) — caller ตัวเดียวกันเรียกได้หลายรอบ
+  //   (rotation ยิง 3 มุม) ธงรอบไหนติดก็ถือว่าหน้านั้น degraded
+  async ocrTokens(
+    imagePath: string,
+    hq = false,
+    sink?: { degraded?: OcrDegraded }
+  ): Promise<OcrToken[] | null> {
     // ★ ส่ง image เป็น bytes (base64) เสมอ ★ — daemon อาจอยู่คนละเครื่อง (LAN deploy) →
     //   เอื้อมถึง disk ของ backend ไม่ได้. path ยังส่งไปด้วยเพื่อ log/error เท่านั้น
     //   (daemon เลือก b64 ก่อน, ไม่มี b64 ค่อย fall back อ่าน path = same-machine back-compat).
@@ -47,6 +59,15 @@ export class RapidOcrService {
       if (res.data?.error) {
         console.error("[rapidocr] daemon returned error:", res.data.error);
         return null;
+      }
+      // ผลยังใช้ได้แต่ความละเอียดครึ่งเดียวของที่ corpus validate ไว้ → ต้องบอก caller ไม่ใช่แค่ log
+      if (res.data?.degraded) {
+        const d: OcrDegraded = {
+          maxSide: res.data.degraded.max_side,
+          reason: String(res.data.degraded.reason ?? ""),
+        };
+        console.warn(`  [rapidocr] ⚠ อ่านซ้ำที่ภาพย่อ ${d.maxSide}px เพราะ OCR ล้มรอบแรก: ${d.reason}`);
+        if (sink) sink.degraded = d;
       }
       return (res.data?.tokens as OcrToken[]) ?? [];
     } catch (e: any) {
@@ -126,7 +147,8 @@ export class RapidOcrService {
   private async correctRotation(
     imagePath: string,
     tokens0: OcrToken[],
-    hq = false
+    hq = false,
+    sink?: { degraded?: OcrDegraded }
   ): Promise<{ tokens: OcrToken[]; angle: number }> {
     const s0 = this.orientationStats(tokens0);
     // gate แบบ conservative: ต้อง tall มากและเยอะกว่า wide ชัดเจน ถึงจะถือว่าหมุน
@@ -147,7 +169,7 @@ export class RapidOcrService {
         const buf = await proc.preprocess(imagePath, angle);
         tmpFile = path.join(os.tmpdir(), `rapidocr-rot-${base}-${angle}.png`);
         fs.writeFileSync(tmpFile, buf);
-        const toks = await this.ocrTokens(tmpFile, hq);
+        const toks = await this.ocrTokens(tmpFile, hq, sink);
         if (toks && toks.length) {
           const st = this.orientationStats(toks);
           candidates.push({ angle, toks, wide: st.wide, score: meanScore(toks) });
@@ -178,10 +200,14 @@ export class RapidOcrService {
 
   // post-rotation tokens (public — ใช้ทั้ง extractText และ dev harness เทียบ reconstruct)
   // hq=true → HQ engine (v5-server) ทั้ง OCR หลัก + รอบ rotation candidate
-  async getProcessedTokens(imagePath: string, hq = false): Promise<{ tokens: OcrToken[]; angle: number } | null> {
-    const toks = await this.ocrTokens(imagePath, hq);
+  async getProcessedTokens(
+    imagePath: string,
+    hq = false,
+    sink?: { degraded?: OcrDegraded }
+  ): Promise<{ tokens: OcrToken[]; angle: number } | null> {
+    const toks = await this.ocrTokens(imagePath, hq, sink);
     if (toks == null) return null;
-    return this.correctRotation(imagePath, toks, hq);
+    return this.correctRotation(imagePath, toks, hq, sink);
   }
 
   // convenience: รูป → text block; null ถ้า daemon ล่ม
@@ -196,8 +222,15 @@ export class RapidOcrService {
   async extractTextBoth(
     imagePath: string,
     hq = false
-  ): Promise<{ flat: string; grid: string; tokens: OcrToken[]; correctionAngle: number } | null> {
-    const result = await this.getProcessedTokens(imagePath, hq);
+  ): Promise<{
+    flat: string;
+    grid: string;
+    tokens: OcrToken[];
+    correctionAngle: number;
+    degraded?: OcrDegraded;
+  } | null> {
+    const sink: { degraded?: OcrDegraded } = {};
+    const result = await this.getProcessedTokens(imagePath, hq, sink);
     if (result == null) return null;
     const { tokens, angle } = result;
     return {
@@ -205,6 +238,7 @@ export class RapidOcrService {
       grid: this.reconstructTextGrid(tokens),
       tokens,
       correctionAngle: angle,
+      degraded: sink.degraded,
     };
   }
 

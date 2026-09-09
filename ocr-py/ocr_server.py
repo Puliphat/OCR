@@ -15,10 +15,13 @@
 #   override: COA_OCR_HQ_MODEL_TYPE (server default) · COA_OCR_HQ_VERSION (PP-OCRv5 default)
 import base64
 import json
+import gc
 import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import cv2
+import numpy as np
 from rapidocr import RapidOCR
 from rapidocr.utils.typings import ModelType, OCRVersion
 
@@ -35,6 +38,14 @@ engine = RapidOCR(params={
 # ThreadingHTTPServer keeps health-check/requests non-blocking, but engine() isn't
 # guaranteed thread-safe → serialize inference with a lock.
 _engine_lock = threading.Lock()
+
+# ภาพจะถูกย่อเหลือด้านยาวเท่านี้ตอน HQ retry หลังจอง memory ไม่ได้ (0 = ปิด retry)
+# ค่าพังต้องไม่ทำ daemon ตายตอน start — ไม่งั้นทั้งเครื่อง OCR ไม่ได้เลยเพราะพิมพ์ env ผิดตัวเดียว
+try:
+    RETRY_MAX_SIDE = int(os.environ.get("COA_OCR_RETRY_MAX_SIDE", "1400"))
+except ValueError:
+    print("[warn] COA_OCR_RETRY_MAX_SIDE ไม่ใช่ตัวเลข — ใช้ 1400", flush=True)
+    RETRY_MAX_SIDE = 1400
 
 # HQ engine — lazy-loaded สำหรับ scanned page ที่ default อ่าน spec/เลขเพี้ยน (เคส 4A LoI "%98"→"≤3.5%")
 _hq_engine = None
@@ -71,17 +82,67 @@ def resolve_image(req):
     return path
 
 
+def to_array(img):
+    # rapidocr รับ bytes/path ตรงๆ ได้ แต่ retry ต้องย่อภาพเอง → ต้องได้ ndarray ก่อน
+    if isinstance(img, (bytes, bytearray)):
+        return cv2.imdecode(np.frombuffer(img, np.uint8), cv2.IMREAD_COLOR)
+    return cv2.imread(img)
+
+
+def shrink(arr, max_side):
+    # คืน (ภาพย่อ, ตัวคูณกลับ) — คูณกลับเพื่อให้ box ที่ส่งออกอยู่ในพิกัดภาพเดิมเสมอ
+    # INTER_AREA = เฉลี่ยพื้นที่ ไม่ใช่สุ่มจุด — ย่อครึ่งแล้วเส้นตัวเลขบางไม่แหว่งจนอ่านเป็นเลขอื่น
+    h, w = arr.shape[:2]
+    if max(h, w) <= max_side:
+        return None, 1.0
+    r = max_side / max(h, w)
+    small = cv2.resize(arr, (max(1, int(w * r)), max(1, int(h * r))), interpolation=cv2.INTER_AREA)
+    return small, 1.0 / r
+
+
+def is_alloc_failure(e):
+    # ORT ห่อ std::bad_alloc ไว้หลาย wrapper (FAIL ตอนโหลด, RUNTIME_EXCEPTION ตอนรัน) → ดูที่ข้อความ
+    if isinstance(e, MemoryError):
+        return True
+    s = str(e).lower()
+    return "bad allocation" in s or "out of memory" in s or "failed to allocate" in s
+
+
 def run_ocr(img, hq=False):
     # img = raw bytes (decoded from image_b64) or a local file path (back-compat)
     eng = get_hq_engine() if hq else engine
+    scale = 1.0
+    degraded = None
     # ★ ใช้ _engine_lock เดียวเสมอ (ทั้ง default + hq) → inference ไม่ทับซ้อน ★
     with _engine_lock:
-        out = eng(img)
+        first_err = None
+        try:
+            out = eng(img)
+        except Exception as e:  # noqa: BLE001
+            # ★ retry เฉพาะ hq ★ — HQ เป็น challenger ที่มี best เป็นพื้น อ่านแย่ลงก็แพ้ไปเฉยๆ
+            #   ส่วน engine default คือแหล่งข้อมูลเดียวของหน้า ล้มแล้วต้องดังตาม OCR_DAEMON_DOWN
+            if not (hq and RETRY_MAX_SIDE > 0 and is_alloc_failure(e)):
+                raise
+            first_err = str(e).strip().splitlines()[-1][:200]
+        if first_err is not None:
+            # ออกนอก except ก่อนค่อยยิงใหม่ — traceback ค้างอยู่จะพา tensor ของรอบที่ล้มไว้ทั้งชุด
+            arr = to_array(img)
+            small, scale = shrink(arr, RETRY_MAX_SIDE) if arr is not None else (None, 1.0)
+            del arr
+            if small is None:
+                raise RuntimeError(first_err)
+            print(f"[retry] OCR ล้ม ({first_err}) → ลองใหม่ที่ {small.shape[1]}x{small.shape[0]}", flush=True)
+            gc.collect()
+            try:
+                out = eng(small)
+            except Exception as e2:  # noqa: BLE001
+                raise RuntimeError(f"{first_err} (retry ที่ {RETRY_MAX_SIDE}px ก็ล้ม: {e2})") from e2
+            degraded = {"max_side": RETRY_MAX_SIDE, "reason": first_err}
     toks = []
     if out is not None and out.boxes is not None and out.txts is not None:
         for box, text, score in zip(out.boxes, out.txts, out.scores):
-            xs = [float(p[0]) for p in box]
-            ys = [float(p[1]) for p in box]
+            xs = [float(p[0]) * scale for p in box]
+            ys = [float(p[1]) * scale for p in box]
             toks.append({
                 "text": text,
                 "score": float(score),
@@ -92,7 +153,10 @@ def run_ocr(img, hq=False):
                 "x2": max(xs),
             })
     elapse = getattr(out, "elapse", None) if out is not None else None
-    return {"tokens": toks, "elapse": elapse}
+    res = {"tokens": toks, "elapse": elapse}
+    if degraded:
+        res["degraded"] = degraded
+    return res
 
 
 class Handler(BaseHTTPRequestHandler):

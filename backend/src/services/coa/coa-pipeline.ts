@@ -1035,6 +1035,14 @@ async function processPage(
         if (gridBeatsFlat(hqBest, best)) {
           if (!hqBest.product && best.product) hqBest.product = best.product;
           if (!hqBest.lotNo && best.lotNo) hqBest.lotNo = best.lotNo;
+          // HQ ที่อ่านจากภาพย่อ = ครึ่งความละเอียดที่คลัง validate ไว้ และ preservesPasses จับคู่ด้วย
+          // ชื่อแถวไม่ดูค่า → เลขของแถวที่ PASS อยู่แล้วถูกเขียนทับเงียบได้ ปักธงทั้งหน้าให้คนตรวจ
+          if (hqOcr.degraded) {
+            for (const r of hqBest.rows) r.needsReview = true;
+            console.warn(
+              `  [hq-ocr] ⚠ HQ ชนะแต่มาจากภาพย่อ ${hqOcr.degraded.maxSide}px — ปักธงทั้ง ${hqBest.rows.length} แถวให้ตรวจ`
+            );
+          }
           console.log(
             `  [hq-ocr] ✓ HQ ชนะ ${passCount(best)}P→${passCount(hqBest)}P (0 FAIL, PASS เดิมครบ) — ใช้ HQ`
           );
@@ -1043,8 +1051,12 @@ async function processPage(
         console.log(
           `  [hq-ocr] ✗ HQ ${passCount(hqBest)}P ไม่ชนะ best ${passCount(best)}P ขาด — คง best`
         );
+      } else if (!hqOcr) {
+        // แยกจากเคสอ่านได้น้อย: null = daemon/engine ล้ม (เช่น ORT จอง memory ไม่ได้) →
+        // ใบนี้ไม่เคยถูก challenge จริง SKIP ที่เหลือจึงอาจกู้ได้ถ้าเครื่องว่างกว่านี้
+        console.warn(`  [hq-ocr] ✗ HQ engine ล้ม — คง best (ยังไม่ได้ challenge จริง, recall อาจหาย)`);
       } else {
-        console.warn(`  [hq-ocr] HQ OCR thin/failed — คง best`);
+        console.warn(`  [hq-ocr] HQ OCR thin — คง best`);
       }
     } catch (e) {
       console.warn(`  [hq-ocr] HQ challenger error — คง best:`, (e as Error).message);

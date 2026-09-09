@@ -67,6 +67,7 @@ OCR_BIND_HOST=0.0.0.0                    # (ฝั่ง daemon) 0.0.0.0 = ร�
 COA_OCR_MODEL_TYPE=mobile                # mobile (default) | server  — อ่านโดย ocr-py/ocr_server.py
 COA_OCR_VERSION=PP-OCRv4                 # PP-OCRv4 (default) | PP-OCRv5
 COA_OCR_HQ_PRELOAD=true                  # false = HQ engine กลับเป็น lazy-load (ประหยัด RAM, request hq แรกช้า)
+COA_OCR_RETRY_MAX_SIDE=1400              # HQ ล้มเพราะจอง memory ไม่ได้ → อ่านซ้ำที่ด้านยาวเท่านี้ (0 = ปิด). ผลที่ได้ = ครึ่งความละเอียดปกติ → ถ้าชนะ pipeline ปักธง needsReview ทั้งหน้า
 COA_OCR_HQ_SPECULATE=false               # true = ยิง HQ OCR ซ่อนใต้ LLM parse ของหน้าเดียวกัน (JIT ต่อหน้า) — เปิดเฉพาะ daemon คนละเครื่อง (LAN). เครื่องเดียวกันวัดแล้วช้าลง 329s→340s (HQ engine กิน CPU เบียด Ollama)
 OLLAMA_KEEP_WARM=true                    # false = ปิด warm ping (upload แรกหลัง idle เจอ ~37s model reload)
 PORT=3001

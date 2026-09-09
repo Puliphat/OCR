@@ -1361,7 +1361,8 @@ guard ใหม่ยิง **0 ครั้งใน corpus 17** — นับ�
   `<0.0` เอง (ของค้างเดิม). ต่างจากรันก่อนแก้ sieve 1 แถวที่ `TAIHEIYO` (5P→4P) **ไม่ใช่ผลของ sieve**
   (`sieve-recovery` ยิง 0 ครั้งทั้ง 2 รัน) แต่เพราะ **HQ engine ล่มกลางรัน**:
   `onnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] : 1 : FAIL : bad allocation`
-  → `[hq-ocr] HQ OCR thin/failed — คง best` → หยุดที่ grid 4P และ `Shot Content (wt%)` ได้ spec `1=`
+  → `[hq-ocr] HQ OCR thin/failed — คง best` (ROUND 31 แยกสตริงนี้เป็น `HQ engine ล้ม` กับ `HQ OCR thin`)
+  → หยุดที่ grid 4P และ `Shot Content (wt%)` ได้ spec `1=`
   (OCR อ่าน `≧` เป็น `=`) → **honest SKIP ค่าผล 0.37 ถูกต้อง** ไม่ใช่ deceptive
   ⚠️ ของใหม่ที่ต้องจำ: v5-server HQ engine กิน RAM จนล้มได้เมื่อรันไฟล์ติดกันยาว — ที่หน้างานถ้า HQ ล้ม
   ผลจะตกไปเป็น SKIP เงียบๆ (ปลอดภัย แต่ recall หาย) ยังไม่ได้ตามต่อในรอบนี้
@@ -1494,3 +1495,109 @@ fixture ใหม่ 5 ตัวถูกทุบทดสอบแล้วว
 
 ### ยังไม่ทำ
 A5 รวมชื่อแถวที่ OCR ตัด · A4 header-driven parser (จะได้ lot ของ RB220 มาด้วย) · HQ engine `bad allocation`
+
+---
+
+## ROUND 31 (2026-09-09) — HQ engine ล้ม `bad allocation` แล้ว recall หายเงียบ
+
+ของค้างจาก ROUND 29: รัน 10 ใบรวดเดียวแล้ว HQ engine (v5-server) ตายกลางทาง
+`onnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] : 1 : FAIL : bad allocation`
+→ `TAIHEIYO` ได้ 4P แทน 5P. ผลไม่ผิด (แถวที่หายเป็น honest SKIP) แต่ **หน้าเว็บกับ log แยกไม่ออก**
+ว่าเครื่องล้มหรือใบอ่านไม่ออกจริง เพราะ `[hq-ocr] HQ OCR thin/failed` เป็นข้อความเดียวกันทั้งสองกรณี
+
+### วัดก่อนเขียนโค้ด — 7 การทดลอง ตัดสมมติฐานทิ้ง 2 ข้อ
+
+เครื่องตอนวัด: RAM 15.1GB · 32 logical cores · commit ใช้ไปแล้ว 46.2/61.0GB · availPhys 0.5–2.2GB
+
+| # | ทำอะไร | ผล | สรุป |
+|---|---|---|---|
+| 1 | อ่าน counter ของ daemon ที่รันมา 2 วัน | `PM=1037MB` แต่ `PeakPM=3594MB` | spike แล้วคืน — **ไม่ใช่ leak** |
+| 2 | sweep ขนาดภาพ 1000→3509px | det input อิ่มที่ `1408x1984` ทุกค่า ≥2000 | `Global.max_side_len=2000` ครอบไว้แล้ว |
+| 3 | ยิงภาพเดิม 20 รอบติด | priv ไต่ +68MB/รอบ ถึง 3729MB แล้ว**ตกกลับ 2866** | sawtooth = heap ที่ reuse ได้ |
+| 4 | Job Object จำกัด commit แล้วยิง | `RUNTIME_EXCEPTION ... Concat node ... bad allocation` | commit หมด → ORT โยน bad_alloc |
+| 5 | จำกัด 900MB ตั้งแต่ตอนโหลดโมเดล | `Fail : 1 : FAIL : Load model ... failed:bad allocation` | **ล้มตอนโหลดได้ด้วย** |
+| 6 | `intra_op_num_threads` 32/16/8/4/2 | peak เท่ากันหมด (~1910MB) · sha ข้อความเท่ากันเป๊ะ · 2 threads ช้า 30s | **thread scratch ไม่ใช่ตัวขยาย — ตกไป** |
+| 7 | ข้อความ HQ ที่ 2828/2000/1600/1400/1200px | `Loss on Ignition` + `≤3.5%` ถูกทุกขนาด | ย่อภาพยังกู้เคส 4A ได้ |
+
+**root cause:** HQ engine กิน resident ~1.0GB + transient ~1.9GB = **peak private ~3.7GB**
+เครื่องที่ commit ตึงอยู่แล้วจะจองไม่ได้ → ORT โยน `bad allocation` ได้ทั้งตอนโหลดโมเดลและตอน run
+
+★ exp 5 ฆ่าทางแก้ที่ดูสมเหตุสมผลที่สุด ★ "ปล่อย engine แล้วโหลดใหม่" = โยนของอุ่นทิ้งแล้วขอก้อนใหญ่กว่าเดิม
+ตอนที่ memory กำลังตึง — **ล้มซ้ำง่ายกว่า retry เฉยๆ**
+
+### หน้าต่างที่ fallback ช่วยได้จริง (Job Object cap, วัดต่อเนื่อง)
+
+| cap | full-res 1414x2000 | retry 989x1400 |
+|---|---|---|
+| 2600–2800MB | รอด | (ไม่ต้องใช้) |
+| 1800–2400MB | **ตาย** | **รอด + อ่าน `≤3.5%` ถูก** |
+| ≤1600MB | ตาย | ตาย |
+
+= ย่อภาพซื้อ headroom ได้ ~800MB
+
+### สิ่งที่แก้
+- **`ocr-py/ocr_server.py`** — OCR ล้ม → ย่อภาพเหลือด้านยาว `COA_OCR_RETRY_MAX_SIDE` (default 1400) แล้วยิงใหม่
+  ด้วย engine เดิม → **คูณ box กลับ** ให้พิกัดที่ส่งออกอยู่ในภาพต้นฉบับเสมอ → แนบ `degraded` ใน response
+- **`rapidocr.service.ts`** — ส่ง `degraded` ขึ้นไปทาง sink (rotation ยิง 3 มุม ธงรอบไหนติดก็นับ) ออกที่ `extractTextBoth`
+- **`coa-pipeline.ts`** — แยก `[hq-ocr] ✗ HQ engine ล้ม` ออกจาก `HQ OCR thin` · HQ ที่ degraded ชนะได้
+  แต่**ปักธง `needsReview` ทั้งหน้า**
+
+### opus-reviewer จับ 2 blocker (แก้ครบก่อน commit)
+1. **retry ไปโดน engine default ด้วย** — `try/except` ไม่ได้ดู `hq`. HQ มี `best` เป็นพื้น (อ่านแย่ลงก็แพ้ไปเฉยๆ)
+   แต่ engine default **คือแหล่งข้อมูลเดียวของหน้า** — ล้มแล้วต้องดังตาม `OCR_DAEMON_DOWN` ไม่ใช่เงียบๆ
+   อ่านครึ่งความละเอียด. เป็นเหตุผลเดียวกับที่ถอด Tesseract ออกใน ROUND 23
+   → retry เฉพาะ `hq` **และ** เฉพาะ error ที่เป็น allocation จริง (`is_alloc_failure`)
+2. **`degraded` ไม่เคยไปถึงจุดตัดสิน** — มีแค่ `console.warn`. `preservesPasses` จับคู่ PASS เดิม
+   **ด้วยชื่อแถว ไม่ดูค่า** → HQ ที่อ่านจากภาพย่อเขียนทับเลขของแถวที่ PASS อยู่แล้วเป็นเลขอื่นที่ยังอยู่ในเกณฑ์
+   แล้วกู้ PASS ใหม่ได้ 1 แถว = ชนะ `gridBeatsFlat` แบบเขียวสะอาด. ทาง grid-spatial ปักธง amber
+   ทุกแถวที่พิสูจน์ column ไม่ได้ แต่ทาง HQ ไม่เคยปักเลย
+   → เลือก **ปักธงทั้งหน้า ไม่ใช่ปฏิเสธ challenger** (ปฏิเสธ = retry ไม่ได้ recall กลับมาเลย) ตาม precedent ของ grid
+
+ข้อรองที่แก้ด้วย: ย้าย retry ออกนอกบล็อก `except` (traceback ที่ค้าง pin tensor ของรอบที่ล้มไว้ทั้งชุด —
+reviewer วัดได้ 5/5 objects ยังไม่ถูกปล่อย) · retry ล้มซ้ำแล้วยังเก็บ**ต้นเหตุแรก**ไว้ในข้อความ ·
+`cv2.INTER_AREA` แทน INTER_LINEAR (ย่อครึ่งแล้วเส้นเลขบางไม่แหว่ง) · env พิมพ์ผิดไม่ทำ daemon ตายตอน start
+
+### gate
+| | PASS | FAIL | SKIP | rows |
+|---|---|---|---|---|
+| ROUND 30 (สองสถานะที่รู้จัก) | 128 / 129 | 0 | 10 / 11 | 138 / 140 |
+| **ROUND 31 รอบสุดท้าย** | **129** | **0** | **11** | **140** |
+
+รอบสุดท้าย **byte-identical กับ `my_r30-final` ทุกบรรทัด** · รอบก่อนแก้ blocker ได้ 128P/138 ซึ่งต่างจากรอบนี้
+**เฉพาะ `1F1710` p4** (13P↔14P) = ตัวแกว่งเดิมตั้งแต่ ROUND 16 · 10 ใบหน้างาน **76P/1F/24S** เท่า baseline
+(`1F` = `Kemolit` ที่ใบพิมพ์เกณฑ์ `<0.0` เอง) · `npx tsc -p .` = 0 · unit **19 suite** ผ่าน
+· **`[retry]` ยิง 0 ครั้งทั้งสองชุด** = path ปกติไม่ถูกแตะ (ตามที่ควรเป็น — retry เป็น fallback หลัง bad_alloc เท่านั้น)
+
+gate ตัวจริงของรอบนี้ไม่ใช่ corpus (corpus ยิง HQ challenger แค่ 4 หน้า และ **path bad_alloc ไม่ยิงเลยตอน RAM ปกติ**)
+แต่คือ repro ใต้ Job Object cap: `hq`+alloc → retry คืน 41 tokens เท่า baseline, box span ต่าง 0.1% ·
+`default`+alloc → raise (ไม่ retry) · `hq`+error อื่น → raise
+
+### รอยต่อที่รู้ตัว (ยังไม่แก้)
+- ภาพย่อ 1400px = **1.40 Mpx เทียบกับ 2.79 Mpx ที่คลัง validate ไว้ = ครึ่งเดียว** และหลักฐานว่าอ่านถูก
+  มาจากใบเดียว (4A LoI). ธง `needsReview` ทั้งหน้าคือราคาที่จ่ายให้ความไม่แน่นอนนี้
+- `to_array` ใช้ `cv2.imdecode` ส่วนรอบแรก rapidocr ใช้ PIL → EXIF กับ RGBA คนละทาง. กระทบเฉพาะ
+  JPG/PNG ที่ผู้ใช้อัปตรง (PDF ที่ pdfjs render ไม่มี EXIF) และ path นั้นไม่เข้า `buildScannedGrid`
+- `_engine_lock` ตอนนี้ครอบ 2 inference — หน้าหมุนที่ล้มทุกมุมจะถือ lock เดียวยาว 6 รอบ
+- `correctRotation` โหวตมุมด้วยจำนวน token แนวกว้าง ถ้ามุมหนึ่ง degraded (token น้อยลงตามพิกเซล)
+  การโหวตไม่ใช่ apples-to-apples. ไม่ใช่ regression (เดิมมุมที่ล้ม = `null` ถูกตัดทิ้งทั้งมุม) แต่เป็นความไม่สมมาตรใหม่
+- **daemon เก่าค้างอยู่ตรวจไม่ได้** — restart backend อย่างเดียวแล้วลืม restart `npm run ocr:daemon` จะได้
+  `ocr_server.py` ตัวเก่าที่ไม่มี field `degraded` เลย ซึ่งฝั่ง TS อ่านว่า "ไม่ degraded" ไม่ใช่ "ไม่รู้"
+  (footgun เดียวกับตอนเพิ่ม flag `hq` ใน 743df04) — ยังไม่มี version handshake ระหว่าง backend กับ daemon
+
+### ตรวจ end-to-end ผ่าน HTTP จริง (advisor จับได้ว่าการพิสูจน์ก่อนหน้าเรียก `run_ocr()` ในโปรเซสล้วน)
+ยิง daemon ตัวจริงบนพอร์ตแยกใต้ Job Object cap 2400MB แล้วให้ `RapidOcrService` ตัวจริงคุยด้วย
+(`_validate/_e2e-degraded.ts`) — ถ้า python กับ TS สะกด field คนละแบบ (`max_side` vs `maxSide`)
+จะเงียบสนิทเพราะ `res.data` เป็น `any` และ `tsc` มองไม่เห็น:
+- retry สำเร็จ → TS ได้ `degraded={"maxSide":1400,…}` + 41 tokens ครบ
+- `RETRY_MAX_SIDE` ใหญ่กว่าภาพ (`small is None`) → raise → HTTP 500 → `extractTextBoth` คืน `null`
+  → เข้าสาขา `[hq-ocr] ✗ HQ engine ล้ม` ตามที่ออกแบบ
+
+### ค้างให้ user เคาะ (ไม่แก้เอง — pre-existing ตั้งแต่ 743df04 ไม่ใช่ของรอบนี้)
+1. `preservesPasses` (`coa-pipeline.ts:330-345`) **value-blind กับแถวที่ PASS อยู่แล้ว** — จับคู่ด้วยชื่อก่อน
+   → challenger ตัวไหนก็ตาม (grid หรือ HQ, ความละเอียดใดก็ได้) เขียนทับเลขของแถวที่ผ่านอยู่แล้ว
+   เป็นเลขอื่นที่ยังอยู่ในเกณฑ์ได้ โดยยังนับว่า "PASS เดิมครบ"
+2. HQ win path **ไม่ปัก `needsReview` เลย** ขณะที่ grid win path ปัก amber ทุกแถวที่พิสูจน์ไม่ได้
+   → HQ challenger มีผิวสัมผัส deceptive-PASS ที่ grid ไม่มี. ROUND 31 ปิดเฉพาะกรณี degraded
+
+### ยังไม่ทำ
+A5 รวมชื่อแถวที่ OCR ตัด · A4 header-driven parser (จะได้ lot ของ RB220 มาด้วย)
