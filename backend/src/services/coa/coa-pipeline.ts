@@ -9,6 +9,7 @@ import { RapidOcrService, OcrToken } from "./rapidocr.service";
 import { buildScannedGrid, VectorGeom } from "./scanned-grid-builder";
 import { evaluateCoa, summarize, CoaReport, EvaluatedItem } from "./coa-evaluator";
 import { extractPdfText, extractPdfTextPerPage } from "./pdf-text-extractor";
+import { recoverProductLot } from "./product-lot-recovery";
 import { extractPdfGridPerPage } from "./pdf-grid-extractor";
 import { parseStructuralGrid, GridOrient } from "./parse-structural-grid";
 import {
@@ -140,7 +141,7 @@ async function ocrImage(
 // Extract text per page — คืน array [{text, engine, page}] หนึ่งตัวต่อหน้า
 // image file (png/jpg) → คืน 1 entry, page=1
 // pdf → ลอง text-layer ต่อหน้า; หน้าที่ไม่มี usable text → render + OCR
-async function extractTextPerPage(
+export async function extractTextPerPage(
   filePath: string,
   onProgress?: ProgressFn
 ): Promise<PageExtract[]> {
@@ -1078,9 +1079,18 @@ export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn):
       hqPrefetch.catch(() => {}); // กัน unhandled rejection ตอนหน้านั้นไม่ได้ใช้ HQ
     }
     onProgress?.({ stage: "parse", page: pg.page, pages: pages.length });
-    reports.push(
-      await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress)
-    );
+    const report = await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress);
+    // ★ product/lot จากป้ายบนใบ ★ — ทำหลังเลือก candidate เสร็จ ให้หัวรายงานมีเจ้าของเดียว ไม่ขึ้นกับว่า
+    //   flat/grid/HQ ตัวไหนชนะ. ไม่มีป้าย = null (LLM เดาชื่อลูกค้ามาใส่บ่อย ดู product-lot-recovery.ts)
+    const header = recoverProductLot(pg.text);
+    if (header.product !== report.product || header.lotNo !== report.lotNo) {
+      console.log(
+        `  [header] product ${report.product ?? "-"} → ${header.product ?? "-"} · lot ${report.lotNo ?? "-"} → ${header.lotNo ?? "-"}`
+      );
+    }
+    report.product = header.product;
+    report.lotNo = header.lotNo;
+    reports.push(report);
   }
   onProgress?.({ stage: "eval" });
 

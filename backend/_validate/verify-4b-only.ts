@@ -49,6 +49,7 @@ async function main() {
         const rs: EvaluatedItem[] = report.rows;
         const pageLabel = reports.length > 1 ? ` [page ${report.page ?? "?"}]` : "";
         console.log(`\n# ${file}${pageLabel}  (engine=${report.debug?.ocrEngine})  ${vc(rs)}  [${(ms / 1000).toFixed(1)}s]`);
+        console.log(`  header: product=${report.product ?? "-"} · lot=${report.lotNo ?? "-"}`);
         for (const r of rs) {
           console.log(rowLine(r));
           rows++;
