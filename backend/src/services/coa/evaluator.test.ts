@@ -204,3 +204,60 @@ for (const row of commas.rows) {
 console.log(
   badFlag === 0 ? "COMMA FIXTURES: all match" : `COMMA FIXTURES: ${badFlag} MISMATCH`
 );
+
+// ── boundary-exact ขอบเดียว (ROUND 29) — ค่าผลตรงขอบของเกณฑ์ที่บอกทิศเอง = อาจเป็นช่องเดียวกันที่ถูกยกมาซ้ำ
+//    แต่ทิศที่เดาจากคอลัมน์ (เลขเปล่าใน Min/Max) ห้ามโดน — ใบจริงมีทั้งช่องเกณฑ์และช่องผลแยกกัน
+const oneSidedBoundary = evaluateCoa({
+  filename: "synthetic-one-sided-boundary.pdf",
+  items: [
+    // TAIHEIYO CMF: LLM ยกช่อง "0.5≧" ไปเป็นค่าผลด้วย → เคยได้ PASS ด้วยเลขที่ไม่มีบนใบ (ใบเขียน 0.37)
+    { name: "Shot ยกช่องเกณฑ์มาเป็นผล", specRaw: "0.5≥", result: "0.5" },
+    { name: "Shot ค่าจริงบนใบ",          specRaw: "1≥",   result: "0.37" },
+    { name: "Moisture ค่าจริงบนใบ",      specRaw: "0.5≥", result: "0.10" },
+    { name: "≤ ตรงขอบ",                 specRaw: "≦ 0.2", result: "0.2" },
+    { name: "≤ ไม่ตรงขอบ",               specRaw: "≦ 0.2", result: "0.12" },
+    { name: "Min. ตรงขอบ",              specRaw: "94.00 Min.", result: "94.00" },
+    { name: "≥ ที่ตกจริง ยัง FAIL",       specRaw: "≥ 50",  result: "40" },
+    // Residue on sieve(1mm) ในคลัง: เลขเปล่าในคอลัมน์ Max/Min → ทิศมาจากคอลัมน์ ห้าม downgrade
+    { name: "เลขเปล่าคอลัมน์ Max",       specMax: "0", result: "0" },
+    { name: "เลขเปล่าคอลัมน์ Min",       specMin: "0", result: "0" },
+    // qwen3 ชอบเติมทั้ง specRaw และ specMin/specMax พร้อมกัน — ช่องที่มันเลือกเติมเป็นตัวชี้ขาดว่ายกเว้นไหม
+    { name: "specRaw เลขเปล่า + คอลัมน์ Max", specRaw: "0.1", specMax: "0.1", result: "0.1" },
+  ],
+});
+
+const expectBoundary: Record<string, Status> = {
+  "Shot ยกช่องเกณฑ์มาเป็นผล": "SKIP",
+  "Shot ค่าจริงบนใบ": "PASS",
+  "Moisture ค่าจริงบนใบ": "PASS",
+  "≤ ตรงขอบ": "SKIP",
+  "≤ ไม่ตรงขอบ": "PASS",
+  "Min. ตรงขอบ": "SKIP",
+  "≥ ที่ตกจริง ยัง FAIL": "FAIL",
+  "เลขเปล่าคอลัมน์ Max": "PASS",
+  "เลขเปล่าคอลัมน์ Min": "PASS",
+  "specRaw เลขเปล่า + คอลัมน์ Max": "PASS",
+};
+let badBoundary = 0;
+console.log("");
+for (const row of oneSidedBoundary.rows) {
+  const want = expectBoundary[row.name];
+  if (!want) continue;
+  const ok = row.status === want;
+  if (!ok) badBoundary++;
+  console.log(
+    `${ok ? "✓" : "✗"} ${row.name.padEnd(26)} want=${want.padEnd(4)} got=${row.status.padEnd(4)} min=${row.min ?? "-"} max=${row.max ?? "-"} result=${row.result ?? "-"}`
+  );
+}
+console.log(
+  badBoundary === 0
+    ? "ONE-SIDED BOUNDARY FIXTURES: all match"
+    : `ONE-SIDED BOUNDARY FIXTURES: ${badBoundary} MISMATCH`
+);
+
+// ให้ suite นี้ตกด้วย exit code เหมือนอีก 18 ตัว — เดิมพิมพ์ MISMATCH แล้ว exit 0 (gate มองไม่เห็น)
+const totalBad = bad + badFlag + badBoundary;
+if (totalBad > 0) {
+  console.log(`\nEVALUATOR FIXTURES: ${totalBad} MISMATCH`);
+  process.exit(1);
+}

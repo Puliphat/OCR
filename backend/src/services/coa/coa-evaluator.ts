@@ -247,7 +247,16 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
   //   ทำให้ result ตกในช่วงของตัวเองเสมอ → PASS ปลอม 100% ซึ่งซ่อนของที่อาจ OOS = บาปหนักสุดของ QA
   // สัญญาณ: spec เป็น between แล้ว result ตรงกับขอบเป๊ะ → ดาวน์เกรดเป็น SKIP ให้คนตรวจ
   // ปลอดภัย: เคสนี้เป็น would-be-PASS เท่านั้น (FAIL จริง result อยู่นอกช่วง ไม่มีทาง == ขอบ) → ไม่ซ่อน FAIL
-  if (pass && spec.op === "between" && (r === spec.min || r === spec.max)) {
+  // ขอบเดียว (≤/≥/Max./Min.) ที่ค่าผลตรงขอบเป๊ะ = ลายนิ้วมือเดียวกัน — TAIHEIYO CMF ยกช่อง "0.5≧"
+  // ไปเป็นค่าผล 0.5 ด้วย. เว้นทิศที่เดาจากคอลัมน์ (เลขเปล่า) — ใบนั้นเกณฑ์กับผลเป็นคนละช่องจริง
+  const boundaryExact =
+    spec.op === "between"
+      ? r === spec.min || r === spec.max
+      : (spec.op === "le" || spec.op === "ge") &&
+        !spec.dirFromColumn &&
+        r === spec.value;
+
+  if (pass && boundaryExact) {
     return {
       ...base,
       min,

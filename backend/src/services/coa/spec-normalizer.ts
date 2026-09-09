@@ -17,6 +17,8 @@ export interface ParsedSpec {
   max?: number;
   value?: number;
   raw: string;
+  // ทิศมาจากตำแหน่งคอลัมน์ (Min/Max) ไม่ใช่ operator ในช่อง — แปลว่าเกณฑ์กับผลเป็นคนละช่องบนใบจริง
+  dirFromColumn?: true;
 }
 
 // regex ทุกตัวที่นี่ anchor ที่ $ — pattern ต้องกิน token ทั้งตัว ("1,494.80") ไม่งั้น match ไม่ติด
@@ -219,11 +221,17 @@ export function normalizeSpecFromCandidate(c: SpecCandidate): ParsedSpec | null 
   //   เฉพาะ bare number (op "eq") เท่านั้นที่ใช้ทิศตาม column: min col → ge, max col → le
   if (minPresent && !maxPresent) {
     const p = normalizeSpec(c.min);
-    if (p) return p.op === "eq" ? { op: "ge", value: p.value, raw: String(c.min) } : p;
+    if (p)
+      return p.op === "eq"
+        ? { op: "ge", value: p.value, raw: String(c.min), dirFromColumn: true }
+        : p;
   }
   if (maxPresent && !minPresent) {
     const p = normalizeSpec(c.max);
-    if (p) return p.op === "eq" ? { op: "le", value: p.value, raw: String(c.max) } : p;
+    if (p)
+      return p.op === "eq"
+        ? { op: "le", value: p.value, raw: String(c.max), dirFromColumn: true }
+        : p;
   }
   if (c.specRaw) return normalizeSpec(c.specRaw);
   return null;

@@ -1286,3 +1286,96 @@ guard ใหม่ทั้ง 3 ตัว **ยิง 0 ครั้งทั�
 ที่มา: trailing `≧` ของ ROUND 27 ทำให้ `0.5≥` parse ได้ ซึ่งเดิม parse ไม่ออกเลยจบเป็น SKIP
 ทางแก้ที่เสนอ: รวมแถวที่ชื่อถูก OCR ตัด (Fable ข้อ A5) — แก้ที่รากมากกว่าเพิ่ม guard รายแถว
 ซึ่ง ROUND 26 พิสูจน์แล้วว่าทำคลังตก (125→121P)
+
+## ROUND 29 (2026-09-09) — PASS ที่นั่งตรงขอบของเกณฑ์ขอบเดียว
+
+ปิดของค้างจาก ROUND 28: `TAIHEIYO CMF` รอบที่ตกได้ **PASS ด้วยค่าผล `0.5` ที่ไม่มีบนใบ** (ใบเขียน 0.37)
+
+### สิ่งที่ไม่ใช่ต้นเหตุ (ตัดออกก่อนแก้)
+บันทึก ROUND 28 เดาไว้ว่าเป็น "LLM ตัดชื่อ `Shot Content (wt%)` เป็น 2 แถว" แล้วเสนอให้รวมชื่อ (Fable A5)
+เปิด JSON ของรอบที่ตกจริง (`run3`) แล้วไม่ใช่แค่ชื่อขาด — **ทั้งบล็อก Analysis เลื่อนยกแถว**:
+
+| ชื่อแถวที่ LLM คาย | spec | result |
+|---|---|---|
+| `Bulk Density` | `Spec` | 0.34 |
+| `Analysis` | 0.37 | 0.37 |
+| `Moisture` | 0.10 | 0.10 |
+| `Shot` | `0.5≥` | **0.5** |
+| `Content` | `1=` | 1 |
+
+คำว่า `Spec` กับ `Analysis` กลายเป็น**ชื่อแถว** และ 4 แถวท้ายเอา token เดียวกันใส่ทั้งช่องเกณฑ์และช่องผล
+→ รวม `Shot`+`Content` เป็นแถวเดียวก็ยังได้ (spec,result) ที่ขัดกัน 2 คู่ กู้ `1≧`/`0.37` ไม่ได้อยู่ดี
+**A5 เป็นเรื่องจำนวนแถว/การแสดงผล ไม่ใช่ตัวปิด deceptive PASS** — ไม่ทำในรอบนี้
+
+### ต้นเหตุจริง — guard เดิมครอบแค่ช่วง ไม่ครอบขอบเดียว
+`coa-evaluator.ts` มี anti-fabricated-PASS guard มาตั้งแต่ต้น: would-be-PASS ที่ค่าผลตรงขอบเป๊ะ = ลายนิ้วมือของ
+"โมเดลยกช่องเดียวไปใส่สองคอลัมน์" → SKIP. แต่เงื่อนไขเขียนไว้ `spec.op === "between"` เท่านั้น
+`Shot` เป็น `le 0.5` (ขอบเดียว) ผล 0.5 → หลุด guard → PASS
+
+### สิ่งที่แก้
+1. `coa-evaluator.ts` — `spec.op` เป็น `le`/`ge` แล้วค่าผลตรงขอบเป๊ะ → เข้า guard เดียวกัน **ยกเว้นเกณฑ์ที่ทิศ
+   มาจากตำแหน่งคอลัมน์** (`spec-normalizer.ts` ปักธง `dirFromColumn` ให้เลขเปล่าใน Min/Max)
+2. `sieve-table-recovery.ts` — ตัวกู้แถว sieve เช็ค `within` แบบ range เท่านั้น (`min != null && max != null`)
+   พอ guard ใหม่ทำให้ขอบเดียวเป็น SKIP แถว sieve ที่เกณฑ์เป็น `1.0 Max.` แล้วผลตรง 1.0 เลย **ไม่ถูก promote
+   ทั้งที่ HEAD เคย promote** — comment เหนือบรรทัดนั้นเขียนเจตนาไว้ชัดว่า sieve เอาผลมาจากคนละช่องกับเกณฑ์
+   จึงถือ boundary coincidence เป็นของจริงได้ → ขยาย `within` ให้รับขอบเดียวด้วย (reviewer จับได้, reproduce แล้ว)
+3. `evaluator.test.ts` — เดิมเป็น suite เดียวใน 18 ตัวที่**ไม่มี `process.exit`** พิมพ์ `MISMATCH` แล้วยัง exit 0
+   → fixture ทั้งไฟล์ไม่เคยเป็น gate จริง. เติม exit code (ยืนยันด้วยการทุบ expectation แล้วได้ exit 1)
+
+**วัดก่อนเขียนโค้ด** (นับจาก log ของ ROUND 28 ไม่ต้องรัน LLM): PASS ที่นั่งตรงขอบเดียวมี **5 แถวในคลัง — เป็น
+`Residue on sieve(1mm)` เกณฑ์ `0` ทั้งหมด (เลขเปล่า)** และใน 10 ใบหน้างานมี **1 แถวเดียวคือ `Shot` ที่เป็นของปลอม**
+→ เส้นแบ่ง "เกณฑ์บอกทิศเอง vs ทิศเดาจากคอลัมน์" คิดค่าเสียหาย 0 แถว
+
+ไม่แตะ trailing-operator ของ ROUND 27 — parser ถูกแล้ว (`1≥`/0.37 กับ `0.5≥`/0.10 เป็น PASS จริงบนใบเดียวกัน)
+
+### ★ live proof — guard ไม่ได้แค่ตัดแถว แต่ปลดล็อก challenger ★
+`tai-after-1.log` คือรอบที่บล็อกพังแบบเดียวกับ `run3` เกิดซ้ำจริงวันนี้ (1 ใน 5 รอบ):
+`[eval] SKIP Shot min=- max=0.5 result=0.5` → flat เหลือ 2P → `[keep-best] ✓ grid ชนะ 2P→4P` →
+`[hq-ocr] ✓ HQ ชนะ 4P→5P` → รายงานจบที่ `Shot Content (wt%) PASS result=0.37 spec=1≥` ตรงใบ
+
+**ถ้าไม่มี guard**: flat = 3P รวม `Shot 0.5` ปลอม · `preservesPasses` ต้องหา PASS ของ challenger ที่ตรงกับ
+`passNameKey "shot"` หรือ `passValueKey "0.5||0.5"` — grid ให้ `shotcontentwt`/`0.1||0.5`, HQ ให้ `0.37||1`
+ไม่มีตัวไหน match → **challenger ตกทั้งคู่ ใบออกไป 3P พร้อม deceptive PASS**
+
+⚠️ ตามมาด้วยข้อควรระวัง: **"guard ตัด PASS ได้อย่างเดียว" ไม่จริงที่ระดับ pipeline** — SKIP ที่เพิ่มขึ้นไป
+trigger `keep-best`/`hq-ocr` (`coa-pipeline.ts` เงื่อนไข `summary.skip > 0`) ได้ ดังนั้นห้ามใช้ monotonicity
+เป็นข้อพิสูจน์ว่า PASS ที่เพิ่มคือ drift — ต้องยืนยันด้วยจำนวนครั้งที่ guard ยิงจริงต่อแถว
+
+### gate
+| | PASS | FAIL | SKIP | rows |
+|---|---|---|---|---|
+| baseline วันนี้ (HEAD 03c4845, dir เดียวกัน) | 128 | 0 | 10 | 138 |
+| ROUND 29 (guard อย่างเดียว) | 129 | 0 | 11 | 140 |
+| **ROUND 29 (+ sieve within)** | **128** | **0** | **10** | **138** |
+
+รันชุดสุดท้าย (guard + sieve) ได้ **เท่ากับ baseline ทุกไฟล์ทุกหน้า ไม่มีบรรทัดต่างเลย** — 129P ของรันกลางคือ
+`1F1710` p4 แกว่ง (13P→14P) ตัวเดิมที่จดไว้ตั้งแต่ ROUND 16
+
+guard ใหม่ยิง **0 ครั้งใน corpus 17** — นับต่อแถวจาก log ทั้ง 2 รัน: บรรทัด `ค่าผลตรงขอบเกณฑ์พอดี` มี 7
+เท่ากันทั้ง baseline และ after และเป็น `between` ทั้งหมด · ยิงเฉพาะ `TAIHEIYO` (2 ใน 6 รอบวันนี้)
+· `npx tsc -p .` = 0 · unit 18 suite ผ่าน (evaluator +10 เช็ค + exit code)
+
+### ผลกับใบจริง
+- `TAIHEIYO CMF` รัน **5 รอบติด ได้ 5P/0F/8S เท่ากันทุกรอบ** ค่าตรงใบทุกแถว (`Shot Content (wt%)` = 0.37 เกณฑ์ `1≥`)
+- 10 ใบหน้างาน (รันหลังแก้ครบ): **75P/1F/25S** — `1F` คือ `Kemolit` `Retention on 60 mesh` ที่ใบพิมพ์เกณฑ์
+  `<0.0` เอง (ของค้างเดิม). ต่างจากรันก่อนแก้ sieve 1 แถวที่ `TAIHEIYO` (5P→4P) **ไม่ใช่ผลของ sieve**
+  (`sieve-recovery` ยิง 0 ครั้งทั้ง 2 รัน) แต่เพราะ **HQ engine ล่มกลางรัน**:
+  `onnxruntime.capi.onnxruntime_pybind11_state.Fail: [ONNXRuntimeError] : 1 : FAIL : bad allocation`
+  → `[hq-ocr] HQ OCR thin/failed — คง best` → หยุดที่ grid 4P และ `Shot Content (wt%)` ได้ spec `1=`
+  (OCR อ่าน `≧` เป็น `=`) → **honest SKIP ค่าผล 0.37 ถูกต้อง** ไม่ใช่ deceptive
+  ⚠️ ของใหม่ที่ต้องจำ: v5-server HQ engine กิน RAM จนล้มได้เมื่อรันไฟล์ติดกันยาว — ที่หน้างานถ้า HQ ล้ม
+  ผลจะตกไปเป็น SKIP เงียบๆ (ปลอดภัย แต่ recall หาย) ยังไม่ได้ตามต่อในรอบนี้
+- replay แถวที่จับไว้จาก `run3` เข้า evaluator ตัวปัจจุบัน: `Shot` เปลี่ยนจาก `PASS result=0.5` เป็น
+  `SKIP ค่าผลตรงขอบเกณฑ์พอดี` (fixture พินไว้แล้ว)
+
+### รอยต่อที่รู้ตัวว่าไม่สมมาตร (ตั้งใจ)
+- ข้อยกเว้น **กว้างกว่าคำว่า "เลขเปล่าใน Min/Max"**: `normalizeSpecFromCandidate` ปัก `dirFromColumn` ทุกครั้งที่
+  LLM เติม `specMin`/`specMax` แม้จะมี `specRaw` เลขเปล่ามาด้วย ซึ่ง `spec-normalizer.ts:193` บอกว่า qwen3 ทำบ่อย
+  → **ถ้าเปลี่ยน prompt/model แล้วมันเปลี่ยนช่องที่เติม บั๊ก TAIHEIYO กลับมาได้เงียบๆ** — มี fixture
+  `specRaw เลขเปล่า + คอลัมน์ Max` พินเส้นแบ่งนี้ไว้แล้ว ถ้ารอบหน้าจะเปลี่ยนใจ จะเห็นที่ fixture ไม่ใช่ที่ใบหน้างาน
+- `spec-recovery.ts` สังเคราะห์ `"<v> Min./Max."` จากทิศที่มันเดาจาก header → หน้าตาเหมือนเกณฑ์ที่บอกทิศเอง
+  ถ้ามีแถวแบบนั้นนั่งตรงขอบ จะโดน SKIP ด้วย. ปล่อยไว้เพราะทั้งคลังยังไม่มีสักแถว และ SKIP คือทางที่ปลอดภัย
+- `evaluateInterval` ยังเช็ค boundary เฉพาะ `between` — ช่องว่างเชิงความสม่ำเสมอ ยังไม่มีเคสจริงมากระตุ้น
+
+### ยังไม่ทำ (ตามที่ Fable เสนอ)
+A5 รวมชื่อแถวที่ OCR ตัด (ต้องมี veto คำ header ก่อน ไม่งั้นจะไปรวม `Chemical`+`SiO2`) · A6 product/lot · A4 header-driven parser

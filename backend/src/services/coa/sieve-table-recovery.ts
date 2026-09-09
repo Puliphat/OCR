@@ -115,8 +115,11 @@ export function recoverSieveTableResults(
     // promote เป็น PASS เมื่อ result จริงเข้า spec — รวมเคส "ค่าตรงขอบ range" (เช่น 0.0% retained =
     //   spec.min) ที่ evaluateItem ดักเป็น SKIP (anti-fabricated-PASS). ในตาราง sieve result มาจาก cell
     //   คนละช่องกับ spec จริง → boundary coincidence = ของจริง → PASS ได้. re-eval นอกช่วง → ปล่อย SKIP
+    // ขอบเดียว (≤/≥) ก็นับ — เกณฑ์ sieve ที่มีขอบด้านเดียวเจอบ่อยพอกับ range
     const within =
-      re.min != null && re.max != null && suspect >= re.min && suspect <= re.max;
+      (re.min != null || re.max != null) &&
+      (re.min == null || suspect >= re.min) &&
+      (re.max == null || suspect <= re.max);
     if (!(re.status === "PASS" || (re.status === "SKIP" && within))) continue;
 
     const from = r.resultRaw ?? (r.result == null ? "" : String(r.result));
