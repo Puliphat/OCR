@@ -5,6 +5,16 @@
 //   `?` เดิมตัด "1,494.80" เป็น ["1,494", "80"] แล้วเฉลี่ยเป็น 40.747 = ค่าผิดเงียบ ๆ
 export const NUM_PATTERN = String.raw`-?\d+(?:[.,]\d+)*`;
 
+// ตัวคั่นช่วง/ค่าเผื่อ — ★ ต้อง match ด้วย regex ที่บังคับมีตัวคั่นเสมอ ★
+//   ไล่เก็บเลขทีละตัวจะอ่าน "8.00-11.00" เป็น [8, -11]
+
+// spec-normalizer.ts ยังมี copy ของ 3 ตัวล่างนี้เอง (ใช้กับข้อความที่ strip หน่วยแล้ว)
+//   แก้กติกาตัวคั่นต้องไล่แก้ทั้งสองที่ จนกว่าจะรวมได้
+export const RANGE_SEP = String.raw`[~\-–—]`;
+export const TOLERANCE_SEP = String.raw`(?:±|\+/-|\+-)`;
+// ตัวคั่นช่วงแบบเต็มความกว้างของใบญี่ปุ่น/จีน — ทำให้เป็น "~" ก่อนเทียบทุกครั้ง
+export const normalizeTilde = (s: string): string => s.replace(/[～〜∼]/g, "~");
+
 // EU decimal vs US thousands: มี comma แต่ไม่มี period → comma คือทศนิยม (0,28 → 0.28)
 //   มีทั้งคู่ → comma คือหลักพัน strip ทิ้ง (1,000.5 → 1000.5)
 export function toNum(s: string): number {

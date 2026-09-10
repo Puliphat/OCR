@@ -1,6 +1,6 @@
 // แปลง result จาก LLM → number ตัวเดียวสำหรับเทียบ spec
 // รับได้ทั้ง number / string / object {avg,min,max,raw} — ใช้ avg เป็นหลัก
-import { NUM_PATTERN, toNum } from "./numeric";
+import { NUM_PATTERN, RANGE_SEP, TOLERANCE_SEP, normalizeTilde, toNum } from "./numeric";
 
 export interface ResultValues {
   avg?: number;
@@ -105,10 +105,49 @@ export function normalizeResult(raw: unknown): NormalizedResult | null {
   if (nums.length === 1) {
     return { value: nums[0], source: "single", raw: s };
   }
-  return {
-    value: nums.reduce((a, b) => a + b, 0) / nums.length,
-    source: "all_values",
-    values: nums,
-    raw: s,
-  };
+
+  // ★ หลายเลขในช่องเดียว — ห้ามเฉลี่ย ★ เหตุผลเดียวกับ path object ด้านบน: ค่ากลางซ่อนขอบที่หลุดเกณฑ์
+  //   ("12.3 ± 0.2" เฉลี่ยเป็น 6.25 → ผ่านเกณฑ์ 5~10 ทั้งที่ค่าจริง 12.3 หลุด)
+  const norm = normalizeTilde(s);
+
+  // ค่าเผื่อ "26 ± 2" → ช่วง 24–28 เหมือน spec-normalizer ★ ห้ามคืนแค่ 26 ★
+  //   ± เป็นสำนวนของช่องเกณฑ์ — คืนค่ากลางเมื่อ LLM หยิบผิดช่อง = PASS เขียวจากเลขของเกณฑ์เอง
+  {
+    const m = norm.match(
+      new RegExp(String.raw`^(${NUM_PATTERN})\s*${TOLERANCE_SEP}\s*(${NUM_PATTERN})\s*$`)
+    );
+    const c = m ? toNum(m[1]) : NaN;
+    const d = m ? Math.abs(toNum(m[2])) : NaN;
+    if (m && Number.isFinite(c) && Number.isFinite(d)) {
+      if (d === 0) return { value: c, source: "single", raw: s };
+      return {
+        value: c - d,
+        source: "interval",
+        values: [c - d, c + d],
+        raw: s,
+        interval: { min: c - d, max: c + d },
+      };
+    }
+  }
+
+  // ช่วงที่วัดได้: "8.00-11.00", "11.0～16.0", "30〜55 sec" — เทียบ 2 ขอบเหมือน interval ของ path object
+  //   หน่วยต่อท้ายปล่อยผ่านได้ (`sec`) — ห้ามมีตัวเลขต่อท้าย จะแปลว่าอ่านมาไม่ครบช่อง
+  {
+    const m = norm.match(
+      // `+?` ไม่ใช่ `+` — โลภแล้วกิน "-" ของเลขตัวหลัง: "-0.2--0.5" กลายเป็นช่วง -0.2 ถึง 0.5
+      new RegExp(String.raw`^(${NUM_PATTERN})\s*(?:${RANGE_SEP}\s*)+?(${NUM_PATTERN})\s*[^\d]*$`)
+    );
+    const a2 = m ? toNum(m[1]) : NaN;
+    const b2 = m ? toNum(m[2]) : NaN;
+    if (m && Number.isFinite(a2) && Number.isFinite(b2)) {
+      const lo = Math.min(a2, b2);
+      const hi = Math.max(a2, b2);
+      if (lo === hi) return { value: lo, source: "single", raw: s };
+      return { value: lo, source: "interval", values: [lo, hi], raw: s, interval: { min: lo, max: hi } };
+    }
+  }
+
+  // อ่านไม่ออกว่าเลขไหนคือค่าผล — ทศนิยมที่ OCR ตัดขาด ("1. 09") หรือ 2 ช่องติดกัน ("1.2 | 0.26")
+  //   คืน null → SKIP ตามหลัก honest SKIP > confident wrong (เดิมเฉลี่ยได้ "1. 09" = 5)
+  return null;
 }

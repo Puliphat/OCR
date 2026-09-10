@@ -419,7 +419,16 @@ function evaluateInterval(
 
   // Anti-fabricated-PASS (เหมือน path ค่าเดี่ยว) — ช่วง result ที่ขอบตรงกับขอบ spec พอดี น่าสงสัยว่า
   //   ระบบอ่านคอลัมน์สลับ (เอาช่วง spec มาเป็น result) → honest SKIP ให้คนเทียบใบจริง
-  if (pass && spec.op === "between" && (rMin === min || rMax === max)) {
+
+  // ขอบเดียว (≤/≥) นับด้วย — ไม่งั้น "0.10-0.28" vs "0.28 Max." เขียวสนิท ทั้งที่ค่าเดี่ยว 0.28 โดน SKIP
+  const boundaryExact =
+    spec.op === "between"
+      ? rMin === min || rMax === max
+      : (spec.op === "le" || spec.op === "ge") &&
+        !spec.dirFromColumn &&
+        (spec.op === "le" ? rMax : rMin) === spec.value;
+
+  if (pass && boundaryExact) {
     return {
       ...withIv,
       min,
