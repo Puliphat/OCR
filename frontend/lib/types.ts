@@ -28,7 +28,7 @@ export interface CoaReport {
 }
 
 // ขั้นของ pipeline ที่ backend รายงานระหว่างวิเคราะห์
-export type PipelineStage = "render" | "ocr" | "parse" | "hq" | "eval";
+export type PipelineStage = "render" | "ocr" | "parse" | "hq" | "th" | "eval";
 
 export interface PipelineProgress {
   stage: PipelineStage;

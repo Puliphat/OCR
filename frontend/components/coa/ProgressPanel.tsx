@@ -20,6 +20,7 @@ const STAGE_IDX: Record<PipelineProgress["stage"], number> = {
   ocr: 1,
   parse: 2,
   hq: 2,
+  th: 2,
   eval: 3,
 };
 
@@ -35,6 +36,7 @@ function pct(p: PipelineProgress | null): number {
     case "parse":
       return 38 + frac * 47;
     case "hq":
+    case "th":
       return 87;
     case "eval":
       return 96;
@@ -97,6 +99,9 @@ export default function ProgressPanel({
                 {state === "active" && pageInfo && <span className="p-page mono">{pageInfo}</span>}
                 {state === "active" && progress?.stage === "hq" && (
                   <span className="p-hq">ตรวจซ้ำละเอียด</span>
+                )}
+                {state === "active" && progress?.stage === "th" && (
+                  <span className="p-hq">ลองอ่านแบบไทย</span>
                 )}
               </li>
             );

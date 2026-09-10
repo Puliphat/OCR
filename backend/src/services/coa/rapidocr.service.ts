@@ -15,6 +15,9 @@ export interface OcrDegraded {
   reason: string;
 }
 
+// เครื่องอ่านของ daemon: default ทุกหน้า · hq ตอนเลขเพี้ยน · th ตอนใบเป็นภาษาไทย (ดู ocr_server.py VARIANTS)
+export type OcrVariant = "default" | "hq" | "th";
+
 export interface OcrToken {
   text: string;
   score: number;
@@ -27,14 +30,14 @@ export interface OcrToken {
 
 export class RapidOcrService {
   private readonly url = process.env.OCR_SIDECAR_URL || "http://127.0.0.1:8765";
+  // เตือนครั้งเดียวต่อ process — service ถูก new ใหม่ทุกหน้า จะเตือนซ้ำจนล้นล็อก
+  private static warnedNoEcho = false;
 
-  // ยิงรูปไป daemon → tokens พร้อม box; null ถ้า daemon ล่ม (caller fall back)
-  // hq=true → daemon ใช้ HQ engine (v5-server, lazy-load) สำหรับ scanned page ที่อ่านเพี้ยน
-  //   sink = ที่รับธง degraded (daemon อ่านซ้ำที่ภาพย่อ) — caller ตัวเดียวกันเรียกได้หลายรอบ
-  //   (rotation ยิง 3 มุม) ธงรอบไหนติดก็ถือว่าหน้านั้น degraded
+  // ยิงรูปไป daemon ด้วยเครื่องอ่าน variant → tokens พร้อม box; null ถ้า daemon ล่ม (caller fall back)
+  // sink รับธง degraded (daemon อ่านซ้ำที่ภาพย่อ) — rotation ยิงหลายมุม ติดรอบไหนก็ถือว่าทั้งหน้า degraded
   async ocrTokens(
     imagePath: string,
-    hq = false,
+    variant: OcrVariant = "default",
     sink?: { degraded?: OcrDegraded }
   ): Promise<OcrToken[] | null> {
     // ★ ส่ง image เป็น bytes (base64) เสมอ ★ — daemon อาจอยู่คนละเครื่อง (LAN deploy) →
@@ -53,12 +56,27 @@ export class RapidOcrService {
     try {
       const res = await axios.post(
         `${this.url}/ocr`,
-        { path: abs, image_b64: imageB64, hq },
+        { path: abs, image_b64: imageB64, lang: variant, hq: variant === "hq" },
         { timeout: 300_000, maxBodyLength: Infinity, maxContentLength: Infinity }
       );
       if (res.data?.error) {
         console.error("[rapidocr] daemon returned error:", res.data.error);
         return null;
+      }
+      // daemon ที่ยังไม่ restart หลัง deploy จะไม่รู้จัก field `lang` → ตอบด้วย engine default
+      // เงียบๆ (บทเรียน ROUND 31) — เห็นตรงนี้ทีเดียวว่าขออะไปได้อะไรมา
+      const served = res.data?.variant;
+      if (served == null) {
+        if (variant !== "default" && !RapidOcrService.warnedNoEcho) {
+          RapidOcrService.warnedNoEcho = true;
+          console.warn(
+            `[rapidocr] daemon ไม่บอกว่าใช้ engine ตัวไหน — น่าจะเป็น daemon รุ่นเก่าที่ไม่รู้จัก "${variant}" · restart ด้วย \`npm run ocr:daemon\``
+          );
+        }
+      } else if (served !== variant) {
+        console.error(
+          `[rapidocr] ★ ขอ engine "${variant}" แต่ daemon ใช้ "${served}" — daemon ไม่ตรงกับ backend ต้อง restart daemon`
+        );
       }
       // ผลยังใช้ได้แต่ความละเอียดครึ่งเดียวของที่ corpus validate ไว้ → ต้องบอก caller ไม่ใช่แค่ log
       if (res.data?.degraded) {
@@ -147,7 +165,7 @@ export class RapidOcrService {
   private async correctRotation(
     imagePath: string,
     tokens0: OcrToken[],
-    hq = false,
+    variant: OcrVariant = "default",
     sink?: { degraded?: OcrDegraded }
   ): Promise<{ tokens: OcrToken[]; angle: number }> {
     const s0 = this.orientationStats(tokens0);
@@ -169,7 +187,7 @@ export class RapidOcrService {
         const buf = await proc.preprocess(imagePath, angle);
         tmpFile = path.join(os.tmpdir(), `rapidocr-rot-${base}-${angle}.png`);
         fs.writeFileSync(tmpFile, buf);
-        const toks = await this.ocrTokens(tmpFile, hq, sink);
+        const toks = await this.ocrTokens(tmpFile, variant, sink);
         if (toks && toks.length) {
           const st = this.orientationStats(toks);
           candidates.push({ angle, toks, wide: st.wide, score: meanScore(toks) });
@@ -199,15 +217,15 @@ export class RapidOcrService {
   }
 
   // post-rotation tokens (public — ใช้ทั้ง extractText และ dev harness เทียบ reconstruct)
-  // hq=true → HQ engine (v5-server) ทั้ง OCR หลัก + รอบ rotation candidate
+  // variant ใช้กับทั้ง OCR หลักและรอบ rotation candidate — มุมที่ชนะต้องมาจากเครื่องอ่านตัวเดียวกัน
   async getProcessedTokens(
     imagePath: string,
-    hq = false,
+    variant: OcrVariant = "default",
     sink?: { degraded?: OcrDegraded }
   ): Promise<{ tokens: OcrToken[]; angle: number } | null> {
-    const toks = await this.ocrTokens(imagePath, hq, sink);
+    const toks = await this.ocrTokens(imagePath, variant, sink);
     if (toks == null) return null;
-    return this.correctRotation(imagePath, toks, hq, sink);
+    return this.correctRotation(imagePath, toks, variant, sink);
   }
 
   // convenience: รูป → text block; null ถ้า daemon ล่ม
@@ -221,7 +239,7 @@ export class RapidOcrService {
   //   จาก OCR pass เดียว (getProcessedTokens ครั้งเดียว → ไม่ OCR ซ้ำ). null ถ้า daemon ล่ม
   async extractTextBoth(
     imagePath: string,
-    hq = false
+    variant: OcrVariant = "default"
   ): Promise<{
     flat: string;
     grid: string;
@@ -230,7 +248,7 @@ export class RapidOcrService {
     degraded?: OcrDegraded;
   } | null> {
     const sink: { degraded?: OcrDegraded } = {};
-    const result = await this.getProcessedTokens(imagePath, hq, sink);
+    const result = await this.getProcessedTokens(imagePath, variant, sink);
     if (result == null) return null;
     const { tokens, angle } = result;
     return {

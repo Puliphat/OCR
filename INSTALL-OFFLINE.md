@@ -18,10 +18,10 @@
 | ชุด | โฟลเดอร์ | ขนาด | หน้าที่ |
 |---|---|---|---|
 | 1 | `ollama-offline\` | 3.74 GB | Ollama + qwen3:4b (LLM parse text → JSON) |
-| 2 | `ocr-offline\` | 388 MB | Python + RapidOCR + models (OCR สำหรับ scanned COA) |
+| 2 | `ocr-offline\` | 401 MB | Python + RapidOCR + models (OCR สำหรับ scanned COA — รวม rec ภาษาไทย) |
 | 3 | `coa-app-offline\` | 648 MB | Node app: backend + frontend (มี node_modules ครบ) + **Node runtime zip** |
 
-รวม **86 ไฟล์ · 4.67 GB** · เอกสารที่ต้องอ่านคือไฟล์นี้ไฟล์เดียว (สำเนาอยู่ใน `coa-app-offline\` ด้วย)
+รวม **88 ไฟล์ · 4.79 GB** · เอกสารที่ต้องอ่านคือไฟล์นี้ไฟล์เดียว (สำเนาอยู่ใน `coa-app-offline\` ด้วย)
 
 > เคยมี `COA-Offline-Install-Guide.html` (คู่มือฉบับมีรูป) แถมมาในชุด — **เลิกทำแล้ว 17 ส.ค. 2026**
 > เพราะไม่มีตัว build ในโปรเจกต์ ต้องปั้นมือทุกรอบ แล้วมันค้างเป็นเนื้อหาเก่าทันทีที่แก้ไฟล์นี้
@@ -75,7 +75,7 @@ npm -v       # ต้องขึ้นเลขเวอร์ชัน
 ```
 C:\coa-setup\
 ├── ollama-offline\      3.74 GB    9 ไฟล์
-├── ocr-offline\         388 MB    68 ไฟล์
+├── ocr-offline\         401 MB    70 ไฟล์
 └── coa-app-offline\     648 MB     9 ไฟล์
 ```
 
@@ -101,7 +101,7 @@ robocopy "\\tsclient\C\coa-setup" C:\coa-setup /E /R:2 /W:5 /MT:8
 ```powershell
 Get-ChildItem C:\coa-setup -Recurse -File | Measure-Object Length -Sum |
   ForEach-Object { "$($_.Count) ไฟล์ · $([math]::Round($_.Sum/1GB,2)) GB" }
-# ต้องได้ 86 ไฟล์ · 4.67 GB — ขาดไปแม้แต่ไฟล์เดียว = copy ไม่ครบ ให้รัน robocopy ซ้ำ
+# ต้องได้ 88 ไฟล์ · 4.79 GB — ขาดไปแม้แต่ไฟล์เดียว = copy ไม่ครบ ให้รัน robocopy ซ้ำ
 ```
 
 เลขไม่ตรง → หาว่าโฟลเดอร์ไหนขาด แล้ว robocopy เฉพาะตัวนั้นซ้ำ:
@@ -282,11 +282,11 @@ C:\zenithsphere\COA\ocr-py\venv\Scripts\python.exe -m pip install --no-index --f
 ท้ายสุดต้องขึ้น `Successfully installed ... rapidocr-3.8.1 ...` · เตือนเรื่อง pip เวอร์ชันใหม่กว่า = ไม่ต้องสน
 (**ห้าม** `pip install --upgrade pip` — ต้องใช้เน็ต)
 
-**3.5 copy models 10 ไฟล์เข้า venv** ← ข้อที่พลาดแล้วไฟล์สแกนพังทั้งใบ
+**3.5 copy models 12 ไฟล์เข้า venv** ← ข้อที่พลาดแล้วไฟล์สแกนพังทั้งใบ
 ```powershell
 New-Item -ItemType Directory -Force C:\zenithsphere\COA\ocr-py\venv\Lib\site-packages\rapidocr\models | Out-Null
 Copy-Item C:\coa-setup\ocr-offline\models\* C:\zenithsphere\COA\ocr-py\venv\Lib\site-packages\rapidocr\models\ -Force
-Get-ChildItem C:\zenithsphere\COA\ocr-py\venv\Lib\site-packages\rapidocr\models -File | Measure-Object   # Count ต้อง = 10
+Get-ChildItem C:\zenithsphere\COA\ocr-py\venv\Lib\site-packages\rapidocr\models -File | Measure-Object   # Count ต้อง = 12
 ```
 
 **3.6 verify — 2 อย่าง ห้ามข้าม**
@@ -301,7 +301,8 @@ C:\zenithsphere\COA\ocr-py\venv\Scripts\python.exe -c "import pdfplumber, rapido
 > backend spawn แยกจาก daemon. `rapidocr` ผ่านอย่างเดียวไม่ได้แปลว่าอีกเส้นรอด
 
 > **GOTCHA สำคัญที่สุดของ OCR:** RapidOCR package ship มาแค่ v4 `_infer` — แต่ daemon ใช้
-> v4 `_mobile` (default) + v5 `_server` (HQ) ซึ่งปกติ **auto-download จาก ModelScope ครั้งแรก**.
+> v4 `_mobile` (default) + v5 `_server` (HQ) + v5 `_mobile` det กับ `th_..._rec_mobile` (ใบไทย)
+> ซึ่งปกติ **auto-download จาก ModelScope ครั้งแรก**.
 > ออฟไลน์ = download ไม่ได้ = daemon พัง. เลยต้อง copy models เข้า venv (ขั้น 4 สคริปต์ทำให้แล้ว).
 > ถ้า daemon start แล้วขึ้น "downloading model..." = ลืมขั้นนี้
 >
@@ -526,7 +527,7 @@ pm2 restart all                        # ★ ทั้งหมด — ไม่
 | คำสั่งจากชีทขึ้น `'Copy-Item' is not recognized as an internal or external command` (หรือชื่อ cmdlet อื่น) | รันใน **cmd.exe** ไม่ใช่ PowerShell (prompt ขึ้น `C:\...>` เฉยๆ ไม่มี `PS` นำหน้า) | พิมพ์ `powershell` ก่อน ให้ prompt เป็น `PS C:\...>` — ทุกคำสั่งในชีทเป็น PowerShell (`setx`, `Expand-Archive`, `New-NetFirewallRule`, `$root` ใช้ใน cmd ไม่ได้) |
 | `npm run build` ตาย / `next` ไม่ยอมรัน | Node เก่ากว่า v20.9 | `node -v` → ต่ำกว่า v20.9 ให้ทำ §0.1 (node zip ที่แถมมา) แล้ว**เปิด PowerShell ใหม่** · ยังขึ้นเลขเก่า = PATH ไม่ติด เช็ค `(Get-Command node).Source` |
 | client upload error/ค้าง แต่ server เองใช้ได้ | `.env.local` ใส่ `localhost` หรือลืม build ใหม่ | ตั้ง IP จริง → `npm run build` → `pm2 restart coa-frontend` |
-| OCR daemon start ขึ้น "downloading model..." | ลืม copy models เข้า venv (ข้อ 3.4) | ทำข้อ **3.4** ใหม่ (Count ต้อง = 10) → ขั้น 3 ★ copy `ocr-py` ทับที่ deploy root อีกรอบ → `pm2 restart ocr-daemon` |
+| OCR daemon start ขึ้น "downloading model..." | ลืม copy models เข้า venv (ข้อ 3.4) | ทำข้อ **3.4** ใหม่ (Count ต้อง = 12) → ขั้น 3 ★ copy `ocr-py` ทับที่ deploy root อีกรอบ → `pm2 restart ocr-daemon` |
 | ไฟล์สแกนขึ้น `OCR daemon ไม่ทำงาน` | daemon ล่ม (ไม่มี fallback engine — ตั้งใจให้พังดังๆ) | `curl :8765/health` ต้อง `{"ok":true}` · `pm2 restart ocr-daemon` |
 | daemon กิน RAM เยอะ | HQ engine (v5 server) preload | ตั้ง `COA_OCR_HQ_PRELOAD=false` ใน ecosystem block `ocr-daemon` → `pm2 restart ocr-daemon` |
 | upload แรกหลัง idle นาน ~37s | qwen3 โดน evict จาก RAM/VRAM | ปกติ — keep-warm ping กันไว้แล้ว; เช็ค Ollama tray รันจริง |

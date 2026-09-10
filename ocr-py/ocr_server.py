@@ -1,18 +1,5 @@
-# OCR daemon — loads RapidOCR once, serves POST /ocr {image_b64|path, hq} -> {tokens[], elapse}.
-# stdlib http.server only (no FastAPI/uvicorn dep). Mirrors the TS sidecar contract.
-#
-# rapidocr 3.x (PP-OCRv4/v5) — successor of rapidocr-onnxruntime (which capped at v3 on
-# Python 3.13: every >=1.2.4 release has Requires-Python <3.13). New API:
-#   engine = RapidOCR(params={...}); out = engine(path) -> RapidOCROutput(boxes,txts,scores)
-# Model selected via env (no code edit for A/B):
-#   COA_OCR_MODEL_TYPE = mobile (default, light) | server (heavier, ~same accuracy)
-#   COA_OCR_VERSION    = PP-OCRv4 (default) | PP-OCRv5
-# Server/v5 ONNX auto-download once from ModelScope into the package models/ dir.
-#
-# HQ fallback engine (POST {"hq": true}) — เครื่องอ่านความละเอียดสูงกว่า (default server/PP-OCRv5)
-#   ★ lazy-load ★: โหลดครั้งแรกที่มี request hq=true เท่านั้น (ไฟล์สะอาดไม่เคยแตะ → ไม่กิน RAM)
-#   ใช้ _engine_lock เดียวกับ default → inference ไม่รันพร้อมกัน (กัน CPU oversubscribe)
-#   override: COA_OCR_HQ_MODEL_TYPE (server default) · COA_OCR_HQ_VERSION (PP-OCRv5 default)
+# OCR daemon (rapidocr 3.x, stdlib http.server) — POST /ocr {image_b64|path, hq, lang} -> {tokens[], elapse}.
+# ONNX ของ tier/ภาษาที่ไม่ได้ ship มา auto-download จาก ModelScope ครั้งแรกที่ถูกเรียก.
 import base64
 import json
 import gc
@@ -23,49 +10,81 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import cv2
 import numpy as np
 from rapidocr import RapidOCR
-from rapidocr.utils.typings import ModelType, OCRVersion
+from rapidocr.utils.typings import ModelType, OCRVersion, LangRec
 
 _MT = {"mobile": ModelType.MOBILE, "server": ModelType.SERVER}
 _OV = {"PP-OCRv4": OCRVersion.PPOCRV4, "PP-OCRv5": OCRVersion.PPOCRV5}
-mt = _MT.get(os.environ.get("COA_OCR_MODEL_TYPE", "mobile").lower(), ModelType.MOBILE)
-ov = _OV.get(os.environ.get("COA_OCR_VERSION", "PP-OCRv4"), OCRVersion.PPOCRV4)
 
-# det+rec follow the selected tier; cls stays mobile (tiny, rotation-only)
-engine = RapidOCR(params={
-    "Det.model_type": mt, "Det.ocr_version": ov,
-    "Rec.model_type": mt, "Rec.ocr_version": ov,
-})
+
+def _variant(env_prefix, mt_default, ov_default, lang=None):
+    # det+rec follow the selected tier; cls stays mobile (tiny, rotation-only)
+    mt = _MT.get(os.environ.get(f"COA_OCR_{env_prefix}MODEL_TYPE", mt_default).lower(), _MT[mt_default])
+    ov = _OV.get(os.environ.get(f"COA_OCR_{env_prefix}VERSION", ov_default), _OV[ov_default])
+    params = {
+        "Det.model_type": mt, "Det.ocr_version": ov,
+        "Rec.model_type": mt, "Rec.ocr_version": ov,
+    }
+    if lang is not None:
+        params["Rec.lang_type"] = lang
+    return {"params": params, "label": f"{mt.value}/{ov.value}" + (f"/{lang.value}" if lang else "")}
+
+
+# 3 เครื่องอ่าน เลือกต่อ request: default ทุกหน้า · hq ตอน default อ่านเลขเพี้ยน · th ตอนใบเป็นภาษาไทย
+# (dict ของ default กับ hq ไม่มีอักษรไทยเลย — ใบไทยจึงหายทั้งคอลัมน์ชื่อรายการ ไม่ใช่แค่อ่านเพี้ยน)
+VARIANTS = {
+    "default": _variant("", "mobile", "PP-OCRv4"),
+    "hq": _variant("HQ_", "server", "PP-OCRv5"),
+    "th": _variant("TH_", "mobile", "PP-OCRv5", LangRec.TH),
+}
+
+_ENGINE_FAILED = object()  # sentinel: โหลดไม่สำเร็จมาแล้ว อย่าลองซ้ำทุก request
+_engines = {}
+_engines_lock = threading.Lock()  # กัน race ตอน lazy-init (สอง request แรกพร้อมกัน)
 # ThreadingHTTPServer keeps health-check/requests non-blocking, but engine() isn't
 # guaranteed thread-safe → serialize inference with a lock.
 _engine_lock = threading.Lock()
 
-# ภาพจะถูกย่อเหลือด้านยาวเท่านี้ตอน HQ retry หลังจอง memory ไม่ได้ (0 = ปิด retry)
+
+def get_engine(variant):
+    eng = _engines.get(variant)
+    if eng is None:
+        with _engines_lock:
+            eng = _engines.get(variant)  # double-check หลังได้ lock
+            if eng is None:
+                v = VARIANTS[variant]
+                print(f"[{variant}] loading engine ({v['label']})…", flush=True)
+                try:
+                    eng = RapidOCR(params=v["params"])
+                except Exception as e:  # noqa: BLE001
+                    # จำไว้ว่าโหลดไม่ขึ้น — เครื่องออฟไลน์ที่ชุด model เก่า จะนั่งรอ download 60s ซ้ำทุกหน้า
+                    _engines[variant] = _ENGINE_FAILED
+                    print(f"[{variant}] ★ โหลด engine ไม่สำเร็จ: {e}", flush=True)
+                    print(f"[{variant}] ★ ปิด variant นี้จนกว่า restart daemon — เช็คไฟล์ model ใน rapidocr/models", flush=True)
+                    raise
+                _engines[variant] = eng
+                print(f"[{variant}] engine ready ({v['label']})", flush=True)
+    if eng is _ENGINE_FAILED:
+        raise RuntimeError(
+            f"engine '{variant}' โหลดไม่สำเร็จตอน request ก่อนหน้า — เติมไฟล์ model แล้ว restart daemon"
+        )
+    return eng
+
+
+def pick_variant(req):
+    # lang มาก่อน hq — ใบไทยต้องได้ th ไม่ว่า caller จะติดธง hq มาด้วยหรือไม่ (dict hq ไม่มีไทย)
+    lang = str(req.get("lang") or "").lower()
+    if lang in VARIANTS and lang != "default":
+        return lang
+    return "hq" if req.get("hq") else "default"
+
+
+# ภาพจะถูกย่อเหลือด้านยาวเท่านี้ตอน challenger retry หลังจอง memory ไม่ได้ (0 = ปิด retry)
 # ค่าพังต้องไม่ทำ daemon ตายตอน start — ไม่งั้นทั้งเครื่อง OCR ไม่ได้เลยเพราะพิมพ์ env ผิดตัวเดียว
 try:
     RETRY_MAX_SIDE = int(os.environ.get("COA_OCR_RETRY_MAX_SIDE", "1400"))
 except ValueError:
     print("[warn] COA_OCR_RETRY_MAX_SIDE ไม่ใช่ตัวเลข — ใช้ 1400", flush=True)
     RETRY_MAX_SIDE = 1400
-
-# HQ engine — lazy-loaded สำหรับ scanned page ที่ default อ่าน spec/เลขเพี้ยน (เคส 4A LoI "%98"→"≤3.5%")
-_hq_engine = None
-_hq_lock = threading.Lock()  # กัน race ตอน lazy-init (สอง request hq พร้อมกันครั้งแรก)
-
-
-def get_hq_engine():
-    global _hq_engine
-    if _hq_engine is None:
-        with _hq_lock:
-            if _hq_engine is None:  # double-check หลังได้ lock
-                hmt = _MT.get(os.environ.get("COA_OCR_HQ_MODEL_TYPE", "server").lower(), ModelType.SERVER)
-                hov = _OV.get(os.environ.get("COA_OCR_HQ_VERSION", "PP-OCRv5"), OCRVersion.PPOCRV5)
-                print(f"[hq] lazy-loading HQ engine ({hmt.value}/{hov.value})…", flush=True)
-                _hq_engine = RapidOCR(params={
-                    "Det.model_type": hmt, "Det.ocr_version": hov,
-                    "Rec.model_type": hmt, "Rec.ocr_version": hov,
-                })
-                print(f"[hq] HQ engine ready ({hmt.value}/{hov.value})", flush=True)
-    return _hq_engine
 
 
 def resolve_image(req):
@@ -108,20 +127,20 @@ def is_alloc_failure(e):
     return "bad allocation" in s or "out of memory" in s or "failed to allocate" in s
 
 
-def run_ocr(img, hq=False):
+def run_ocr(img, variant="default"):
     # img = raw bytes (decoded from image_b64) or a local file path (back-compat)
-    eng = get_hq_engine() if hq else engine
+    eng = get_engine(variant)
     scale = 1.0
     degraded = None
-    # ★ ใช้ _engine_lock เดียวเสมอ (ทั้ง default + hq) → inference ไม่ทับซ้อน ★
+    # ★ ใช้ _engine_lock เดียวเสมอ (ทุก variant) → inference ไม่ทับซ้อน ★
     with _engine_lock:
         first_err = None
         try:
             out = eng(img)
         except Exception as e:  # noqa: BLE001
-            # ★ retry เฉพาะ hq ★ — HQ เป็น challenger ที่มี best เป็นพื้น อ่านแย่ลงก็แพ้ไปเฉยๆ
+            # ★ retry เฉพาะ challenger ★ — challenger มี best เป็นพื้น อ่านแย่ลงก็แพ้ไปเฉยๆ
             #   ส่วน engine default คือแหล่งข้อมูลเดียวของหน้า ล้มแล้วต้องดังตาม OCR_DAEMON_DOWN
-            if not (hq and RETRY_MAX_SIDE > 0 and is_alloc_failure(e)):
+            if not (variant != "default" and RETRY_MAX_SIDE > 0 and is_alloc_failure(e)):
                 raise
             first_err = str(e).strip().splitlines()[-1][:200]
         if first_err is not None:
@@ -153,7 +172,7 @@ def run_ocr(img, hq=False):
                 "x2": max(xs),
             })
     elapse = getattr(out, "elapse", None) if out is not None else None
-    res = {"tokens": toks, "elapse": elapse}
+    res = {"tokens": toks, "elapse": elapse, "variant": variant}
     if degraded:
         res["degraded"] = degraded
     return res
@@ -166,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = json.loads(body)
             img = resolve_image(req)
-            out = run_ocr(img, hq=bool(req.get("hq", False)))
+            out = run_ocr(img, variant=pick_variant(req))
             code = 200
         except Exception as e:  # noqa: BLE001 — return error to caller
             out = {"error": str(e)}
@@ -178,8 +197,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def do_GET(self):  # health check
-        data = b'{"ok":true}'
+    def do_GET(self):  # health check — บอก variant ที่ daemon ตัวนี้รู้จัก (daemon เก่าไม่มี "th")
+        data = json.dumps({"ok": True, "variants": sorted(VARIANTS)}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -194,16 +213,22 @@ if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     # 0.0.0.0 = รับ request จากเครื่องอื่นใน LAN (deploy หน้างาน); ตั้ง OCR_BIND_HOST=127.0.0.1 ถ้าจะปิดเฉพาะเครื่อง
     host = os.environ.get("OCR_BIND_HOST", "0.0.0.0")
+    get_engine("default")  # โหลดตอน start — ตั้ง env ผิดต้องรู้ตั้งแต่บรรทัดแรก ไม่ใช่ตอน request แรก
     print(
         f"OCR daemon ready on {host}:{port} "
-        f"(model={mt.value}/{ov.value} loaded, cwd={os.getcwd()})",
+        f"(model={VARIANTS['default']['label']} loaded, cwd={os.getcwd()})",
         flush=True,
     )
     # Preload HQ engine ใน background thread — request hq แรกไม่ต้องรอ lazy-load (~5-8s)
     # แลก RAM ค้างตลอด (v5-server ~หลายร้อย MB) — ปิดกลับเป็น lazy ด้วย COA_OCR_HQ_PRELOAD=false
-    # get_hq_engine มี lock + double-check อยู่แล้ว → ชนกับ request hq แรกได้ปลอดภัย
     if os.environ.get("COA_OCR_HQ_PRELOAD", "true").lower() != "false":
-        threading.Thread(target=get_hq_engine, daemon=True).start()
+        def preload_hq():
+            try:
+                get_engine("hq")
+            except Exception as e:  # noqa: BLE001 — preload ล้มต้องไม่ทำ daemon ตาย
+                print(f"[hq] preload ล้ม: {e}", flush=True)
+
+        threading.Thread(target=preload_hq, daemon=True).start()
     srv = ThreadingHTTPServer((host, port), Handler)
     try:
         srv.serve_forever()

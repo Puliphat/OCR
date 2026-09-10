@@ -16,6 +16,9 @@ const PRODUCT_STRONG = [
   /^grade$/i,
   /^品\s*名$/,
   /^商品名$/,
+  // ไทย: ต้องตรงทั้งช่องเหมือนป้ายภาษาอื่น — ติดแค่ท้ายคำจะกิน "ผู้รับสินค้า"/"มาตรฐานผลิตภัณฑ์" กลายเป็นชื่อสินค้า
+  // ยอม "ซื่อ" ด้วย — OCR ไทยอ่าน "ชื่อ" เพี้ยนเป็น "ซื่อ" จริง (เห็นในผลรัน)
+  /^(?:ชื่อ|ซื่อ)?(?:ผลิตภัณฑ์|สินค้า|วัตถุดิบ)$/,
 ];
 // "Product" เดี่ยวๆ บางใบให้รหัสวัสดุ (Z99 = 130035346) — ยังดีกว่า "Type" ที่ใบ DuPont ใช้กับรุ่นย่อย
 const PRODUCT_MEDIUM = [/^product$/i, /^material(?:\s*code)?$/i];
@@ -29,13 +32,16 @@ const LOT_STRONG = [
   /^batch\s*(?:no|number)\b\.?/i,
   /ロット番号/,
   /製造番号/,
+  // ไทย: ผูกหัวป้าย — ไม่งั้นประโยคอย่าง "สินค้าล็อตนี้ผ่าน" จะกลายเป็นป้าย lot
+  /^(?:เลขที่|หมายเลข)?(?:ล็อต|ล๊อต)/,
+  /^รุ่น(?:การผลิต|ที่)/,
 ];
 const LOT_WEAK = [/^box\s*no\b\.?/i, /^batch$/i];
 
 // ป้ายฝั่งลูกค้า/ผู้รับ — เจอคำพวกนี้ในป้ายเดียวกันแปลว่าค่าถัดไปเป็นของลูกค้า ไม่ใช่ของเรา
 // (CIIR มีทั้ง "Customer Product Name:" และ "Product Name/Grade:" บนใบเดียวกัน)
 const CUSTOMER_LABEL =
-  /(customer|顧客|consignee|ship\s*-?\s*to|delivery\s*to|sold\s*to|messrs|納入先|得意先)/i;
+  /(customer|顧客|consignee|ship\s*-?\s*to|delivery\s*to|sold\s*to|messrs|納入先|得意先|ลูกค้า|ผู้รับ|ผู้ซื้อ|จัดส่ง|ผู้ผลิต|บริษัท)/i;
 
 // ค่าที่ไม่ใช่คำตอบ — ใบบอกเองว่าไม่มี หรือเป็นป้ายอีกอัน
 const EMPTY_VALUE = /^(?:n\.?\/?a\.?|nil|none|-+|_+|[:：]*)$/i;
@@ -78,7 +84,8 @@ function cleanValue(raw: string): { value: string | null; explicitNone: boolean 
 }
 
 function validProduct(v: string): boolean {
-  if (v.length > 60 || !/[A-Za-z぀-ヿ一-鿿]/.test(v)) return false;
+  // ช่วงไทยต้องเป็นพยัญชนะ/สระเต็มตัว — เอาทั้งบล็อกจะนับสระจม/วรรณยุกต์ลอยๆ ("่้๊๋ ั ิ") ว่าเป็นชื่อ
+  if (v.length > 60 || !/[A-Za-z぀-ヿ一-鿿ก-ฮะาำเ-ไ]/.test(v)) return false;
   return !/^\d{5,}$/.test(v); // รหัสวัสดุล้วน ไม่ใช่ชื่อ
 }
 

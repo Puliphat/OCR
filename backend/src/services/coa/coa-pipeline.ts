@@ -104,7 +104,7 @@ export const OCR_EMPTY_RESULT = "OCR_EMPTY_RESULT";
 // ★ progress callback ★ — pipeline บอกขั้นที่กำลังทำ (route เอาไปให้หน้าเว็บ poll โชว์ progress)
 //   ไม่ส่ง callback มา = เงียบเหมือนเดิม (CLI/corpus runner ไม่กระทบ)
 export type PipelineProgress = {
-  stage: "render" | "ocr" | "parse" | "hq" | "eval";
+  stage: "render" | "ocr" | "parse" | "hq" | "th" | "eval";
   page?: number;
   pages?: number;
 };
@@ -1105,6 +1105,98 @@ function skipMayBenefitFromHq(r: EvaluatedItem): boolean {
   return /\d/.test(spec) || /\d/.test(res);
 }
 
+// ★ Thai OCR challenger ★ — dict ของ engine default กับ hq ไม่มีอักษรไทยเลย → ใบไทยแบบสแกนเสียทั้งคอลัมน์
+//   ชื่อรายการ (แถวเริ่มที่ "%" เฉยๆ) ซึ่ง**ไม่โผล่เป็น SKIP** จึงใช้ trigger เดียวกับ HQ ไม่ได้
+const OCR_TH_FALLBACK_ENABLED = process.env.COA_OCR_TH_FALLBACK !== "false";
+
+// env ที่พิมพ์ผิดหรือเว้นว่างต้องไม่ทำให้ด่านหลุด — `Number("")` = 0 และ `x < NaN` เป็น false เสมอ
+// สองกรณีนั้นแปลว่า "ปล่อยผ่านทุกหน้า" โดยไม่มี log อะไรบอก
+function envPositive(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+// ยอมรับผลจากเครื่องอ่านไทยเฉพาะเมื่อ**เห็นอักษรไทยจริง** — สัญญาณที่ engine default ปลอมไม่ได้ (dict มันไม่มีไทย)
+// ★ ต้องผ่านทั้งจำนวนและสัดส่วน ★ วัดจริงกับใบ CJK/อังกฤษ 12 หน้า: รั่วสูงสุด 9 ตัว = 0.64% · ใบไทยจริง = 39.9%
+const TH_MIN_CHARS = envPositive("COA_OCR_TH_MIN_CHARS", 20);
+const TH_MIN_RATIO = envPositive("COA_OCR_TH_MIN_RATIO", 0.08);
+function thaiCharCount(s: string): number {
+  return (s.match(/[\u0E00-\u0E7F]/g) ?? []).length;
+}
+
+// ของที่ challenger ไทยส่งกลับออกมานอกเหนือจาก report: ข้อความไว้หาป้าย · จำนวน FAIL ที่ keep-best ทิ้ง
+interface ThaiSink {
+  text?: string;
+  hiddenFail?: number;
+}
+
+// challenger ใบไทย — คืน report ที่ชนะ best ขาด หรือ null ถ้าใบไม่ใช่ไทย/อ่านแล้วไม่ชนะ
+// โครงเดียวกับ HQ challenger เป๊ะ (gridBeatsFlat + flagChallengerPasses) → best เป็นพื้นเสมอ
+async function thaiChallenge(
+  filename: string,
+  filePath: string,
+  page: number,
+  imagePath: string,
+  best: CoaReport,
+  onProgress?: ProgressFn,
+  sink?: ThaiSink
+): Promise<CoaReport | null> {
+  try {
+    // แจ้ง stage ก่อน OCR — ทุกหน้าสแกนจ่ายค่าอ่านรอบนี้ หน้าเว็บต้องบอกว่ากำลังทำอะไรอยู่
+    onProgress?.({ stage: "th", page });
+    const thOcr = await new RapidOcrService().extractTextBoth(imagePath, "th");
+    if (!thOcr) {
+      console.warn("  [th-ocr] ✗ เครื่องอ่านไทยล้ม — คง best (ยังไม่ได้ challenge จริง)");
+      return null;
+    }
+    const thai = thaiCharCount(thOcr.flat);
+    const nonSpace = thOcr.flat.replace(/\s/g, "").length;
+    const ratio = nonSpace ? thai / nonSpace : 0;
+    // ใบไม่ใช่ไทย → ทิ้งตรงนี้ ไม่เผา LLM parse รอบใหม่ (ค่าใช้จ่ายจบที่ OCR pass เดียว)
+    if (thai < TH_MIN_CHARS || ratio < TH_MIN_RATIO) return null;
+    console.log(
+      `  [th-ocr] เห็นอักษรไทย ${thai} ตัว (${(ratio * 100).toFixed(1)}% ของหน้า) → challenger ด้วยเครื่องอ่านไทย`
+    );
+    dumpDebug("_last-ocr-th.txt", thOcr.flat);
+    const thGrid = GRID_LLM_ENABLED ? thOcr.grid : undefined;
+    const thBest = await runFlatGridBest(
+      filename, filePath, thOcr.flat, "rapidocr", page,
+      thGrid, thGrid ? "spatial" : undefined, undefined
+    );
+    if (!gridBeatsFlat(thBest, best)) {
+      // ★ หน้านี้เป็นไทยแน่ (ผ่านด่านอักษรมาแล้ว) แต่ keep-best ทิ้งเพราะมี FAIL ★
+      //   best อ่านไทยไม่ออกอยู่แล้ว ปล่อยเงียบ = หน้าจอเห็นแต่แถวเขียว ส่วนแถวที่หลุดเกณฑ์หายไป
+      if (thBest.summary.fail > 0 && sink) sink.hiddenFail = thBest.summary.fail;
+      console.log(
+        `  [th-ocr] ✗ เครื่องอ่านไทย ${passCount(thBest)}P/${thBest.summary.fail}F ไม่ชนะ best ${passCount(best)}P ขาด — คง best`
+      );
+      return null;
+    }
+    if (!thBest.product && best.product) thBest.product = best.product;
+    if (!thBest.lotNo && best.lotNo) thBest.lotNo = best.lotNo;
+    // เลขมาจาก OCR คนละ engine กับ best → ด่านเดียวกับ HQ: PASS ที่ best ยืนยันไม่ได้ ต้องไม่เขียว
+    const thFlag = flagChallengerPasses(thBest, best, "rapidocr", thGrid ? "spatial" : undefined);
+    for (const o of thFlag.overwritten) {
+      console.warn(`  [th-ocr] ⚠ เครื่องอ่านไทยเขียนเลขทับแถวที่ best ผ่านอยู่แล้ว — ${o} · ปักธงให้คนตรวจ`);
+    }
+    if (thOcr.degraded) {
+      for (const r of thBest.rows) r.needsReview = true;
+      console.warn(
+        `  [th-ocr] ⚠ ชนะแต่มาจากภาพย่อ ${thOcr.degraded.maxSide}px — ปักธงทั้ง ${thBest.rows.length} แถวให้ตรวจ`
+      );
+    }
+    // ส่งข้อความไทยกลับไปหาป้าย product/lot — **เพิ่มตรงที่ default ว่าง ไม่ใช่เขียนทับ** (ดู runCoaPipeline)
+    if (sink) sink.text = thOcr.flat;
+    console.log(
+      `  [th-ocr] ✓ เครื่องอ่านไทยชนะ ${passCount(best)}P→${passCount(thBest)}P (0 FAIL, PASS เดิมครบ) · needsReview +${thFlag.surfaced}`
+    );
+    return thBest;
+  } catch (e) {
+    console.warn("  [th-ocr] challenger error — คง best:", (e as Error).message);
+    return null;
+  }
+}
+
 // processPage — keep-best orchestrator ต่อ 1 หน้า (2 ชั้น)
 //   ชั้นใน: runFlatGridBest บน OCR default (mobile) — flat floor + grid challenger
 //   ชั้นนอก: ★ HQ OCR challenger ★ — ถ้า best (scanned) ยังมี SKIP → re-OCR ด้วย v5-server แล้ว
@@ -1122,11 +1214,19 @@ async function processPage(
   gridOrient?: GridOrient,
   imagePath?: string,
   hqPrefetch?: ReturnType<RapidOcrService["extractTextBoth"]>,
-  onProgress?: ProgressFn
+  onProgress?: ProgressFn,
+  thaiSink?: ThaiSink
 ): Promise<CoaReport> {
   const best = await runFlatGridBest(
     filename, filePath, text, engine, page, gridText, gridSource, gridOrient
   );
+
+  // ★ Thai challenger ต้องมาก่อน HQ ★ — ใบไทยไม่ได้โผล่มาเป็น SKIP (ชื่อรายการหายทั้งคอลัมน์เงียบๆ)
+  //   และ HQ ก็ dict ไม่มีไทยเหมือนกัน ยิงไปก็แพ้ → ชนะเมื่อไรจบเลย ไม่ต้องเผา HQ ต่ออีก ~35s
+  if (OCR_TH_FALLBACK_ENABLED && engine === "rapidocr" && imagePath) {
+    const thBest = await thaiChallenge(filename, filePath, page, imagePath, best, onProgress, thaiSink);
+    if (thBest) return thBest;
+  }
 
   // HQ challenger — เฉพาะ scanned (rapidocr) ที่ยังมี SKIP + มี imagePath ให้ re-OCR
   //   ไฟล์สะอาด (skip=0 เช่น Lot240521) ไม่ trigger → v5 ไม่ถูกโหลด/รัน = เท่าเดิม
@@ -1152,7 +1252,7 @@ async function processPage(
     onProgress?.({ stage: "hq", page });
     try {
       // ใช้ผล HQ OCR ที่สั่งไว้ล่วงหน้า (ดู runCoaPipeline) — ถ้าไม่มีก็ OCR ตรงนี้เหมือนเดิม
-      const hqOcr = await (hqPrefetch ?? new RapidOcrService().extractTextBoth(imagePath, true));
+      const hqOcr = await (hqPrefetch ?? new RapidOcrService().extractTextBoth(imagePath, "hq"));
       if (hqOcr && hqOcr.flat.replace(/\s/g, "").length >= 50) {
         dumpDebug("_last-ocr-hq.txt", hqOcr.flat);
         const hqGrid = GRID_LLM_ENABLED ? hqOcr.grid : undefined;
@@ -1222,14 +1322,22 @@ export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn):
     // หน้า scanned เท่านั้นที่ HQ challenger แตะได้ (ดู processPage) → หน้า text-layer ไม่ต้อง prefetch
     let hqPrefetch: ReturnType<RapidOcrService["extractTextBoth"]> | undefined;
     if (hqSvc && pg.engine === "rapidocr" && pg.imagePath) {
-      hqPrefetch = hqSvc.extractTextBoth(pg.imagePath, true);
+      hqPrefetch = hqSvc.extractTextBoth(pg.imagePath, "hq");
       hqPrefetch.catch(() => {}); // กัน unhandled rejection ตอนหน้านั้นไม่ได้ใช้ HQ
     }
     onProgress?.({ stage: "parse", page: pg.page, pages: pages.length });
-    const report = await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress);
+    const thaiSink: ThaiSink = {};
+    const report = await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress, thaiSink);
     // ★ product/lot จากป้ายบนใบ ★ — ทำหลังเลือก candidate เสร็จ ให้หัวรายงานมีเจ้าของเดียว ไม่ขึ้นกับว่า
     //   flat/grid/HQ ตัวไหนชนะ. ไม่มีป้าย = null (LLM เดาชื่อลูกค้ามาใส่บ่อย ดู product-lot-recovery.ts)
+    // ★ ข้อความ default เป็นเจ้าของหัวรายงานเหมือนเดิม ★ ข้อความไทยเติมเฉพาะช่องที่ default ว่าง
+    //   (ใบสองภาษาที่ default อ่าน "Product Name" ได้สะอาด แต่ rec ไทยอ่านบรรทัดเดียวกันเพี้ยน — ห้ามเอาของเพี้ยนมาทับ)
     const header = recoverProductLot(pg.text);
+    if (thaiSink.text) {
+      const thHeader = recoverProductLot(thaiSink.text);
+      header.product ??= thHeader.product;
+      header.lotNo ??= thHeader.lotNo;
+    }
     if (header.product !== report.product || header.lotNo !== report.lotNo) {
       console.log(
         `  [header] product ${report.product ?? "-"} → ${header.product ?? "-"} · lot ${report.lotNo ?? "-"} → ${header.lotNo ?? "-"}`
@@ -1237,6 +1345,19 @@ export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn):
     }
     report.product = header.product;
     report.lotNo = header.lotNo;
+    // ★ ต้องปักธงตรงนี้ ที่รู้แล้วว่า candidate ไหนชนะ ★ ปักใน processPage จะหายถ้า HQ ชนะต่อทีหลัง
+    //   หน้าไทยที่เครื่องอ่านไทยเจอค่าหลุดเกณฑ์ แต่ keep-best ทิ้งทั้งชุด (มี FAIL) — ปล่อยเขียวเงียบๆ
+    //   = จอโชว์เฉพาะแถวที่ผ่าน แถวที่หลุดหายไปกับตา
+    if (thaiSink.hiddenFail) {
+      const note = `หน้านี้เป็นภาษาไทย เครื่องอ่านไทยเจอ ${thaiSink.hiddenFail} แถวหลุดเกณฑ์ — ต้องเทียบกับใบจริง`;
+      for (const r of report.rows) {
+        r.needsReview = true;
+        r.reason = [r.reason, note].filter(Boolean).join(" · ");
+      }
+      console.warn(
+        `  [th-ocr] ⚠ หน้าไทย: เครื่องอ่านไทยเจอ ${thaiSink.hiddenFail} แถวหลุดเกณฑ์ แต่ keep-best ทิ้ง — ปักธงทั้ง ${report.rows.length} แถว`
+      );
+    }
     reports.push(report);
   }
   onProgress?.({ stage: "eval" });

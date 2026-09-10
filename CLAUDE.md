@@ -20,6 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **OCR sidecar** (`ocr-py/`): Python **RapidOCR `rapidocr` 3.x** (PP-OCRv4 **mobile** default, CPU onnxruntime, models ~16MB / venv ~366MB) — default OCR engine สำหรับ scanned COA. v4 (successor ของ `rapidocr-onnxruntime` ที่ค้างที่ PP-OCRv3 เพราะ pin Requires-Python <3.13). แม่นกว่า Tesseract มากบนตาราง (± ≥ ทศนิยม/multi-column ไม่เพี้ยน). HTTP daemon บน `:8765` (start แยกเหมือน Ollama). ★ **ไม่มี fallback engine** ★ — Tesseract.js ถูกถอดออก 2026-07-26 (ROUND 23): มันอ่านได้แต่เลขเพี้ยน = deceptive PASS/FAIL ซึ่งแย่กว่าพังดังๆ. daemon ล่ม → pipeline โยน `OCR_DAEMON_DOWN` → หน้าเว็บเตือน + สั่ง restart daemon ให้อัตโนมัติ
   - Override: `COA_OCR_MODEL_TYPE` (`mobile` default | `server`), `COA_OCR_VERSION` (`PP-OCRv4` default | `PP-OCRv5`) — server/v5 auto-download ModelScope. mobile ชนะ corpus (ZP10/RI-015 ground-truth) + เบากว่า 12x
   - **HQ fallback engine** (`POST {hq:true}` → daemon lazy-load engine ตัวที่ 2): scanned page ที่ default อ่าน spec/เลขเพี้ยนจน SKIP → pipeline re-OCR ด้วย HQ engine (default **server/PP-OCRv5**) เป็น challenger, keep เฉพาะชนะ keep-best ขาด (เพิ่ม PASS, 0 FAIL, PASS เดิมครบ) = anti-regression. lazy-load → ไฟล์สะอาดไม่โหลด v5 เลย (ไม่กิน RAM); inference ใช้ lock เดียว ไม่รันพร้อม default. เคส 4A: mobile อ่าน LoI "≤3.5%"→"%98"→SKIP, v5-server อ่านถูก→PASS. **v5-mobile ไม่พอ** (อ่านเป็น "985") — ต้อง server-tier. Override: `COA_OCR_HQ_MODEL_TYPE` (`server` default), `COA_OCR_HQ_VERSION` (`PP-OCRv5` default), `COA_OCR_HQ_FALLBACK=false` ปิด
+  - **Thai fallback engine** (`POST {lang:"th"}` → daemon lazy-load engine ตัวที่ 3, `mobile/PP-OCRv5` + rec dict ไทย): dict ของ default กับ HQ **ไม่มีอักษรไทยเลย** → ใบไทยสแกนเสียทั้งคอลัมน์ชื่อรายการ แต่**ไม่โผล่มาเป็น SKIP** → ใช้ trigger เดียวกับ HQ ไม่ได้. ยิงทุกหน้าที่เป็นสแกน แล้ว **ทิ้งทันทีถ้าอักษรไทยไม่ถึงทั้ง 20 ตัวและ 8% ของหน้า** (วัดจริง: ใบ CJK/อังกฤษรั่วสูงสุด 9 ตัว = 0.64% · ใบไทยจริง 39.9%) — สัญญาณที่ engine default ปลอมไม่ได้ → คลังเดิมไม่ขยับโดยโครงสร้าง (ไม่เผา LLM parse). ชนะแล้วข้าม HQ เลย (HQ dict ก็ไม่มีไทย). ★ **ตัวเลขอ่านเท่า default เป๊ะ คำตัดสินจึงไม่เพี้ยนตามคุณภาพของชื่อแถว** — ใบสังเคราะห์ทดสอบ: ตัดสินถูก 7/7 แถว (ทุกแถวติด amber). อ่านชื่อไทยได้ดีเฉพาะ**ข้อความยาว** (หัวใบ/ชื่อสินค้า/เลขล็อต/ชื่อผู้ตรวจ ถูกหมด) · **ช่องสั้นในตารางถูกแค่ ~30%** (2/7 แถวใน e2e · 5/16 ใน probe คำเดี่ยว) — ที่เหลือออกมาเป็นอักษรละตินมั่ว หรือ LLM หยิบหน่วยมาเป็นชื่อแทน. **ยังไม่เคยทดสอบกับใบไทยสแกนของจริง** ★ Override: `COA_OCR_TH_FALLBACK=false` ปิด, `COA_OCR_TH_MODEL_TYPE`, `COA_OCR_TH_VERSION`
 - **LLM**: Ollama HTTP API ที่ `localhost:11434`
   - `qwen3:4b` — parse text → JSON (default; reasoning model → ใส่ `think:false`. A/B vs โมเดลอื่น ดู `src/scripts/ab-models.ts`)
   - Override: `OLLAMA_URL`, `OLLAMA_MODEL`, `OCR_SIDECAR_URL`
@@ -67,6 +68,10 @@ OCR_BIND_HOST=0.0.0.0                    # (ฝั่ง daemon) 0.0.0.0 = ร�
 COA_OCR_MODEL_TYPE=mobile                # mobile (default) | server  — อ่านโดย ocr-py/ocr_server.py
 COA_OCR_VERSION=PP-OCRv4                 # PP-OCRv4 (default) | PP-OCRv5
 COA_OCR_HQ_PRELOAD=true                  # false = HQ engine กลับเป็น lazy-load (ประหยัด RAM, request hq แรกช้า)
+COA_OCR_TH_FALLBACK=true                 # false = ปิด challenger ใบไทย (ประหยัด ~10s/หน้าสแกน แลกกับอ่านใบไทยไม่ออก)
+COA_OCR_TH_MIN_CHARS=20                  # ด่านไทย ข้อ 1: จำนวนอักษรไทยขั้นต่ำ
+COA_OCR_TH_MIN_RATIO=0.08                # ด่านไทย ข้อ 2: สัดส่วนต่ออักษรทั้งหน้า — วัดจริง: ใบ CJK/อังกฤษรั่วสูงสุด 0.64% · ใบไทย 39.9%
+                                         # (เว้นว่าง/พิมพ์ผิด → กลับไปใช้ default ไม่ใช่ปล่อยผ่านทุกหน้า)
 COA_OCR_RETRY_MAX_SIDE=1400              # HQ ล้มเพราะจอง memory ไม่ได้ → อ่านซ้ำที่ด้านยาวเท่านี้ (0 = ปิด). ผลที่ได้ = ครึ่งความละเอียดปกติ → ถ้าชนะ pipeline ปักธง needsReview ทั้งหน้า
 COA_OCR_HQ_SPECULATE=false               # true = ยิง HQ OCR ซ่อนใต้ LLM parse ของหน้าเดียวกัน (JIT ต่อหน้า) — เปิดเฉพาะ daemon คนละเครื่อง (LAN). เครื่องเดียวกันวัดแล้วช้าลง 329s→340s (HQ engine กิน CPU เบียด Ollama)
 OLLAMA_KEEP_WARM=true                    # false = ปิด warm ping (upload แรกหลัง idle เจอ ~37s model reload)
@@ -109,7 +114,7 @@ frontend/
     └── types.ts                CoaRow, UploadResponse
 
 ocr-py/                         ★ Python OCR sidecar ★
-├── ocr_server.py              HTTP daemon (:8765, bind 0.0.0.0) — RapidOCR loaded once, POST /ocr {image_b64|path, hq}→tokens
+├── ocr_server.py              HTTP daemon (:8765, bind 0.0.0.0) — 3 engine variants (default/hq/th), POST /ocr {image_b64|path, hq, lang}→tokens
 ├── render_and_test.py         standalone test: render 8 scanned PDFs + OCR + dump _scan_test/
 ├── requirements.txt           rapidocr (3.x), onnxruntime, opencv-python-headless, pymupdf
 └── venv/                      (gitignored)
@@ -141,6 +146,7 @@ ocr-py/                         ★ Python OCR sidecar ★
 | LLM parse ผิด / เพิ่ม field | `coa/ollama-coa.service.ts` (prompt ใน `parseCoa`) |
 | spec format ใหม่ที่ pipeline อ่านไม่เข้าใจ | `coa/spec-normalizer.ts` + เพิ่ม fixture ที่ `evaluator.test.ts` |
 | result column รูปแบบใหม่ | `coa/result-normalizer.ts` |
+| ใบไทยสแกนอ่านไม่ออก / ชื่อรายการไทยเพี้ยน | `ocr-py/ocr_server.py` (`VARIANTS.th`) · ด่านอักษรไทย + challenger ที่ `coa/coa-pipeline.ts` (`thaiChallenge`) · ป้าย product/lot ไทยที่ `coa/product-lot-recovery.ts` |
 | OCR อ่านไม่ออก (scan) | start daemon ก่อน (`npm run ocr:daemon`) · ปรับ row-grouping ที่ `coa/rapidocr.service.ts` · daemon settings `ocr-py/ocr_server.py` · text-layer threshold `coa/pdf-text-extractor.ts` |
 | spec อ่านถูกแต่ PASS/FAIL กลับด้าน | `coa/spec-normalizer.ts` (`normalizeSpecFromCandidate` เคารพ operator ≥/≤ ในค่า ไม่ยึดทิศ column) |
 | เพิ่ม endpoint / รับ field เพิ่ม | `routes/coa.routes.ts` |
