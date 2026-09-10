@@ -263,5 +263,76 @@ check(
   carried.join(" | ")
 );
 
+// ── 7) 2 ล็อตเป็นคอลัมน์ค่าผล (Suzorite 325-HK ใบจริง) → ต้องออกแถวทั้ง 2 ล็อต ป้ายล็อตอยู่ในชื่อ ──
+//   เดิมหยิบคอลัมน์ขวาสุดคอลัมน์เดียว แล้วหัวรายงานแปะ lot=850993 ทั้งที่ค่าเป็นของ 850997 = ป้ายผิดล็อต
+console.log("[7] 2 lot columns → emit ทุกล็อต");
+const TWO_LOTS = [
+  "Item | Method | Specifications |  |  | LOT NO. 850993 | LOT NO. 850997",
+  "Sieve Analysis | ASTM E 11-87/ ASTM C 136-84 | (Mesh, wt%) | +100 | Max 1 | Traces | Traces",
+  " |  |  | -100/＋200 | Max 5 | 1.50 | 0.90",
+  " |  |  | -200/＋325 | 1〜8 | 6.00 | 3.65",
+  " |  |  | -325 | 92〜100 | 92.50 | 95.45",
+  "Loose Bulk Density | ASTM D716-86 | （lb/cu-ft） | 11.0〜16.0 |  | 11.4 | 12.2",
+  "Humidity | ASTM D 1864-81 | (％) | 0.00〜0.70 |  | 0.23 | 0.26",
+].join("\n");
+const two = parseStructuralGrid(TWO_LOTS, "transposed");
+check("12 แถว (6 รายการ × 2 ล็อต)", two.items.length === 12, `got ${two.items.length}`);
+const twoNames = two.items.map((i) => i.name);
+check(
+  "ชื่อแถวมีป้ายล็อตของตัวเอง",
+  twoNames[0] === "LOT No.850993 Sieve Analysis +100" &&
+    twoNames[6] === "LOT No.850997 Sieve Analysis +100",
+  twoNames.join(" | ")
+);
+const twoEval = two.items.map(evaluateItem);
+check(
+  "ค่าของล็อตแรกมาจากคอลัมน์ล็อตแรก (Humidity 0.23)",
+  twoEval[5].result === 0.23 && twoEval[11].result === 0.26,
+  `${twoEval[5].result} / ${twoEval[11].result}`
+);
+check(
+  "10 PASS / 2 SKIP (Traces ของทั้ง 2 ล็อต) / 0 FAIL",
+  twoEval.filter((e) => e.status === "PASS").length === 10 &&
+    twoEval.filter((e) => e.status === "SKIP").length === 2 &&
+    twoEval.filter((e) => e.status === "FAIL").length === 0,
+  twoEval.map((e) => e.status).join(",")
+);
+check("ไม่ประกาศเลขล็อตที่หัวรายงาน (ค่ามาจาก 2 ล็อต)", two.lotNo === null, `got ${two.lotNo}`);
+
+// ★ reviewer ROUND 34 ★ คอลัมน์ล็อตอยู่ "ซ้าย" ของคอลัมน์เกณฑ์ + ค่าผลของล็อตเป็นทรงขอบ ("<0.010")
+//   ถ้า loop หาเกณฑ์ไม่ข้ามคอลัมน์ล็อตอื่น → ค่าของล็อต B กลายเป็นเกณฑ์ของแถวล็อต A = เทียบค่ากับค่า
+const LOTS_BEFORE_SPEC = [
+  "Item | LOT NO. A1 | LOT NO. B2 | Specifications",
+  "S-Fe2O3 | <0.010 | <0.012 | 0.020 Max",
+  "Moisture | 0.30 | 0.40 | 0.50 Max",
+].join("\n");
+const lb = parseStructuralGrid(LOTS_BEFORE_SPEC, "normal");
+check("6 แถว (3 รายการ? ไม่ — 2 รายการ × 2 ล็อต)", lb.items.length === 4, `got ${lb.items.length}`);
+const feRows = lb.items.filter((i) => String(i.name).includes("S-Fe2O3"));
+check(
+  "เกณฑ์ทุกล็อตมาจากคอลัมน์ Specifications (0.020) ไม่ใช่ค่าของล็อตข้างๆ",
+  feRows.length === 2 && feRows.every((i) => i.specMax === 0.02),
+  feRows.map((i) => `${i.name}: max=${i.specMax} raw=${i.specRaw}`).join(" | ")
+);
+check(
+  "ค่าผลของแต่ละล็อตยังเป็นของตัวเอง",
+  feRows[0]?.result === "<0.010" && feRows[1]?.result === "<0.012",
+  `${feRows[0]?.result} / ${feRows[1]?.result}`
+);
+// scanned-vector = cell เลื่อนได้ → ห้ามแตกหลายล็อต (ค่าข้ามล็อตได้)
+const scannedTwo = parseStructuralGrid(TWO_LOTS, "transposed", "scanned-vector");
+check(
+  "[gate] scanned-vector → ไม่แตกหลายล็อต (6 แถว ไม่มีป้ายล็อต)",
+  scannedTwo.items.length === 6 && !scannedTwo.items.some((i) => /^LOT No\./.test(String(i.name))),
+  `${scannedTwo.items.length} rows`
+);
+
+// sentinel: ล็อตเดียว → พฤติกรรมเดิมเป๊ะ (ไม่ต่อป้ายล็อต ไม่เพิ่มแถว)
+check(
+  "[sentinel] ล็อตเดียว → ชื่อไม่มีป้ายล็อต 6 แถวเท่าเดิม",
+  sz.items.length === 6 && !sz.items.some((i) => /^LOT No\./.test(String(i.name))),
+  sz.items.map((i) => i.name).join(" | ")
+);
+
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

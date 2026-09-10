@@ -260,11 +260,16 @@ function resolveResultCol(dataRows: string[][], ncol: number): number {
 
 // หาคอลัมน์ spec หลัก — คอลัมน์ที่ classifySpec hit มากสุด (ไม่รวม resultCol)
 // คืน -1 ถ้าไม่พบหลักฐาน (grid ไม่มี spec cell เลย)
-function resolveSpecCol(dataRows: string[][], ncol: number, resultCol: number): number {
+function resolveSpecCol(
+  dataRows: string[][],
+  ncol: number,
+  resultCol: number,
+  skipCols: ReadonlySet<number> = new Set()
+): number {
   const score = new Array(ncol).fill(0);
   for (const row of dataRows) {
     for (let j = 0; j < row.length; j++) {
-      if (j === resultCol) continue;
+      if (j === resultCol || skipCols.has(j)) continue;
       if (classifySpec(row[j])) score[j]++;
     }
   }
@@ -337,6 +342,113 @@ function specColDirection(dataRows: string[][], specCol: number): "upper" | "low
   return "mixed";
 }
 
+// คอลัมน์ค่าผลที่หัวตารางตั้งชื่อด้วยเลขล็อต ("LOT NO. 850993 | LOT NO. 850997" — Suzorite 2 ล็อตในใบเดียว)
+//   ≥2 คอลัมน์ = ต้องออกแถวให้ทุกล็อต ไม่ใช่หยิบคอลัมน์ขวาสุดแล้วแปะป้ายล็อตซ้าย (ค่ากับป้ายคนละล็อต)
+function lotColumns(header: string[]): { idx: number; lot: string }[] {
+  const out: { idx: number; lot: string }[] = [];
+  for (let j = 0; j < header.length; j++) {
+    const m = nrm(header[j]).match(/^lot\s*no\.?\s*([A-Za-z0-9\-]+)$/i);
+    if (m) out.push({ idx: j, lot: m[1] });
+  }
+  return out;
+}
+
+// สร้าง items จาก grid โดยอ่านค่าผลจากคอลัมน์ที่กำหนด — เรียกซ้ำได้คอลัมน์ละล็อต (namePrefix = ป้ายล็อต)
+function emitGridItems(
+  dataRows: string[][],
+  ncol: number,
+  resultCol: number,
+  source: "structural" | "scanned-vector",
+  namePrefix: string,
+  // คอลัมน์ค่าผลของล็อตอื่นในใบเดียวกัน — ห้ามให้ค่าของล็อตข้างๆ ("<0.010") กลายเป็นเกณฑ์ของแถวนี้
+  otherValueCols: ReadonlySet<number> = new Set()
+): RawCoaItem[] {
+  // specCol + direction — ใช้กู้ bare-number ในคอลัมน์ spec ที่ classifySpec ข้ามไป (เช่น spec=0)
+  const specCol = resolveSpecCol(dataRows, ncol, resultCol, otherValueCols);
+  const specDir = specCol >= 0 ? specColDirection(dataRows, specCol) : "mixed";
+  // ป้ายแยกแถวใต้ชื่อกลุ่ม merged (D50/D90/Fe2O3) — -1 ถ้าใบนี้ไม่ใช่ layout นั้น
+  // ★ structural เท่านั้น ★ — scanned-vector สร้าง cell จาก token OCR ที่เลื่อนได้ ต่อป้ายแล้วชื่อมั่ว
+  //   (PR1950W_4063 ได้ "Softening point 125℃ mm" ทั้งที่แถวนั้นคือ Flow) — เส้นตารางจริงเท่านั้นที่เชื่อ cell ได้
+  const subLabelCol =
+    source === "structural" ? resolveSubLabelCol(dataRows, ncol, resultCol, specCol) : -1;
+
+  // ★ section carry เฉพาะ structural ★ — แถวที่ col0 ว่างยืมชื่อแถวบนได้เมื่อ cell มาจากเส้นตารางจริง
+  //   (ชื่อกลุ่ม merged แล้วแถวลูกเป็น mesh). scanned-vector สร้าง cell จาก token OCR + เส้นเวกเตอร์ที่
+  //   เหลื่อมกับภาพได้ → ชื่อสั้นหลุดคอลัมน์ไปเลย (PR1950W_4063 p2: "Flow"/"Moisture" จุดกึ่งกลาง token
+  //   ตกซ้ายเส้นแรก) → col0 ว่างเพราะ "ชื่อหาย" ไม่ใช่ "แถวลูกของกลุ่ม" → ยืมแล้วได้ชื่อผิดแบบเนียน
+  const carrySection = source === "structural";
+  const items: RawCoaItem[] = [];
+  let section = "";
+  for (const row of dataRows) {
+    const col0 = row[0] ?? "";
+    if (col0 && !isMesh(col0)) section = col0;
+
+    // locate per-row special cells (content-driven, excluding the locked result column)
+    let meshIdx = -1;
+    let methodIdx = -1;
+    let unitIdx = -1;
+    for (let j = 0; j < row.length; j++) {
+      if (j === resultCol || otherValueCols.has(j)) continue;
+      const c = row[j];
+      if (!c) continue;
+      if (meshIdx < 0 && isMesh(c)) meshIdx = j;
+      else if (methodIdx < 0 && isMethod(c)) methodIdx = j;
+      else if (unitIdx < 0 && isUnitCell(c)) unitIdx = j;
+    }
+
+    const base = col0 && !isMesh(col0) ? col0 : carrySection ? section : "";
+    const mesh = meshIdx >= 0 ? row[meshIdx] : "";
+    // ป้ายท้ายชื่อ: mesh (+100/-325) มาก่อนตามพฤติกรรมเดิม · ไม่มี mesh จึงใช้ sub-label ของ merged group
+    const suffix = mesh || (subLabelCol >= 0 ? nrm(row[subLabelCol] ?? "") : "");
+    const bare = suffix ? `${base} ${suffix}`.trim() : base;
+    const name = namePrefix ? `${namePrefix} ${bare}`.trim() : bare;
+    const method = methodIdx >= 0 ? row[methodIdx] : null;
+    const unit = unitIdx >= 0 ? unitText(row[unitIdx]) : null;
+    const resultRaw = resultCol >= 0 ? row[resultCol] ?? "" : "";
+
+    // spec = first spec-pattern cell, excluding name(0)/mesh/method/unit/result columns
+    let spec: SpecCells | null = null;
+    for (let j = 0; j < row.length; j++) {
+      if (j === 0 || j === resultCol || j === meshIdx || j === methodIdx || j === unitIdx) continue;
+      if (otherValueCols.has(j)) continue; // ค่าผลของล็อตอื่น ไม่ใช่เกณฑ์ของแถวนี้
+      const got = classifySpec(row[j]);
+      if (got) {
+        spec = got;
+        break;
+      }
+    }
+
+    // ★ กู้ bare-number ใน specCol เมื่อ classifySpec ข้ามไป (เลขเดี่ยวไม่มี operator) ★
+    // เงื่อนไข: spec ว่าง + specCol ชัดเจน (≥1 hit) + specCol cell เป็น bare number + ทิศคอลัมน์ไม่ mixed
+    // → route ตามทิศ upper→specMax, lower→specMin (geometry-based, ไม่ hardcode domain)
+    if (!spec && specCol >= 0 && specDir !== "mixed") {
+      const cell = nrm(row[specCol] ?? "");
+      if (isBare(cell) && !isMesh(cell)) {
+        const v = numOrNull(cell);
+        if (v !== null) {
+          spec = specDir === "upper" ? { specMax: v } : { specMin: v };
+        }
+      }
+    }
+
+    // ABSTAIN: a spacer row (no spec, no result) is dropped; a row with no identifiable name is not
+    //   emitted (phantom). A row with only one of spec/result still emits → evaluator honest-SKIPs.
+    if (!spec && !resultRaw) continue;
+    if (!base && !mesh) continue;
+
+    items.push({
+      name,
+      unit,
+      method,
+      specRaw: spec?.specRaw ?? null,
+      specMin: spec?.specMin ?? null,
+      specMax: spec?.specMax ?? null,
+      result: resultRaw || null,
+    });
+  }
+  return items;
+}
+
 // Parse a pdfplumber structural grid into RawCoa with NO LLM. orient is informational: pdf_table.py
 // has already transposed transposed COAs, so the grid is always items-as-rows by the time we see it.
 // source: "structural" = เส้นตารางจริงจาก pdfplumber (text-layer) — cell เชื่อถือได้
@@ -373,88 +485,26 @@ export function parseStructuralGrid(
     dataRows = rows.slice(1);
   }
 
-  const resultCol = resolveResultCol(dataRows, ncol);
-  // specCol + direction — ใช้กู้ bare-number ในคอลัมน์ spec ที่ classifySpec ข้ามไป (เช่น spec=0)
-  const specCol = resolveSpecCol(dataRows, ncol, resultCol);
-  const specDir = specCol >= 0 ? specColDirection(dataRows, specCol) : "mixed";
-  // ป้ายแยกแถวใต้ชื่อกลุ่ม merged (D50/D90/Fe2O3) — -1 ถ้าใบนี้ไม่ใช่ layout นั้น
-  // ★ structural เท่านั้น ★ — scanned-vector สร้าง cell จาก token OCR ที่เลื่อนได้ ต่อป้ายแล้วชื่อมั่ว
-  //   (PR1950W_4063 ได้ "Softening point 125℃ mm" ทั้งที่แถวนั้นคือ Flow) — เส้นตารางจริงเท่านั้นที่เชื่อ cell ได้
-  const subLabelCol =
-    source === "structural" ? resolveSubLabelCol(dataRows, ncol, resultCol, specCol) : -1;
-
-  // ★ section carry เฉพาะ structural ★ — แถวที่ col0 ว่างยืมชื่อแถวบนได้เมื่อ cell มาจากเส้นตารางจริง
-  //   (ชื่อกลุ่ม merged แล้วแถวลูกเป็น mesh). scanned-vector สร้าง cell จาก token OCR + เส้นเวกเตอร์ที่
-  //   เหลื่อมกับภาพได้ → ชื่อสั้นหลุดคอลัมน์ไปเลย (PR1950W_4063 p2: "Flow"/"Moisture" จุดกึ่งกลาง token
-  //   ตกซ้ายเส้นแรก) → col0 ว่างเพราะ "ชื่อหาย" ไม่ใช่ "แถวลูกของกลุ่ม" → ยืมแล้วได้ชื่อผิดแบบเนียน
-  const carrySection = source === "structural";
-  const items: RawCoaItem[] = [];
-  let section = "";
-  for (const row of dataRows) {
-    const col0 = row[0] ?? "";
-    if (col0 && !isMesh(col0)) section = col0;
-
-    // locate per-row special cells (content-driven, excluding the locked result column)
-    let meshIdx = -1;
-    let methodIdx = -1;
-    let unitIdx = -1;
-    for (let j = 0; j < row.length; j++) {
-      if (j === resultCol) continue;
-      const c = row[j];
-      if (!c) continue;
-      if (meshIdx < 0 && isMesh(c)) meshIdx = j;
-      else if (methodIdx < 0 && isMethod(c)) methodIdx = j;
-      else if (unitIdx < 0 && isUnitCell(c)) unitIdx = j;
-    }
-
-    const base = col0 && !isMesh(col0) ? col0 : carrySection ? section : "";
-    const mesh = meshIdx >= 0 ? row[meshIdx] : "";
-    // ป้ายท้ายชื่อ: mesh (+100/-325) มาก่อนตามพฤติกรรมเดิม · ไม่มี mesh จึงใช้ sub-label ของ merged group
-    const suffix = mesh || (subLabelCol >= 0 ? nrm(row[subLabelCol] ?? "") : "");
-    const name = suffix ? `${base} ${suffix}`.trim() : base;
-    const method = methodIdx >= 0 ? row[methodIdx] : null;
-    const unit = unitIdx >= 0 ? unitText(row[unitIdx]) : null;
-    const resultRaw = resultCol >= 0 ? row[resultCol] ?? "" : "";
-
-    // spec = first spec-pattern cell, excluding name(0)/mesh/method/unit/result columns
-    let spec: SpecCells | null = null;
-    for (let j = 0; j < row.length; j++) {
-      if (j === 0 || j === resultCol || j === meshIdx || j === methodIdx || j === unitIdx) continue;
-      const got = classifySpec(row[j]);
-      if (got) {
-        spec = got;
-        break;
-      }
-    }
-
-    // ★ กู้ bare-number ใน specCol เมื่อ classifySpec ข้ามไป (เลขเดี่ยวไม่มี operator) ★
-    // เงื่อนไข: spec ว่าง + specCol ชัดเจน (≥1 hit) + specCol cell เป็น bare number + ทิศคอลัมน์ไม่ mixed
-    // → route ตามทิศ upper→specMax, lower→specMin (geometry-based, ไม่ hardcode domain)
-    if (!spec && specCol >= 0 && specDir !== "mixed") {
-      const cell = nrm(row[specCol] ?? "");
-      if (isBare(cell) && !isMesh(cell)) {
-        const v = numOrNull(cell);
-        if (v !== null) {
-          spec = specDir === "upper" ? { specMax: v } : { specMin: v };
-        }
-      }
-    }
-
-    // ABSTAIN: a spacer row (no spec, no result) is dropped; a row with no identifiable name is not
-    //   emitted (phantom). A row with only one of spec/result still emits → evaluator honest-SKIPs.
-    if (!spec && !resultRaw) continue;
-    if (!base && !mesh) continue;
-
-    items.push({
-      name,
-      unit,
-      method,
-      specRaw: spec?.specRaw ?? null,
-      specMin: spec?.specMin ?? null,
-      specMax: spec?.specMax ?? null,
-      result: resultRaw || null,
-    });
+  // ใบที่มีหลายล็อตเป็นคอลัมน์ค่าผล → อ่านทุกคอลัมน์ แล้วติดป้ายล็อตไว้ในชื่อแถวให้คนแยกออก
+  //   structural เท่านั้น (เส้นตารางจริง) — scanned-vector วาง cell จาก token OCR ที่เลื่อนได้ ค่าจะข้ามล็อต
+  const lots = source === "structural" && dataRows !== rows ? lotColumns(rows[0]) : [];
+  const lotCols = lots.filter(({ idx }) => dataRows.some((r) => nrm(r[idx] ?? "") !== ""));
+  if (lotCols.length >= 2) {
+    const lotIdx = new Set(lotCols.map((l) => l.idx));
+    const items = lotCols.flatMap((l) =>
+      emitGridItems(
+        dataRows,
+        ncol,
+        l.idx,
+        source,
+        `LOT No.${l.lot}`,
+        new Set([...lotIdx].filter((j) => j !== l.idx))
+      )
+    );
+    // ไม่ประกาศเลขล็อตที่หัวรายงาน — ค่าในใบมาจากหลายล็อต ป้ายล็อตอยู่ในชื่อแถวของตัวเองแล้ว
+    if (items.length > 0) return { product: null, lotNo: null, items };
   }
 
-  return { product: null, lotNo, items };
+  const resultCol = resolveResultCol(dataRows, ncol);
+  return { product: null, lotNo, items: emitGridItems(dataRows, ncol, resultCol, source, "") };
 }

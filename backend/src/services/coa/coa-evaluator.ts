@@ -18,6 +18,9 @@ export interface CoaItemInput {
   //   ครบคู่ = ค่าที่วัดได้เป็นช่วง → ต้องอยู่ในกรอบ spec ทั้งช่วง (ดู evaluateInterval)
   resultMin?: string | number | null;
   resultMax?: string | number | null;
+  // โมดูล structural อ่านเกณฑ์มาจากช่องของมันเองในตาราง (ไม่ใช่ LLM คัดลอกค่าผลมาเป็นเกณฑ์)
+  //   ★ ตั้งได้เฉพาะโมดูลที่นับช่องแล้วถอยเมื่อจำนวนไม่ตรง ★ ห้ามตั้งจากโมดูลที่ match ชื่อแถวแล้วอ่านช่องข้างๆ
+  specFromCell?: boolean;
 }
 
 export interface EvaluatedItem {
@@ -42,6 +45,9 @@ export interface EvaluatedItem {
   // แถวนี้มีตัวเลข comma ที่อ่านได้ 2 ทาง (ดู hasAmbiguousThousands) — verdict ยืนบนสมมติฐาน "comma = ทศนิยม"
   //   ค่าอาจเพี้ยน 1000 เท่า → margin ไม่มีความหมาย (margin-green ห้ามล้างธงนี้ ดู applyMarginGreen G5)
   ambiguousThousands?: boolean;
+  // แถวนี้ระบบประกอบเองจากตำแหน่งช่องในตาราง (lot-row-table / paren-spec) ไม่ได้มาจาก LLM
+  //   คอลัมน์เป็นการอนุมาน → ธงต้องติดถาวร ห้ามให้ margin-green ล้าง
+  columnRebuilt?: boolean;
   // OCR 2 รอบอ่านเลขแถวนี้ไม่เหมือนกัน (ดู flagChallengerPasses) — ยังไม่รู้ว่าเลขไหนคือเลขบนใบ
   //   ด่านที่ล้างธงทุกตัวต้องข้ามแถวนี้ (margin-green G6, dupont cross-page) ไม่งั้นเลขที่เถียงกันขึ้นจอเขียว
   valueDisputed?: boolean;
@@ -259,7 +265,15 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
         !spec.dirFromColumn &&
         r === spec.value;
 
-  if (pass && boundaryExact) {
+  // เกณฑ์อ่านมาจากช่องของตัวเองบนใบ + ค่าผลเท่าเกณฑ์เป๊ะ = ผ่านทุกทิศที่เป็นไปได้ (≤/≥/=) → PASS ได้ แต่ยังปักธง
+  //   เกณฑ์ที่ LLM คัดลอกค่าผลมาเองไม่เข้าเงื่อนไข (FC-250-1500 ไม่มีคอลัมน์เกณฑ์ → ต้อง SKIP ต่อ)
+  const specCellEquality =
+    item.specFromCell === true &&
+    pass &&
+    ((spec.op === "between" && spec.min === spec.max && r === spec.min) ||
+      ((spec.op === "eq" || spec.op === "approx") && r === spec.value));
+
+  if (pass && boundaryExact && !specCellEquality) {
     return {
       ...base,
       min,
@@ -280,7 +294,7 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
   //     กู้ทิศจาก flat text ไม่ได้ (lever-1 column-placeholder ลองแล้ว regress: column position เชื่อไม่ได้
   //     เมื่อ Min/Max header merge/ค่าตกผิด slot) → จะได้ auto-FAIL คืนต้องพึ่ง structural extractor (Docling)
   //   ปลอดภัยกับ test: fixture จริงเป็น range/bound หมด ไม่มี eq → ไม่ regress (evaluator.test ยัง 4P/0F)
-  if ((spec.op === "eq" || spec.op === "approx") && spec.value != null) {
+  if ((spec.op === "eq" || spec.op === "approx") && spec.value != null && !specCellEquality) {
     return {
       ...base,
       min,
@@ -290,6 +304,20 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
       reason: pass
         ? "ระบบอาจอ่านค่าผลสลับมาเป็นเกณฑ์ (spec) — เทียบกับใบจริง"
         : "เกณฑ์เป็นเลขเดี่ยว ระบบไม่รู้ว่าเป็นค่าต่ำสุดหรือสูงสุด (ทิศหาย) — เทียบกับใบจริง",
+      needsReview: true,
+    };
+  }
+
+  // ใบพิมพ์เกณฑ์ที่ไม่มีค่าใดผ่านได้ ("<0.0" บนค่าที่ติดลบไม่ได้ — Kemolit KF-3 แถว Retention on 60 mesh)
+  //   ความผิดอยู่บนใบ ไม่ใช่ของเสีย → SKIP ให้คนอ่านใบเอง ห้ามฟ้อง FAIL
+  if (!pass && spec.op === "lt" && spec.value === 0 && r >= 0) {
+    return {
+      ...base,
+      min,
+      max,
+      result: r,
+      status: "SKIP",
+      reason: `ใบพิมพ์เกณฑ์ ${spec.raw} — ไม่มีค่าใดผ่านได้ เทียบกับใบจริง`,
       needsReview: true,
     };
   }
@@ -306,7 +334,7 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
     result: r,
     status: pass ? "PASS" : "FAIL",
     reason,
-    needsReview: !!review,
+    needsReview: !!review || specCellEquality,
   };
 }
 

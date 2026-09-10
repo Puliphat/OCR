@@ -34,6 +34,8 @@ export interface RawCoaItem {
   // ★ ใบที่คอลัมน์ผลแตกเป็น Min|Max (ไม่มีคอลัมน์ result เดี่ยว เช่น RB220 "Results Min./Max.") ★
   resultMin?: string | number | null;
   resultMax?: string | number | null;
+  // โมดูล structural อ่านเกณฑ์มาจากช่องของมันเองบนใบ (ดู CoaItemInput.specFromCell) — LLM ไม่เคยตั้งฟิลด์นี้
+  specFromCell?: boolean;
 }
 
 export interface RawCoa {

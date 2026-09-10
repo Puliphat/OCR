@@ -28,6 +28,11 @@ import { recoverSpecPairs } from "./spec-pair-recovery";
 import { recoverSplitTextRows } from "./text-row-recovery";
 import { recoverSieveTableResults, recoverMissingSieveRows } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
+import { recoverLimitColumns } from "./limit-columns-recovery";
+import { recoverLotRowTable } from "./lot-row-table-recovery";
+import { recoverParenSpecRows } from "./paren-spec-recovery";
+import { recoverSplitBoundCells } from "./bound-cell-recovery";
+import { recoverSpecRowBelow } from "./spec-row-below-recovery";
 import {
   dropUngroundedItems,
   downgradeUngroundedFails,
@@ -478,6 +483,9 @@ function applyMarginGreen(
     // G6: OCR 2 รอบอ่านเลขนี้ไม่เหมือนกัน → margin ตอบไม่ได้ว่าเลขไหนคือเลขบนใบ ล้างธงไม่ได้
     if (r.valueDisputed) continue;
 
+    // G7: แถวที่ระบบประกอบเองจากตำแหน่งช่อง — margin ตอบไม่ได้ว่าจับคู่คอลัมน์ถูกไหม
+    if (r.columnRebuilt) continue;
+
     const res = r.result;
     if (res == null || !Number.isFinite(res) || res === 0) continue; // G2 needs finite nonzero result
 
@@ -626,6 +634,48 @@ async function runExtractionPass(
     raw.items = metaFilter.kept;
   }
 
+  // ตารางหลายล็อต (เกณฑ์บรรทัดเดียว ค่าบรรทัดละล็อต) — อ่านเองตามตำแหน่งช่อง แม่นกว่า LLM ที่หยิบชื่อ
+  //   คอลัมน์มาเป็นชื่อแถวแล้วค่าเลื่อน · จำนวนช่องไม่ตรงเมื่อไร โมดูลนี้ถอยเอง
+  const lotTable = recoverLotRowTable(text);
+  if (lotTable) {
+    console.log(
+      `  [lot-table] อ่านตารางหลายล็อตเอง ${lotTable.lots.length} ล็อต × ${
+        lotTable.items.length / lotTable.lots.length
+      } คอลัมน์ = ${lotTable.items.length} แถว (แทนผล LLM ${raw.items?.length ?? 0} แถว)`
+    );
+    raw.items = lotTable.items;
+  }
+
+  // ใบที่วางเกณฑ์ไว้ในวงเล็บท้ายบรรทัด + วัดหลายครั้งก่อนช่อง Average → อ่านช่องก่อนวงเล็บเป็นค่าผล
+  //   เก็บแถวข้อความของ LLM (Appearance/Oil ที่ไม่มีตัวเลข) ไว้ด้วย ไม่งั้นรายการหายจากจอ
+  const parenSpec = lotTable ? null : recoverParenSpecRows(text);
+  if (parenSpec) {
+    const textRows = (raw.items ?? []).filter((i) => !/\d/.test(String(i.result ?? "")));
+    console.log(
+      `  [paren-spec] อ่านเกณฑ์ในวงเล็บ + ช่อง Average เอง ${parenSpec.rows} แถว (แทนผล LLM ${raw.items?.length ?? 0} แถว)`
+    );
+    raw.items = [...parenSpec.items, ...textRows];
+  }
+
+  // ใบแนวนอนที่แถว Specifications อยู่ "ใต้" แถวค่า (Tin Powder) — LLM ไม่ออกแถวเลย ต้องจับคู่เองโดยยึดขวา
+  const specBelow = lotTable || parenSpec ? null : recoverSpecRowBelow(text);
+  if (specBelow) {
+    console.log(
+      `  [spec-below] อ่านตารางแนวนอนที่เกณฑ์อยู่ใต้ค่า ${specBelow.labels} คอลัมน์ (แทนผล LLM ${raw.items?.length ?? 0} แถว)`
+    );
+    raw.items = specBelow.items;
+  }
+
+  // OCR แยกคำ Max/Min เป็นช่องลอย → LLM หยิบมาเป็นค่าผล ทำทั้งแถวเป็น SKIP ทั้งที่ใบอ่านออก
+  const boundCells = recoverSplitBoundCells(raw.items ?? [], text);
+  if (boundCells.fixed.length > 0) {
+    console.log(
+      `  [bound-cell] ต่อคำ Max/Min กลับเข้าเกณฑ์ ${boundCells.fixed.length} รายการ: ${boundCells.fixed
+        .map((f) => `${f.name}(${f.spec} ผล ${f.result})`)
+        .join(", ")}`
+    );
+  }
+
   // ตัดขอบเกณฑ์ที่ไม่ได้อยู่ในบรรทัดของแถวตัวเอง (LLM ข้ามช่องว่างแล้วยืมเลขของแถวถัดไป)
   const boundFix = dropUngroundedSpecBounds(raw.items ?? [], text);
   if (boundFix.fixed.length > 0) {
@@ -716,6 +766,16 @@ async function runExtractionPass(
     }
   }
 
+  // ใบที่หัวตารางวางเกณฑ์ไว้ก่อนค่าผล (Lower/Upper limit → Analysis Results) — ไม่ใช่ท่านั้นจะไม่แตะเลย
+  const limitCols = recoverLimitColumns(raw.items ?? [], text);
+  if (limitCols.fixed.length > 0) {
+    console.log(
+      `  [limit-cols] อ่านคอลัมน์ตามหัวตาราง Lower/Upper limit ${limitCols.fixed.length} รายการ: ${limitCols.fixed
+        .map((f) => `${f.name}(${f.from} → ${f.to})`)
+        .join(", ")}`
+    );
+  }
+
   // ★ Result-side Min|Max recovery (deterministic, header-anchored) ★ — ใบที่ฝั่งผลแตกเป็น 2 คอลัมน์
   //   Min|Max (ไม่มีคอลัมน์ result เดี่ยว เช่น RB220) → ค่าที่วัดได้เป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง.
   //   qwen3:4b map พลาดทุกรัน → กู้จาก header เอง. ★ ABSTAIN ถ้าไม่เจอโครง Results/Limits + Min./Max. ★
@@ -748,6 +808,35 @@ async function runExtractionPass(
         .map((d) => d.name)
         .join(", ")}`
     );
+  }
+
+  // แถวที่อ่านคอลัมน์ใหม่ตามหัวตาราง Lower/Upper limit — เปลี่ยนทั้งค่าและเกณฑ์ ต้องให้คนตรวจ
+  if (limitCols.fixed.length > 0) {
+    const names = new Set(limitCols.fixed.map((f) => f.name.trim()));
+    for (const r of evaluated.rows) {
+      if (!names.has(r.name.trim())) continue;
+      r.needsReview = true;
+      r.columnRebuilt = true;
+      const why = "ระบบอ่านคอลัมน์ใหม่ตามหัวตาราง (เกณฑ์อยู่ก่อนค่าผล) — เทียบกับใบจริง";
+      r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
+    }
+  }
+
+  // แถวที่ระบบจับคู่เกณฑ์-ค่าเองตามตำแหน่งช่อง — คนต้องตรวจ เหมือน path spatial อื่น
+  const rebuilt = lotTable?.items ?? parenSpec?.items ?? specBelow?.items;
+  if (rebuilt) {
+    const why = lotTable
+      ? "ระบบจับคู่เกณฑ์กับค่าตามตำแหน่งช่องในตารางหลายล็อต — เทียบกับใบจริง"
+      : parenSpec
+      ? "ระบบอ่านค่าจากช่อง Average และเกณฑ์ในวงเล็บเอง — เทียบกับใบจริง"
+      : "ระบบจับคู่เกณฑ์ที่อยู่ใต้แถวค่าโดยยึดคอลัมน์ขวา — เทียบกับใบจริง";
+    const names = new Set(rebuilt.map((i) => String(i.name ?? "").trim()));
+    for (const r of evaluated.rows) {
+      if (!names.has(r.name.trim())) continue;
+      r.needsReview = true;
+      r.columnRebuilt = true;
+      r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
+    }
   }
 
   // ★ OCR digit-scramble outlier ★ — downgrade FAIL ที่ result > specMax×100 (OCR เลขเพี้ยนรุนแรง)

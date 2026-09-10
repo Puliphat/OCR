@@ -27,7 +27,35 @@ const cases: [string, Expect][] = [
   ["0.5≥",           { op: "le", value: 0.5 }],
   ["0.5≦",           { op: "ge", value: 0.5 }],
   ["94≦",            { op: "ge", value: 94 }],
-  ["1=",             null], // OCR อ่าน ≧ เป็น = → ทิศไม่รู้ ห้ามเดา ต้องปล่อย SKIP
+  ["1=",             null],
+  // ROUND 33 — PAG-80/Kemolit: คำนำหน้าติดเลข + OCR แทรกช่องว่างหลังจุดทศนิยม
+  ["Max0.20",        { op: "le", value: 0.2 }],
+  ["Max0. 50",       { op: "le", value: 0.5 }],
+  ["Max10. 0",       { op: "le", value: 10 }],
+  ["Min99.30",       { op: "ge", value: 99.3 }],
+  ["80.00MIN",       { op: "ge", value: 80 }],
+  ["0.30MAX",        { op: "le", value: 0.3 }],
+  ["20. 0~30. 0",    { op: "between", min: 20, max: 30 }],
+  ["Max 0.5",        { op: "le", value: 0.5 }],   // ช่องว่างคั่น — ห้ามตัด Max ทิ้งเป็น eq
+  ["Min 94",         { op: "ge", value: 94 }],
+  // หน่วยนาที — ห้ามเสกทิศขอบล่างจากคำว่า min ที่เป็นหน่วย (reviewer ROUND 33)
+  ["30 min",          { op: "eq", value: 30 }],
+  ["45 min",          { op: "eq", value: 45 }],
+  ["D50 6.5 Min",     { op: "ge", value: 6.5 }],
+  ["D50 6.5 Max",     { op: "le", value: 6.5 }],
+  ["99.30 Min.",      { op: "ge", value: 99.3 }],
+  // ROUND 33 — KGP-H65: ช่องเกณฑ์มีป้ายชื่อย่อยนำหน้า (ตัวจริงจากใบ)
+  ["D50   6.5±1.0",  { op: "between", min: 5.5, max: 7.5 }],
+  ["D90   50以下",     { op: "le", value: 50 }],
+  ["SiO2+CaO 94以上",  { op: "ge", value: 94 }],
+  ["Fe2O3 0.5以下",    { op: "le", value: 0.5 }],
+  ["g/ml   0.23±0.06", { op: "between", min: 0.17, max: 0.29 }],
+  ["K2Ti6O13, (TiO2)", null],  // ข้อความล้วน — ตัดป้ายแล้วก็ยังไม่มีเลข → ห้ามเสกเกณฑ์ // OCR อ่าน ≧ เป็น = → ทิศไม่รู้ ห้ามเดา ต้องปล่อย SKIP
+  // ★ ROUND 34 ★ ตัดป้ายแล้วเหลือเลขเปล่า = metadata ไม่ใช่เกณฑ์ — โมดูล structural ใช้ผลตัวนี้เป็นด่านถอย
+  ["Lot 240521",      null],
+  ["Date 2026",       null],
+  ["No. 4064",        null],
+  ["Mesh 100",        null],
   ["< 15",           { op: "lt", value: 15 }],
   ["> 50",           { op: "gt", value: 50 }],
   ["0",              { op: "eq", value: 0 }],

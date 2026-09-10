@@ -43,11 +43,21 @@ function repairOcrDigits(s: string): string {
   return s.replace(/[OoQDIl|ZSGTBg]/g, (c) => OCR_DIGIT_FIX[c] ?? c);
 }
 
+// OCR แทรกช่องว่างหลังจุดทศนิยม ("Max0. 50" = 0.50 ไม่ใช่ 0 กับ 50) — เจอทั้งใบ PAG-80/Kemolit
+//   ต่อคืนก่อน parse ไม่งั้นเกณฑ์อ่านไม่ออกทั้งใบ
+function joinSplitDecimals(s: string): string {
+  return s.replace(/(\d)\.\s+(\d)/g, "$1.$2");
+}
+
+// "min" เป็นได้ทั้งหน่วยนาทีและคำบอกขอบล่าง — ลบทิ้งเฉพาะตอนเป็นหน่วยจริง (มีช่องว่างนำ ไม่ติดเลข ไม่มีจุดตาม)
+//   ไม่แยกแบบนี้: "Min99.30" เหลือ "99.30" = ทิศหาย · แยกหยาบไป: "30 min" กลายเป็น ge 30 = เสกทิศที่ใบไม่ได้เขียน
 function stripUnits(s: string): string {
-  return s
+  return joinSplitDecimals(s)
     .replace(/\s+/g, " ")
     .replace(/[%℃°]/g, "")
-    .replace(/g\/cm3?|kg\/cm2?|g\/10\s*min|g\/l|m2\/g|μm|um|mm|ppm|cm|kg|wt|sec|min(?!\.)|\(m\/m\)/gi, "")
+    .replace(/g\/cm3?|kg\/cm2?|g\/10\s*min|g\/l|m2\/g|μm|um|mm|ppm|cm|kg|wt|sec|\(m\/m\)/gi, "")
+    // ตัวพิมพ์เล็กล้วน = หน่วยนาที ("30 min") · "Min"/"MIN"/"Min." = คำบอกขอบล่างของใบ ต้องเหลือไว้ให้ branch ge อ่าน
+    .replace(/(?<=\s)min(?![.\d])/g, "")
     .trim();
 }
 
@@ -63,7 +73,7 @@ export function normalizeSpec(raw: unknown): ParsedSpec | null {
 
 // Parse spec จากคอลัมน์เดียว (เช่น "275-425", "≤ 0.2", "26 ± 2")
 // ลำดับ branch สำคัญ — ± ก่อน range เพราะ "26 ± 2" ก็เข้า regex range ได้
-function parseSpec(raw: unknown): ParsedSpec | null {
+function parseSpec(raw: unknown, depth = 0): ParsedSpec | null {
   if (raw == null) return null;
   let s = String(raw).trim();
   if (!s) return null;
@@ -128,8 +138,10 @@ function parseSpec(raw: unknown): ParsedSpec | null {
   {
     const leSym = cleaned.match(new RegExp(`^(?:≤|≦|<=)\\s*(${NUM})$`));
     const leSuffix = cleaned.match(new RegExp(`^(${NUM})\\s*Max\\.?$`, "i"));
+    // "Max0.20" / "Max. 0.5" — คำนำหน้าติดเลข (ใบญี่ปุ่นพิมพ์แบบนี้ทั้งคอลัมน์)
+    const lePrefix = cleaned.match(new RegExp(`^Max\\.?\\s*(${NUM})$`, "i"));
     const leJp = cleaned.match(new RegExp(`^(${NUM})\\s*以下$`));
-    const m = leSym || leSuffix || leJp;
+    const m = leSym || leSuffix || lePrefix || leJp;
     if (m) return { op: "le", value: toNum(m[1]), raw: original };
   }
 
@@ -137,8 +149,9 @@ function parseSpec(raw: unknown): ParsedSpec | null {
   {
     const geSym = cleaned.match(new RegExp(`^(?:≥|≧|>=)\\s*(${NUM})$`));
     const geSuffix = cleaned.match(new RegExp(`^(${NUM})\\s*Min\\.?$`, "i"));
+    const gePrefix = cleaned.match(new RegExp(`^Min\\.?\\s*(${NUM})$`, "i"));
     const geJp = cleaned.match(new RegExp(`^(${NUM})\\s*以上$`));
-    const m = geSym || geSuffix || geJp;
+    const m = geSym || geSuffix || gePrefix || geJp;
     if (m) return { op: "ge", value: toNum(m[1]), raw: original };
   }
 
@@ -175,6 +188,17 @@ function parseSpec(raw: unknown): ParsedSpec | null {
   {
     const m = cleaned.match(new RegExp(`^(${NUM})$`));
     if (m) return { op: "eq", value: toNum(m[1]), raw: original };
+  }
+
+  // ช่องเกณฑ์มีป้ายชื่อรายการนำหน้า ("D50 6.5±1.0") → ตัดป้ายแล้ว parse ใหม่ครั้งเดียว
+  //   ต้องอยู่ท้ายสุด — ไม่งั้น "Max 0.5" จะโดนตัดเหลือ "0.5" = ทิศเกณฑ์หาย · รับเฉพาะส่วนที่เหลือที่มีทิศ/เป็นช่วง
+  //   ไม่งั้น "Lot 240521" นับเป็นเกณฑ์ แล้วโมดูลที่เช็ค "ช่องนี้เป็นเกณฑ์ไหม" จับคู่เกณฑ์↔ค่าเลื่อนทั้งแถว
+  {
+    const m = cleaned.match(/^([A-Za-z぀-ヿ一-鿿][^\s]{0,15})\s+(.+)$/);
+    if (m && !depth) {
+      const rest = parseSpec(m[2], 1);
+      if (rest && rest.op !== "eq" && rest.op !== "approx") return { ...rest, raw: original };
+    }
   }
 
   return null;
