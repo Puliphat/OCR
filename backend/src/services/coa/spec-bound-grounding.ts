@@ -52,6 +52,10 @@ export function dropUngroundedSpecBounds(
   const lines = ocrText.split(/\r?\n/);
 
   for (const it of items) {
+    // เกณฑ์ที่โมดูล structural นับช่องแล้วอ่านมาจากช่องของแถวตัวเอง — ที่มาแน่นกว่าการไล่หาบรรทัดจาก
+    //   flat text ตรงนี้ ตัดขอบทิ้งเมื่อไรคือทำเกณฑ์ให้หลวมกว่าใบจริงด้วยหลักฐานที่อ่อนกว่า
+    if (it.specFromCell === true) continue;
+
     const spec = normalizeSpecFromCandidate({
       specRaw: it.specRaw,
       min: it.specMin,

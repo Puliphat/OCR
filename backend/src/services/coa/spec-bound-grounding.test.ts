@@ -65,5 +65,29 @@ function check(label: string, got: unknown, want: unknown) {
   check("เหลือขอบบน", items[0].specRaw, "6 Max.");
 }
 
+// 6. เกณฑ์ที่โมดูล structural อ่านจากช่องของแถวเอง → ห้ามตัด (คู่ควบคุมกับเคส 5: input เดียวกันเป๊ะ
+//    ต่างแค่ธง — ถ้าเคสนี้ยังโดนตัด แปลว่าธงไม่ถูกอ่าน · ถ้าเคส 5 ไม่โดนตัด แปลว่าโมดูลตายทั้งตัว)
+{
+  const ocr = "SiO2  |  -  |  6.0%  |  5.1%";
+  const items: RawCoaItem[] = [
+    { name: "SiO2", specRaw: "2.0 - 6.0", result: "5.1", specFromCell: true },
+  ];
+  const res = dropUngroundedSpecBounds(items, ocr);
+  check("ธง specFromCell → ไม่ตัด", res.fixed.length, 0);
+  check("เกณฑ์สองขอบคงเดิม", items[0].specRaw, "2.0 - 6.0");
+}
+
+// 7. ธงอยู่คนละแถวกับแถวที่ต้องตัด → ตัดเฉพาะแถวที่ไม่มีธง ไม่ใช่ข้ามทั้งใบ
+{
+  const items: RawCoaItem[] = [
+    { name: "Fe", specRaw: "42.0% - 46.0%", result: "42.4" },
+    { name: "SiO2", specRaw: "2.0 - 6.0", result: "5.1", specFromCell: true },
+  ];
+  const res = dropUngroundedSpecBounds(items, HGPP_OCR);
+  check("ตัดเฉพาะแถวไม่มีธง", res.fixed.map((f) => f.name), ["Fe"]);
+  check("Fe ถูกตัด", items[0].specRaw, "42 Min.");
+  check("SiO2 ที่มีธงคงเดิม", items[1].specRaw, "2.0 - 6.0");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
