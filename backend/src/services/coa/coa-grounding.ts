@@ -36,6 +36,10 @@ const HAS_CJK = new RegExp(`[${CJK}]`);
 // CJK เขียนติดกันไม่มีช่องว่าง → token 2 ตัวอักษรคือ "คำเต็ม" แล้ว (粒度 = particle size) และ dense พอ
 //   ที่จะไม่ชนบังเอิญ (kanji 2 ตัว ≈ ล้านคู่) → ยอมรับ ≥2 เฉพาะ token ที่มี CJK
 const MIN_TOKEN = 3;
+
+// ช่องที่ขึ้นต้นด้วยตัวเลข = บรรทัดนี้ถือค่าของตัวเอง — ใช้แยก "แถวป้าย" ออกจาก "แถวที่ถือค่าเอง"
+//   ต้องหลวมพอรับค่าที่มีหน่วยต่อท้าย ("0.35 g/L") ไม่งั้นแถวแนวตั้งปกติถูกนับเป็นแถวป้าย
+const VALUE_CELL = /^[-+<>≤≥(\[]?\s*\d/;
 const longEnough = (t: string) => t.length >= MIN_TOKEN || (t.length >= 2 && HAS_CJK.test(t));
 
 // alpha token ของชื่อ — ตัดเลข/อักขระทิ้ง, lower-case (รับ latin + ไทย + CJK)
@@ -520,6 +524,36 @@ export function downgradeUngroundedPasses(
       }
       if (validated) continue;
     }
+
+    // ★ ตารางแนวนอน: ชื่อรายการเป็นป้ายคอลัมน์ ค่าอยู่คนละบรรทัด ★ — โมเดล "ค่าต้องอยู่บรรทัดชื่อ"
+    //   ของด่านนี้ใช้กับทรงนี้ไม่ได้เลย บรรทัดป้ายไม่เคยถือค่าของแถวไหน → ตัดสินไม่ได้ ต้องปล่อยตามสัญญาเดิม
+    //   ของด่าน ("พิสูจน์ collapse ไม่ได้ → คง PASS") ไม่ใช่ downgrade เพราะบังเอิญมีเลขหลงบนแถวป้าย
+    const labelCellCount = (li: number) =>
+      splitCells(lines[li]).map((c) => c.trim()).filter((c) => c).length;
+    const isLabelRowOwningName = (li: number) => {
+      const cs = splitCells(lines[li]).map((c) => c.trim()).filter((c) => c);
+      if (cs.length < 3) return false; // ป้ายน้อยกว่า 3 ช่อง = ไม่ใช่ตารางแนวนอน
+      if (cs.some((c) => VALUE_CELL.test(c))) return false; // มีช่องที่ขึ้นต้นด้วยเลข = บรรทัดนี้ถือค่าเอง
+      return lineCells[li].some((c) => c === joinedName); // ชื่อแถวนี้เป็นป้ายเต็มช่อง
+    };
+    // ทั้งค่าผลและขอบเกณฑ์ต้องโผล่ในบรรทัดตารางใต้แถวป้าย — ขาดอย่างใดอย่างหนึ่ง = ยกเลขมาจากที่อื่น
+    //   (เงื่อนไขเดียวกับ path ตรวจบรรทัดเดียวข้างบน ต่างแค่ยอมให้ค่ากับเกณฑ์อยู่คนละบรรทัดตามทรงแนวนอน)
+    const valueBelowLabelRow = (li: number) => {
+      let rSeen = false;
+      let bSeen = boundVal == null;
+      for (let j = li + 1; j < Math.min(li + 4, lines.length); j++) {
+        if (labelCellCount(j) < 3) continue; // บรรทัดที่ไม่ใช่ตาราง (หัวจดหมาย/หมายเหตุ) ไม่นับ
+        if (resultNums.some((v) => valuePresent(v, lineNums[j]))) rSeen = true;
+        if (boundVal != null && valuePresent(boundVal, lineNums[j])) bSeen = true;
+      }
+      return rSeen && bSeen;
+    };
+    let transposed = false;
+    for (let i = 0; i < lines.length && !transposed; i++) {
+      if (scores[i] !== bestScore) continue;
+      if (isLabelRowOwningName(i) && valueBelowLabelRow(i)) transposed = true;
+    }
+    if (transposed) continue;
 
     // บรรทัดชื่อมี data number ของตัวเอง แต่ result/bound ที่ LLM ให้ไม่ตรง → ยกเลขมาจากแถวอื่น (deceptive)
     r.status = "SKIP";

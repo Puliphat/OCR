@@ -310,5 +310,128 @@ check(
   `(downgraded=${rLeak.downgraded.length})`
 );
 
+// ===== ตารางแนวนอน: ชื่อรายการเป็นป้ายคอลัมน์ ค่าอยู่คนละบรรทัด =====
+// ด่านนี้เช็ค "ค่าต้องอยู่บรรทัดชื่อ" แต่บนทรงนี้บรรทัดชื่อคือแถวป้าย ไม่เคยถือค่าของแถวไหน
+// → ตัดสินไม่ได้ ต้องคง PASS ไม่ใช่ downgrade เพราะบังเอิญมีเลขหลงบนแถวป้าย
+
+// เคสจริง RI-015: OCR อ่าน "Zn" เป็น "Zn1" ทำให้แถวป้ายมีเลขติดมา 1 ตัว เดิมด่านยิงทั้ง 5 แถว
+//   ทั้งที่ใบเขียนตรง ๆ (60.9 อยู่ในช่วง 57-61) = false SKIP ล้วน
+const RI015 = [
+  "CHEMICAL  |  ELEMENT",
+  "ANALYSIS  |  wt%Cu  |  wt% Zn1  |  (udd)qd  |  Cd (ppm)  |  (udd) sv  (udd) qs",
+  "Pattern  |  57 - 61  |  36 - 40  |  <50  |  <15  |  <15  |  <15",
+  "Lot#01  |  60.9  |  38.44  |  32  |  5  |  <15  |  8",
+].join("\n");
+
+const ri = [
+  row({ name: "wt%Cu", result: 60.9, resultRaw: "60.9", min: 57, max: 61 }),
+  row({ name: "wt% Zn1", result: 38.44, resultRaw: "38.44", min: 36, max: 40 }),
+];
+const rRi = downgradeUngroundedPasses(ri, RI015);
+check(
+  "RI-015 ตารางแนวนอน ค่าตรงใบ -> คง PASS ทั้งหมด",
+  rRi.downgraded.length === 0 && ri.every((r) => r.status === "PASS"),
+  `(downgraded=${rRi.downgraded.length})`
+);
+
+// ป้ายคอลัมน์ที่มีเลขฝังในชื่อ (Particle Size D50/D90) — เดิม downgrade แถวที่ถูกต้องด้วย
+const HORIZ = [
+  "Lot No.  |  Particle Size D50  |  Particle Size D90",
+  "SA2607003  |  23.8  |  58.7",
+  "Specifications  |  18-26  |  43-71",
+].join("\n");
+
+const okRow = [row({ name: "Particle Size D50", result: 23.8, resultRaw: "23.8", min: 18, max: 26 })];
+const rOk = downgradeUngroundedPasses(okRow, HORIZ);
+check(
+  "แนวนอน + ป้ายมีเลข ค่าตรงคอลัมน์ตัวเอง -> คง PASS",
+  rOk.downgraded.length === 0 && okRow[0].status === "PASS"
+);
+
+// ด่านยังมีฟัน: ค่าที่ไม่โผล่ในบล็อกเลย = ปั้นมาจริง -> ยัง downgrade
+const fake = [row({ name: "Particle Size D50", result: 99.9, resultRaw: "99.9", min: 90, max: 110 })];
+const rFake = downgradeUngroundedPasses(fake, HORIZ);
+check(
+  "แนวนอน + ค่าไม่โผล่ในบล็อกเลย -> ยัง downgrade",
+  rFake.downgraded.length === 1 && fake[0].status === "SKIP" && fake[0].reason === PASS_DOWNGRADE_REASON
+);
+
+// control: ตารางแนวตั้งต้องไม่ถูกกระทบ — แถวถือค่าของตัวเองบนบรรทัดเดียวกัน
+const VERT2 = [
+  "Sieve Residue on 500 u(%)  |  0.3  |  3 Max.  |  Success",
+  "Sieve Residue on 350 u(%)  |  42.3  |  15~45  |  Success",
+].join("\n");
+
+const borrowed = [row({ name: "Sieve Residue on 500 u(%)", result: 42.3, resultRaw: "42.3", min: 15, max: 45 })];
+const rBor = downgradeUngroundedPasses(borrowed, VERT2);
+check(
+  "แนวตั้ง ค่ายืมจากแถวอื่น -> ยัง downgrade (ด่านไม่ถูกปิด)",
+  rBor.downgraded.length === 1 && borrowed[0].status === "SKIP"
+);
+
+const own = [row({ name: "Sieve Residue on 500 u(%)", result: 0.3, resultRaw: "0.3", max: 3 })];
+const rOwn = downgradeUngroundedPasses(own, VERT2);
+check("แนวตั้ง ค่าของตัวเอง -> คง PASS", rOwn.downgraded.length === 0 && own[0].status === "PASS");
+
+// ===== ด่านแนวนอนต้องไม่รั่วไปคลุมตารางแนวตั้ง (opus-reviewer H1/H2) =====
+// เดิมด่านเช็คว่า "ไม่มีช่องเลขล้วน" → แถวแนวตั้งที่ค่ามีหน่วย ("0.35 g/L") หรือเป็นช่วง ("18 - 26")
+// ก็ไม่มีช่องเลขล้วนเหมือนกัน → ถูกนับเป็นแถวป้าย → ค่าที่ยืมมาจากแถวถัดไปรอดเป็น PASS
+
+const UNITS = [
+  "Moisture Content  |  0.35 g/L  |  0.50 g/L Max  |  Pass",
+  "Ash Content  |  1.20 g/L  |  2.00 g/L Max  |  Pass",
+].join("\n");
+const leak1 = [row({ name: "Moisture Content", result: 1.2, resultRaw: "1.20", max: 2.0 })];
+const rLeak1 = downgradeUngroundedPasses(leak1, UNITS);
+check(
+  "แนวตั้ง ค่ามีหน่วย ยืมค่าแถวถัดไป -> ยัง downgrade",
+  rLeak1.downgraded.length === 1 && leak1[0].status === "SKIP"
+);
+
+const RANGES = [
+  "Particle Size D50  |  18 - 26  |  23.8 um  |  Pass",
+  "Particle Size D90  |  43 - 71  |  58.7 um  |  Pass",
+].join("\n");
+const leak2 = [row({ name: "Particle Size D50", result: 58.7, resultRaw: "58.7", min: 43, max: 71 })];
+const rLeak2 = downgradeUngroundedPasses(leak2, RANGES);
+check(
+  "แนวตั้ง เกณฑ์เป็นช่วง ยืมค่าแถวถัดไป -> ยัง downgrade",
+  rLeak2.downgraded.length === 1 && leak2[0].status === "SKIP"
+);
+
+// ค่าที่ไม่มีอยู่ในตารางเลย ไปตรงกับเลขที่อยู่ในข้อความท้ายใบ -> ห้าม keep
+const NOISE = [
+  "Colour Index  |  3.1 mg/L  |  2 - 4 mg/L  |  Pass",
+  "Issued 2026 by QA",
+  "Certificate no 7.7 rev 2",
+].join("\n");
+const leak3 = [row({ name: "Colour Index", result: 7.7, resultRaw: "7.7", min: 7, max: 8 })];
+const rLeak3 = downgradeUngroundedPasses(leak3, NOISE);
+check(
+  "ค่าไปตรงกับเลขในข้อความท้ายใบ -> ยัง downgrade",
+  rLeak3.downgraded.length === 1 && leak3[0].status === "SKIP"
+);
+
+// ตารางแนวนอน + ค่าผลถูกแต่ LLM ยกขอบเกณฑ์หลวมมาจากที่อื่น -> ต้องยัง downgrade
+const RI_LOOSE = [
+  "ANALYSIS  |  wt%Cu  |  wt% Zn1  |  (udd)qd  |  Cd (ppm)  |  (udd) sv",
+  "Pattern  |  57 - 61  |  36 - 40  |  <50  |  <15  |  <15",
+  "Lot#01  |  60.9  |  38.44  |  32  |  5  |  <15",
+].join("\n");
+const loose = [row({ name: "(udd)qd", result: 32, resultRaw: "32", max: 500 })];
+const rLoose = downgradeUngroundedPasses(loose, RI_LOOSE);
+check(
+  "แนวนอน ค่าผลถูกแต่เกณฑ์ยืมมาหลวม -> ยัง downgrade",
+  rLoose.downgraded.length === 1 && loose[0].status === "SKIP"
+);
+
+// เกณฑ์ที่อยู่คนละบรรทัดกับค่า (นิยามของตารางแนวนอน) ต้องยังนับว่าพิสูจน์ไม่ได้ -> คง PASS
+const riOk = [row({ name: "(udd)qd", result: 32, resultRaw: "32", max: 50 })];
+const rRiOk = downgradeUngroundedPasses(riOk, RI_LOOSE);
+check(
+  "แนวนอน ค่ากับเกณฑ์อยู่คนละบรรทัดตามใบ -> คง PASS",
+  rRiOk.downgraded.length === 0 && riOk[0].status === "PASS"
+);
+
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);
