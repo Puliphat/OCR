@@ -42,6 +42,9 @@ export interface EvaluatedItem {
   // แถวนี้มีตัวเลข comma ที่อ่านได้ 2 ทาง (ดู hasAmbiguousThousands) — verdict ยืนบนสมมติฐาน "comma = ทศนิยม"
   //   ค่าอาจเพี้ยน 1000 เท่า → margin ไม่มีความหมาย (margin-green ห้ามล้างธงนี้ ดู applyMarginGreen G5)
   ambiguousThousands?: boolean;
+  // OCR 2 รอบอ่านเลขแถวนี้ไม่เหมือนกัน (ดู flagChallengerPasses) — ยังไม่รู้ว่าเลขไหนคือเลขบนใบ
+  //   ด่านที่ล้างธงทุกตัวต้องข้ามแถวนี้ (margin-green G6, dupont cross-page) ไม่งั้นเลขที่เถียงกันขึ้นจอเขียว
+  valueDisputed?: boolean;
 }
 
 // ★ Ambiguous thousands ★ — "1,500" แยกไม่ออกว่าเป็น EU decimal (1.5) หรือ US thousands (1500)

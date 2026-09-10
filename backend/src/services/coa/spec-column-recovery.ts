@@ -338,7 +338,8 @@ export function reconcileDupontSpecs(
     for (const e of g.entries) {
       const onWin = e.row.min === wMin && e.row.max === wMax;
       if (onWin) {
-        if (e.row.needsReview && e.row.status === "PASS") {
+        // หน้าอื่นยืนยันได้แค่ "ขอบเกณฑ์ถูก" — ตอบไม่ได้ว่าค่าผลที่ OCR 2 รอบเถียงกันเลขไหนคือเลขบนใบ
+        if (e.row.needsReview && e.row.status === "PASS" && !e.row.valueDisputed) {
           e.row.needsReview = false;
           out.greened++;
         }

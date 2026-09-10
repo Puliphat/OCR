@@ -344,16 +344,80 @@ function preservesPasses(challenger: CoaReport, incumbent: CoaReport): boolean {
   return true;
 }
 
-// identity ของ PASS row (name + spec + result + verdict) — ใช้เช็คว่า grid PASS "ตรงกับ" flat PASS ไหม
-//   ★ ไม่ตรง (row ใหม่ หรือค่า/spec เปลี่ยน) = flat ยืนยันไม่ได้ → grid ต้อง needsReview (ดู processPage) ★
-function passKey(r: EvaluatedItem): string {
-  return [
-    r.name.trim().toLowerCase(),
-    r.min ?? "",
-    r.max ?? "",
-    r.specRaw ?? "",
-    r.result ?? "",
-  ].join("|");
+// ปักธงให้คนตรวจทุกแถว PASS ของ challenger ที่ incumbent ยืนยันไม่ได้ — ไม่งั้นเลขที่เถียงกันอยู่ขึ้นจอเป็นเขียว
+//   ชื่อตรงแต่ค่าต่าง = เขียนทับแถวที่ผ่านแล้ว (amber เสมอ) · ค่าตรงแต่ชื่อต่าง = ยืนยันแล้ว · แถวใหม่ = ตาม column provenance
+export function flagChallengerPasses(
+  challenger: CoaReport,
+  incumbent: CoaReport,
+  engine: OcrEngine,
+  gridSource: GridSource | undefined
+): { surfaced: number; greenlit: number; overwritten: string[]; marginCleared: number } {
+  const isStructural = gridSource === "structural";
+  const pool = incumbent.rows.filter((r) => r.status === "PASS");
+  const used = new Set<number>();
+  const overwritten: string[] = [];
+  let surfaced = 0;
+  let greenlit = 0;
+
+  const flag = (r: EvaluatedItem, why: string) => {
+    r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
+    if (!r.needsReview) surfaced++;
+    r.needsReview = true;
+  };
+
+  // phase 1: คู่ที่ชื่อ+ค่าตรงกันเป๊ะ จับให้หมดก่อน — ไม่งั้นตารางชื่อซ้ำ (RI-015 "Particle Size" ×4)
+  //   แถวแรกจะไปกินคู่ของแถวหลัง แล้วฟ้องว่าเขียนทับทั้งที่ค่าเดิมยังอยู่ครบ
+  const pending: EvaluatedItem[] = [];
+  for (const r of challenger.rows) {
+    if (r.status !== "PASS") continue;
+    const nk = passNameKey(r.name);
+    const vk = passValueKey(r);
+    const hit = pool.findIndex(
+      (c, i) => !used.has(i) && passNameKey(c.name) === nk && passValueKey(c) === vk
+    );
+    if (hit >= 0) used.add(hit);
+    else pending.push(r);
+  }
+
+  // phase 2: ชื่อตรงแต่ค่าไม่ตรง = challenger เขียนเลขทับแถวที่ผ่านอยู่แล้ว → ธงเหนียว ล้างไม่ได้
+  const leftover: EvaluatedItem[] = [];
+  for (const r of pending) {
+    const nk = passNameKey(r.name);
+    const hit = pool.findIndex((c, i) => !used.has(i) && passNameKey(c.name) === nk);
+    if (hit < 0) {
+      leftover.push(r);
+      continue;
+    }
+    used.add(hit);
+    const move = `${passValueKey(pool[hit])} → ${passValueKey(r)}`;
+    overwritten.push(`${r.name}: ${move} (ค่า|min|max)`);
+    r.valueDisputed = true;
+    flag(r, `เลขแถวนี้ไม่ตรงกับที่อ่านรอบแรก (${move} = ค่า|min|max) — เทียบกับใบจริง`);
+  }
+
+  // phase 3: ชื่อเทียบไม่ได้เลย — ยืนยันด้วยค่าได้เฉพาะค่าที่ไม่ว่าง และ triple ไม่ซ้ำในฝั่ง incumbent
+  //   "≤15 + ค่าผลว่าง" ไม่ใช่ลายนิ้วมือ (RI-015 มี 3 แถวเกณฑ์ <15) → ยืนยันข้ามแถวมั่วได้
+  for (const r of leftover) {
+    const vk = passValueKey(r);
+    const unique = r.result != null && pool.filter((c) => passValueKey(c) === vk).length === 1;
+    if (unique && pool.some((c, i) => !used.has(i) && passValueKey(c) === vk)) {
+      used.add(pool.findIndex((c, i) => !used.has(i) && passValueKey(c) === vk));
+      continue; // incumbent อ่านชื่อผิด แต่ค่า+เกณฑ์ตรง (KGP-H65 "g/ml" vs "嵩密度")
+    }
+    if (isStructural && !structuralPassNeedsAmber(r)) {
+      greenlit++;
+      continue;
+    }
+    flag(r, "แถวนี้รอบแรกยืนยันไม่ได้ (อ่านคอลัมน์ใหม่) — เทียบกับใบจริง");
+  }
+
+  // margin-green รันซ้ำเพราะธงข้างบนปักหลังรอบแรกใน runExtractionPass — CLEAR-ONLY, G0 กัน spatial
+  //   และ G6 กันแถว valueDisputed ไว้แล้ว (margin ตอบไม่ได้ว่า "เลขไหนคือเลขบนใบ")
+  const amberBefore = challenger.rows.filter((r) => r.needsReview).length;
+  applyMarginGreen(challenger.rows, engine, gridSource);
+  const marginCleared = amberBefore - challenger.rows.filter((r) => r.needsReview).length;
+
+  return { surfaced, greenlit, overwritten, marginCleared };
 }
 
 // ★ keep-best gate (anti-regression) ★ — เก็บ grid เฉพาะเมื่อครบ 3:
@@ -410,6 +474,9 @@ function applyMarginGreen(
 
     // G5: ธง ambiguous-thousands ล้างไม่ได้ — ถ้า comma เป็นหลักพันจริง ค่าเพี้ยน 1000 เท่า margin ไร้ความหมาย
     if (r.ambiguousThousands) continue;
+
+    // G6: OCR 2 รอบอ่านเลขนี้ไม่เหมือนกัน → margin ตอบไม่ได้ว่าเลขไหนคือเลขบนใบ ล้างธงไม่ได้
+    if (r.valueDisputed) continue;
 
     const res = r.result;
     if (res == null || !Number.isFinite(res) || res === 0) continue; // G2 needs finite nonzero result
@@ -912,40 +979,15 @@ async function runFlatGridBest(
       //   structural parser doesn't see prose like "GRADE: …" that the flat LLM read) — cosmetic.
       if (!gridReport.product && flatReport.product) gridReport.product = flatReport.product;
       if (!gridReport.lotNo && flatReport.lotNo) gridReport.lotNo = flatReport.lotNo;
-      // ★ Anti-deceptive (BLOCKER fix) ★ — pass-guard เป็น column-blind → พิสูจน์ column ของ grid ไม่ได้.
-      //   grid PASS ที่ "flat ยืนยันไม่ได้" (row ใหม่ หรือ name/spec/result ต่างจาก flat PASS) ต้องไม่เป็น
-      //   เขียวเงียบ. ขึ้นกับ provenance ของ column:
-      //   • spatial (rapidocr): column INFERRED → amber เสมอ (พิสูจน์ mapping ไม่ได้)
-      //   • structural (pdfplumber ruling-line): column geometry-VERIFIED + ตัวเลขจาก text layer (ไม่ผ่าน
-      //     OCR) → clean-green ได้ ยกเว้นค่าตรงขอบ spec พอดี (structuralPassNeedsAmber)
-      //     = แก้ over-flag ที่ราก: column เชื่อได้แล้ว ค่าปลอดภัยจริง → ไม่ต้อง "ต้องตรวจ" ทุกแถว
-      const flatPassKeys = new Set(
-        flatReport.rows.filter((r) => r.status === "PASS").map(passKey)
-      );
-      let surfaced = 0;
-      let greenlit = 0;
-      for (const r of gridReport.rows) {
-        if (r.status === "PASS" && !flatPassKeys.has(passKey(r))) {
-          const amber = isStructural ? structuralPassNeedsAmber(r) : true;
-          if (amber) {
-            r.needsReview = true;
-            surfaced++;
-          } else {
-            greenlit++;
-          }
-        }
+      // grid เดา/ยืนยัน column ไม่เหมือนกันในแต่ละ provenance → ปักธงตามนั้น (ดู flagChallengerPasses)
+      const flag = flagChallengerPasses(gridReport, flatReport, engine, gridSource);
+      for (const o of flag.overwritten) {
+        console.warn(`  [keep-best] ⚠ grid เขียนเลขทับแถวที่ flat ผ่านอยู่แล้ว — ${o} · ปักธงให้คนตรวจ`);
       }
-      // ★ margin-green ต้องรันซ้ำหลังปักธง ★ — applyMarginGreen รันไปแล้วใน runExtractionPass แต่ธงข้างบน
-      //   ปักทีหลัง → แถว grid-won ไม่เคยผ่าน gate ค่า/คอลัมน์เลย → เรียกซ้ำที่นี่ให้ path นี้ใช้ G0–G4
-      //   ชุดเดียวกับ path อื่น. CLEAR-ONLY + G0 กัน spatial (column inferred) ไว้แล้ว
-      const amberBefore = gridReport.rows.filter((r) => r.needsReview).length;
-      applyMarginGreen(gridReport.rows, engine, gridSource);
-      const marginCleared =
-        amberBefore - gridReport.rows.filter((r) => r.needsReview).length;
       console.log(
-        `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${surfaced}${
-          isStructural ? ` · clean-green +${greenlit} (structural, text-layer digits)` : ""
-        }${marginCleared > 0 ? ` · margin-green เคลียร์ ${marginCleared}` : ""}`
+        `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${flag.surfaced}${
+          isStructural ? ` · clean-green +${flag.greenlit} (structural, text-layer digits)` : ""
+        }${flag.marginCleared > 0 ? ` · margin-green เคลียร์ ${flag.marginCleared}` : ""}`
       );
       return gridReport;
     }
@@ -1035,8 +1077,12 @@ async function processPage(
         if (gridBeatsFlat(hqBest, best)) {
           if (!hqBest.product && best.product) hqBest.product = best.product;
           if (!hqBest.lotNo && best.lotNo) hqBest.lotNo = best.lotNo;
-          // HQ ที่อ่านจากภาพย่อ = ครึ่งความละเอียดที่คลัง validate ไว้ และ preservesPasses จับคู่ด้วย
-          // ชื่อแถวไม่ดูค่า → เลขของแถวที่ PASS อยู่แล้วถูกเขียนทับเงียบได้ ปักธงทั้งหน้าให้คนตรวจ
+          // เลขของ HQ มาจาก OCR คนละ engine กับ best → ใช้ด่านเดียวกับ grid: PASS ที่ best ยืนยันไม่ได้ ต้องไม่เขียว
+          const hqFlag = flagChallengerPasses(hqBest, best, "rapidocr", hqGrid ? "spatial" : undefined);
+          for (const o of hqFlag.overwritten) {
+            console.warn(`  [hq-ocr] ⚠ HQ เขียนเลขทับแถวที่ best ผ่านอยู่แล้ว — ${o} · ปักธงให้คนตรวจ`);
+          }
+          // ภาพย่อ = ครึ่งความละเอียดที่คลัง validate ไว้ → ไม่เชื่อทั้งหน้า ไม่ใช่แค่แถวที่เปลี่ยน
           if (hqOcr.degraded) {
             for (const r of hqBest.rows) r.needsReview = true;
             console.warn(
@@ -1044,7 +1090,7 @@ async function processPage(
             );
           }
           console.log(
-            `  [hq-ocr] ✓ HQ ชนะ ${passCount(best)}P→${passCount(hqBest)}P (0 FAIL, PASS เดิมครบ) — ใช้ HQ`
+            `  [hq-ocr] ✓ HQ ชนะ ${passCount(best)}P→${passCount(hqBest)}P (0 FAIL, PASS เดิมครบ) — ใช้ HQ · needsReview +${hqFlag.surfaced}`
           );
           return hqBest;
         }
