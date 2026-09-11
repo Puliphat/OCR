@@ -165,5 +165,28 @@ const numericRow = evaluateCoa({
 const c3 = downgradeCopiedTextPasses(numericRow.rows, "Moisture  |  0.30 MAX  |  0.10");
 check("แถวตัวเลข → ด่านนี้ไม่แตะ", numericRow.rows[0].status === "PASS" && c3.downgraded.length === 0);
 
+// แถวที่ใบไม่ได้เขียนเกณฑ์ไว้ (ช่องเกณฑ์คร่อม 2 แถว — PAG-80) เดิมถูกตัดทิ้งทั้งแถวว่า hallucination
+const PAG80_OCR = [
+  "+850μm  |  %  |  0.0  |  Max0. 5",
+  "-850+300 μm  |  %  |  11.9",
+  "-300+250μm  |  %  |  16.8  |  20. 0~30. 0",
+].join(String.fromCharCode(10));
+const noSpecRow = dropUngroundedItems(
+  [
+    { name: "-850+300 μm", unit: "%", result: "11.9" },
+    { name: "-300+250μm", unit: "%", specRaw: "20. 0~30. 0", result: "16.8" },
+  ],
+  PAG80_OCR
+);
+check(
+  "แถวไม่มีเกณฑ์ แต่ชื่อ+ค่าอยู่บรรทัดเดียวกัน → เก็บไว้",
+  noSpecRow.kept.length === 2,
+  `(dropped=${noSpecRow.dropped.length})`
+);
+
+// กัน fabricated: ชื่อไม่ตรงบรรทัดไหนเลย ถึงค่าจะบังเอิญอยู่ในใบก็ต้องตัดทิ้ง
+const ghostNoSpec = dropUngroundedItems([{ name: "-999+888 μm", unit: "%", result: "11.9" }], PAG80_OCR);
+check("ชื่อไม่มีในใบ + ไม่มีเกณฑ์ → ยังตัดทิ้ง", ghostNoSpec.dropped.length === 1, `(kept=${ghostNoSpec.kept.length})`);
+
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);

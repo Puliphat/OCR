@@ -1,7 +1,7 @@
 // Print-based regression test — รัน: npx ts-node src/services/coa/coa-fail-guard.test.ts
 // ยืนยัน: downgradeUngroundedFails ดาวน์เกรด FAIL ที่ spec+result คนละบรรทัด OCR (column collapse)
-//   เป็น SKIP แต่คง FAIL จริงในตารางปกติ (spec+result บรรทัดเดียว) + ไม่แตะ PASS/SKIP
-import { downgradeUngroundedFails, FAIL_DOWNGRADE_REASON } from "./coa-grounding";
+//   ให้ติดธง "เทียบกับใบจริง" แต่ยังเป็น FAIL + ไม่แตะ PASS/SKIP
+import { downgradeUngroundedFails, FAIL_COLLAPSE_REASON } from "./coa-grounding";
 import { EvaluatedItem } from "./coa-evaluator";
 
 let failures = 0;
@@ -41,8 +41,8 @@ const suz = [
 ];
 const rSuz = downgradeUngroundedFails(suz, SUZORITE_OCR);
 check(
-  "Suzorite: spec 92~100 broadcast → downgrade ทั้ง 2 FAIL→SKIP",
-  rSuz.downgraded.length === 2 && suz.every((r) => r.status === "SKIP" && r.needsReview),
+  "Suzorite: spec 92~100 broadcast → คง FAIL ทั้ง 2 แถวแต่ปักธง",
+  rSuz.downgraded.length === 2 && suz.every((r) => r.status === "FAIL" && r.needsReview),
   `(downgraded=${rSuz.downgraded.length})`
 );
 
@@ -60,10 +60,10 @@ const lot = [
 const rLot = downgradeUngroundedFails(lot, LOT_OCR);
 check(
   "Lot240521: spec 20 Max ผิดแถว (spec/result คนละบรรทัด) → downgrade",
-  rLot.downgraded.length === 2 && lot.every((r) => r.status === "SKIP"),
+  rLot.downgraded.length === 2 && lot.every((r) => r.status === "FAIL" && r.needsReview),
   `(downgraded=${rLot.downgraded.length})`
 );
-check("Lot240521: reason = column collapse", lot[0].reason === FAIL_DOWNGRADE_REASON);
+check("Lot240521: reason = column collapse", (lot[0].reason ?? "").includes(FAIL_COLLAPSE_REASON));
 
 // ★ ตารางปกติ (name|spec|result บรรทัดเดียว) — true FAIL ต้องคง verdict ★
 const CLEAN_OCR = "Sieve Residue on 500u (%) | 3 Max | 42.3";
@@ -100,7 +100,7 @@ const mixed = [
 const rMixed = downgradeUngroundedFails(mixed, mixedOcr);
 check(
   "mixed: downgrade collapse(+100) คง clean(500)",
-  rMixed.downgraded.length === 1 && mixed[0].status === "SKIP" && mixed[1].status === "FAIL",
+  rMixed.downgraded.length === 1 && mixed[0].needsReview === true && mixed[1].needsReview !== true,
   `(downgraded=${rMixed.downgraded.map((d) => d.name).join("/")})`
 );
 
@@ -122,7 +122,7 @@ const assembled = [
 const rAsm = downgradeUngroundedFails(assembled, ASSEMBLED_OCR);
 check(
   "range bound ประกอบข้ามแถว (56 คนละบรรทัด result) → downgrade",
-  rAsm.downgraded.length === 1 && assembled[0].status === "SKIP",
+  rAsm.downgraded.length === 1 && assembled[0].status === "FAIL" && assembled[0].needsReview,
   `(downgraded=${rAsm.downgraded.length})`
 );
 

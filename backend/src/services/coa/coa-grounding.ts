@@ -194,6 +194,17 @@ function isGrounded(
       if (sig.length && sig.some((t) => norm.includes(t))) return true;
     }
   }
+  // ★ ใบไม่ได้เขียนเกณฑ์ของแถวนี้ (ช่องเกณฑ์ว่างจริง — PAG-80 ที่ช่องเกณฑ์คร่อม 2 แถว) ★
+  //   ไม่มีเกณฑ์ให้ทานคู่ จึงบังคับให้เห็นชื่อแถว "ครบทุกคำ" อยู่บรรทัดเดียวกับค่าผล
+  if (resultNums.length && !specNums.length) {
+    const sig = nameSignal(item.name ?? "");
+    for (let i = 0; sig.length && i < lineTokens.length; i++) {
+      if (!lineTokens[i]?.length) continue;
+      if (!resultNums.some((n) => numberMatches(n, lineTokens[i]))) continue;
+      const norm = lineNorms[i] ?? "";
+      if (sig.every((t) => norm.includes(t))) return true;
+    }
+  }
   if (!resultNums.length || !specNums.length) return false;
   for (const lt of lineTokens) {
     if (!lt.length) continue;
@@ -249,7 +260,7 @@ export function dropUngroundedItems(
 //   (tokens ทั้งหมด—result+spec—อยู่บรรทัดเดียว). ratio 601/1.42 ≈ 423× ชี้ชัดว่าเป็น OCR error
 //
 // กติกา (two-sided spec เท่านั้น — one-sided วัดไม่ได้ว่า "ไกลเกินจริงแค่ไหน"):
-//   result เกิน specMax × 100 → ลด FAIL → SKIP + needsReview
+//   result เกิน specMax × 100 → คง FAIL ไว้ (user decision 2026-09-11) + ปักธงว่าเลขน่าจะเพี้ยน
 //   แตะเฉพาะ FAIL + ต้องมี min AND max (two-sided) + result เป็น finite number
 export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult {
   const downgraded: { name: string; reason: string }[] = [];
@@ -261,9 +272,8 @@ export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult
     if (result > r.max * 100) {
       const reason =
         "ค่าผลห่างเกณฑ์มากผิดปกติ — น่าจะ OCR อ่านตัวเลขผิด (digit scramble) เทียบกับใบจริง";
-      r.status = "SKIP";
       r.needsReview = true;
-      r.reason = reason;
+      r.reason = r.reason?.trim() ? `${r.reason} · ${reason}` : reason;
       downgraded.push({ name: r.name, reason });
     }
   }
@@ -279,7 +289,7 @@ export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult
 //
 // กติกา: FAIL row คง verdict ได้ ต่อเมื่อ spec กับ result โผล่ "บรรทัด OCR เดียวกัน"
 //   (= เป็นแถวตารางจริง result ถูกเทียบกับ spec ที่อยู่ข้างกันจริง ไม่ใช่ spec ที่ยกมาจากแถวอื่น)
-//   ไม่ co-locate → downgrade FAIL → SKIP + needsReview (honest "ตรวจใบจริง" ดีกว่า fabricated FAIL)
+//   ไม่ co-locate → คง FAIL ไว้ + ปักธงให้เทียบใบจริง (user decision 2026-09-11: ค่าหลุดเกณฑ์ต้องขึ้นไม่ผ่าน)
 //
 // ★ SAFETY ★ แตะเฉพาะ status FAIL (would-be bad verdict) — PASS/SKIP ไม่ยุ่ง
 //   true FAIL ในตารางปกติ (name|spec|result บรรทัดเดียว) → spec+result co-locate → คง FAIL ไว้
@@ -289,10 +299,10 @@ export interface FailGuardResult {
 }
 
 // ★ คำว่า "สลับ" ใน reason นี้ load-bearing — coa-pipeline COLLAPSE_SKIP_RE ใช้ trigger grid challenger ★
-export const FAIL_DOWNGRADE_REASON =
+export const FAIL_COLLAPSE_REASON =
   "เกณฑ์กับค่าผลอยู่คนละจุดในเอกสาร ระบบอาจอ่านสลับแถว — เทียบกับใบจริง";
 
-// mutate rows in place: FAIL ที่ spec+result ไม่ co-locate → SKIP. คืนรายการที่ downgrade
+// mutate rows in place: FAIL ที่ spec+result ไม่ co-locate → คง FAIL + ปักธง. คืนรายการที่ปักธง
 export function downgradeUngroundedFails(
   rows: EvaluatedItem[],
   ocrText: string
@@ -334,10 +344,11 @@ export function downgradeUngroundedFails(
     }
     if (colocated) continue;
 
-    r.status = "SKIP";
     r.needsReview = true;
-    r.reason = FAIL_DOWNGRADE_REASON;
-    downgraded.push({ name: r.name, reason: FAIL_DOWNGRADE_REASON });
+    r.reason = r.reason?.trim()
+      ? `${r.reason} · ${FAIL_COLLAPSE_REASON}`
+      : FAIL_COLLAPSE_REASON;
+    downgraded.push({ name: r.name, reason: FAIL_COLLAPSE_REASON });
   }
   return { downgraded };
 }

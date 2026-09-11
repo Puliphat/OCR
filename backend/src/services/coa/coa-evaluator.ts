@@ -206,14 +206,19 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
 
   if (!result) {
     const bounds = specBounds(spec);
+    // ใบเขียนค่าผลเป็นคำ (Traces / N/A) ทั้งที่เกณฑ์เป็นตัวเลข — ระบบยืนยันว่าผ่านไม่ได้ = ไม่ผ่าน
+    //   (user decision 2026-09-11) · ค่าผลว่างเปล่าคนละเรื่อง: ไม่มีอะไรให้ตัดสิน ยังเป็นต้องตรวจ
+    const wordResult = !!String(base.resultRaw ?? "").trim();
     return {
       ...base,
       min: bounds.min,
       max: bounds.max,
       result: null,
-      status: "SKIP",
-      reason: `ค่าผลเป็นข้อความ "${base.resultRaw ?? ""}" เทียบกับเกณฑ์ ${spec.raw} เองไม่ได้ — ต้องอ่านจากใบ`,
-      needsReview: false,
+      status: wordResult ? "FAIL" : "SKIP",
+      reason: wordResult
+        ? `ค่าผลบนใบเป็นข้อความ "${base.resultRaw}" เทียบกับเกณฑ์ ${spec.raw} ไม่ได้ — ระบบยืนยันว่าผ่านไม่ได้ ต้องอ่านจากใบ`
+        : `ใบไม่มีค่าผลของรายการนี้ให้เทียบกับเกณฑ์ ${spec.raw} — ต้องอ่านจากใบ`,
+      needsReview: wordResult,
     };
   }
 

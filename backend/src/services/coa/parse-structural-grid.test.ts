@@ -55,9 +55,10 @@ const nPass = statuses.filter((s) => s === "PASS").length;
 const nSkip = statuses.filter((s) => s === "SKIP").length;
 const nFail = statuses.filter((s) => s === "FAIL").length;
 check("evaluates to 5 PASS", nPass === 5, `got ${nPass}`);
-check("evaluates to 1 SKIP (Traces row)", nSkip === 1, `got ${nSkip}`);
-check("evaluates to 0 FAIL", nFail === 0, `got ${nFail}`);
-check("+100/Traces row is the SKIP", ev[0].status === "SKIP" && ev[0].name === "Sieve Analysis +100");
+check("evaluates to 0 SKIP", nSkip === 0, `got ${nSkip}`);
+// เกณฑ์เป็นตัวเลข (Max 1) แต่ใบเขียนผลเป็นคำ "Traces" → ระบบยืนยันว่าผ่านไม่ได้ = ไม่ผ่าน
+check("evaluates to 1 FAIL (Traces row)", nFail === 1, `got ${nFail}`);
+check("+100/Traces row is the FAIL", ev[0].status === "FAIL" && ev[0].name === "Sieve Analysis +100");
 check("Loose Bulk 12.2 PASS in 11~16", ev[4].status === "PASS" && ev[4].result === 12.2);
 check("Humidity 0.26 PASS in 0~0.70", ev[5].status === "PASS" && ev[5].result === 0.26);
 
@@ -291,10 +292,10 @@ check(
   `${twoEval[5].result} / ${twoEval[11].result}`
 );
 check(
-  "10 PASS / 2 SKIP (Traces ของทั้ง 2 ล็อต) / 0 FAIL",
+  "10 PASS / 0 SKIP / 2 FAIL (Traces ของทั้ง 2 ล็อต — เกณฑ์ตัวเลขเทียบคำไม่ได้)",
   twoEval.filter((e) => e.status === "PASS").length === 10 &&
-    twoEval.filter((e) => e.status === "SKIP").length === 2 &&
-    twoEval.filter((e) => e.status === "FAIL").length === 0,
+    twoEval.filter((e) => e.status === "SKIP").length === 0 &&
+    twoEval.filter((e) => e.status === "FAIL").length === 2,
   twoEval.map((e) => e.status).join(",")
 );
 check("ไม่ประกาศเลขล็อตที่หัวรายงาน (ค่ามาจาก 2 ล็อต)", two.lotNo === null, `got ${two.lotNo}`);

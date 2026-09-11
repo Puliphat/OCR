@@ -36,6 +36,8 @@ export interface RawCoaItem {
   resultMax?: string | number | null;
   // โมดูล structural อ่านเกณฑ์มาจากช่องของมันเองบนใบ (ดู CoaItemInput.specFromCell) — LLM ไม่เคยตั้งฟิลด์นี้
   specFromCell?: boolean;
+  // เกณฑ์ของแถวนี้มาจากช่องที่คร่อมหลายแถว (ดู shared-spec-cell) — ใบเขียนไว้ช่องเดียวใช้ร่วมกัน
+  specShared?: boolean;
 }
 
 export interface RawCoa {

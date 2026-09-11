@@ -31,6 +31,8 @@ import { extractHeaderDirectionHints } from "./header-direction";
 import { recoverLimitColumns } from "./limit-columns-recovery";
 import { recoverMinMaxColumns } from "./minmax-column-recovery";
 import { mergeSplitNameRows } from "./split-name-merge";
+import { applySharedSpecCells } from "./shared-spec-cell";
+import { fixShiftedMethodCells } from "./method-cell-shift";
 import { recoverLotRowTable } from "./lot-row-table-recovery";
 import { recoverParenSpecRows } from "./paren-spec-recovery";
 import { recoverSplitBoundCells } from "./bound-cell-recovery";
@@ -308,7 +310,11 @@ export async function extractTextPerPage(
 //   ไม่ trigger grid → ไม่เสีย LLM call เปล่า. = ตัวกรองให้ grid challenger ยิงเฉพาะไฟล์ column-shift จริง (SODA/PR1950W)
 const COLLAPSE_SKIP_RE = /สลับ|ทิศหาย/;
 function hasCollapseSymptom(rpt: CoaReport): boolean {
-  return rpt.rows.some((r) => r.status === "SKIP" && COLLAPSE_SKIP_RE.test(r.reason ?? ""));
+  // ★ ต้องรับ FAIL ด้วย ★ — collapse guard คง FAIL ไว้แล้วไม่กดเป็น SKIP (ดู downgradeUngroundedFails)
+  //   เช็คแต่ SKIP = ใบ SODA/PR1950W ไม่ trigger grid challenger อีกเลย
+  return rpt.rows.some(
+    (r) => (r.status === "SKIP" || r.status === "FAIL") && COLLAPSE_SKIP_RE.test(r.reason ?? "")
+  );
 }
 
 const passCount = (rpt: CoaReport): number =>
@@ -788,6 +794,30 @@ async function runExtractionPass(
     );
   }
 
+  // ช่องวิธีทดสอบว่าง (Kemolit) — LLM เลื่อนเกณฑ์ไปนั่งช่องนั้น แล้วคัดค่าผลมาเป็นเกณฑ์แทน
+  const methodShift = isDeterministicGrid
+    ? { fixed: [] as { name: string; spec: string }[] }
+    : fixShiftedMethodCells(raw.items ?? [], tokens);
+  if (methodShift.fixed.length > 0) {
+    console.log(
+      `  [method-shift] ย้ายเกณฑ์กลับจากช่องวิธีทดสอบ ${methodShift.fixed.length} รายการ: ${methodShift.fixed
+        .map((f) => `${f.name}(→ ${f.spec})`)
+        .join(", ")}`
+    );
+  }
+
+  // ช่องเกณฑ์ที่คร่อมหลายแถว (PAG-80) — แถวบนไม่มีเกณฑ์ของตัวเองทั้งที่ใบกำหนดไว้ในช่องเดียวกัน
+  const sharedSpec = isDeterministicGrid
+    ? { shared: [] as { name: string; spec: string; from: string }[] }
+    : applySharedSpecCells(raw.items ?? [], tokens);
+  if (sharedSpec.shared.length > 0) {
+    console.log(
+      `  [shared-spec] เติมเกณฑ์จากช่องที่คร่อมแถว ${sharedSpec.shared.length} รายการ: ${sharedSpec.shared
+        .map((x) => `${x.name} ← ${x.spec} (ช่องเดียวกับ ${x.from})`)
+        .join(", ")}`
+    );
+  }
+
   const evaluated = evaluateCoa({
     filename,
     product: raw.product ?? null,
@@ -803,7 +833,7 @@ async function runExtractionPass(
     : downgradeUngroundedFails(evaluated.rows, text);
   if (failGuard.downgraded.length > 0) {
     console.warn(
-      `  [fail-guard] downgrade ${failGuard.downgraded.length} FAIL→SKIP (column collapse): ${failGuard.downgraded
+      `  [fail-guard] ปักธง ${failGuard.downgraded.length} FAIL (column collapse — เกณฑ์อาจไม่ใช่ของแถวนี้): ${failGuard.downgraded
         .map((d) => d.name)
         .join(", ")}`
     );
@@ -837,8 +867,20 @@ async function runExtractionPass(
     }
   }
 
+  // แถวที่ยืมเกณฑ์จากช่องที่คร่อมมันอยู่ — บอกที่มาไว้ ใบเขียนเกณฑ์ช่องเดียวใช้ร่วมกับแถวล่าง
+  if (sharedSpec.shared.length > 0) {
+    const byName = new Map(sharedSpec.shared.map((x) => [x.name.trim(), x]));
+    for (const r of evaluated.rows) {
+      const hit = byName.get(r.name.trim());
+      if (!hit) continue;
+      r.columnRebuilt = true;
+      const why = `ใบเขียนเกณฑ์ ${hit.spec} ไว้ช่องเดียวคร่อมแถวนี้กับ ${hit.from} — เทียบกับใบจริง`;
+      r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
+    }
+  }
+
   // แถวที่ระบบจับคู่เกณฑ์-ค่าเองตามตำแหน่งช่อง — คนต้องตรวจ เหมือน path spatial อื่น
-  //   ยกเว้น paren-spec: ใบพินช่องให้เองแล้ว (ประกาศ Average + เกณฑ์ในวงเล็บท้ายบรรทัด) แถวผ่านไม่ต้องตรวจ
+  //   ยกเว้น paren-spec กับ lot-row-table: ทั้งคู่อ่านช่องจากหัวตารางแล้วถอยเมื่อนับช่องไม่ครบ แถวผ่านจึงเชื่อได้
   const rebuilt = lotTable?.items ?? parenSpec?.items ?? specBelow?.items;
   if (rebuilt) {
     const why = lotTable
@@ -846,7 +888,7 @@ async function runExtractionPass(
       : parenSpec
       ? "ระบบอ่านค่าจากช่อง Average และเกณฑ์ในวงเล็บเอง — เทียบกับใบจริง"
       : "ระบบจับคู่เกณฑ์ที่อยู่ใต้แถวค่าโดยยึดคอลัมน์ขวา — เทียบกับใบจริง";
-    const flagPass = !parenSpec;
+    const flagPass = !parenSpec && !lotTable;
     const names = new Set(rebuilt.map((i) => String(i.name ?? "").trim()));
     for (const r of evaluated.rows) {
       if (!names.has(r.name.trim())) continue;
@@ -862,7 +904,7 @@ async function runExtractionPass(
   const outlierGuard = downgradeOcrOutlierFails(evaluated.rows);
   if (outlierGuard.downgraded.length > 0) {
     console.warn(
-      `  [outlier-guard] downgrade ${outlierGuard.downgraded.length} FAIL→SKIP (digit-scramble): ${outlierGuard.downgraded
+      `  [outlier-guard] ปักธง ${outlierGuard.downgraded.length} FAIL (digit-scramble): ${outlierGuard.downgraded
         .map((d) => d.name)
         .join(", ")}`
     );

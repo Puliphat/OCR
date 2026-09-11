@@ -116,10 +116,13 @@ export function recoverResultsFromOcr(
     if (!resultBlank(it) || !hasSpec(it)) continue;
 
     const nameSig = sig(it.name ?? "");
-    if (nameSig.length < 2) continue; // ชื่อสั้น/กำกวม → ข้าม
+    // ★ ชื่อคำเดียวที่ยาวพอก็ผูกบรรทัดได้ ★ — OCR เชื่อม "Flow rate" เป็น "Flowrate" แล้วแถวนั้นกู้ค่าไม่ได้เลย
+    //   สั้นกว่า 5 ตัวอักษร (Fe, pH, Ash) ยังข้ามเหมือนเดิม เสี่ยงไปตรงกับแถวอื่น
+    const singleLong = nameSig.length === 1 && nameSig[0].length >= 5;
+    if (nameSig.length < 2 && !singleLong) continue;
 
     // หาบรรทัด overlap สูงสุด (threshold เดียวกับ spec-recovery) + ต้อง unique
-    const need = Math.max(2, Math.ceil(nameSig.length * 0.6));
+    const need = singleLong ? 1 : Math.max(2, Math.ceil(nameSig.length * 0.6));
     const scores = lineSets.map((ls) => nameSig.filter((t) => ls.has(t)).length);
     const best = scores.reduce((a, b) => (b > a ? b : a), 0);
     if (best < need) continue;

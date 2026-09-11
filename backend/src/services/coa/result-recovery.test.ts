@@ -75,5 +75,32 @@ const zp10Ocr = [
   check("bound-text cell not recovered (handled by bound-result path)", recovered === 0, items[0].result);
 }
 
+// ── ยอมรับ: ชื่อคำเดียวที่ยาวพอ (OCR เชื่อม "Flow rate" → "Flowrate") ── เคสจริง PR3200M หน้า 2
+{
+  const items: RawCoaItem[] = [
+    { name: "Gel time", unit: "sec", specRaw: "40~80", result: "64" },
+    { name: "Flowrate", unit: "mm", specRaw: "30~50", result: null },
+  ];
+  const ocr = ["Gel time  |  sec  |  64  |  40~80", "Flowrate  |  mm  |  47  |  30~50"].join("\n");
+  const { recovered } = recoverResultsFromOcr(items, ocr);
+  check("single-word name recovered", recovered === 1 && items[1].result === "47", items[1].result);
+}
+
+// ── ปฏิเสธ: ชื่อคำเดียวสั้น (Ash) ยังข้ามเหมือนเดิม — เสี่ยงไปตรงบรรทัดอื่น ──
+{
+  const items: RawCoaItem[] = [{ name: "Ash", unit: "%", specRaw: "0.30 MAX", result: null }];
+  const ocr = "Ash  |  %  |  0.07  |  0.30 MAX";
+  const { recovered } = recoverResultsFromOcr(items, ocr);
+  check("short single-word name still skipped", recovered === 0 && items[0].result == null, items[0].result);
+}
+
+// ── ปฏิเสธ: ชื่อคำเดียวยาว แต่ตรงหลายบรรทัด → กำกวม ไม่เติม ──
+{
+  const items: RawCoaItem[] = [{ name: "Flowrate", unit: "mm", specRaw: "30~50", result: null }];
+  const ocr = ["Flowrate  |  mm  |  47  |  30~50", "Flowrate  |  mm  |  48  |  30~50"].join("\n");
+  const { recovered } = recoverResultsFromOcr(items, ocr);
+  check("ambiguous single-word name not recovered", recovered === 0, items[0].result);
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
