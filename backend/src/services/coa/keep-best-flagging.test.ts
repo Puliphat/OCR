@@ -36,14 +36,14 @@ function check(label: string, got: unknown, want: unknown) {
   ok ? passed++ : failed++;
 }
 
-// 1. ชื่อตรง ค่าเปลี่ยน · spatial (OCR เดา column) → amber
+// 1. ชื่อตรง ค่าเปลี่ยน · spatial (OCR เดา column) → amber · แถวใหม่ = รอบแรกอ่านไม่ออก → เขียว
 {
   const inc = rpt([row("Moisture", 0.71, null, 2)]);
   const ch = rpt([row("Moisture", 0.95, null, 2), row("pH", 11.1, 10.5, 11.5)]);
   const f = flagChallengerPasses(ch, inc, "rapidocr", "spatial");
   check("เขียนทับ → รายงาน 1 แถว", f.overwritten.length, 1);
   check("เขียนทับ → amber", ch.rows[0].needsReview, true);
-  check("แถวใหม่ spatial → amber", ch.rows[1].needsReview, true);
+  check("แถวใหม่ spatial → ไม่ amber (รอบแรกอ่านไม่ออก ไม่ใช่เลขที่เถียงกัน)", ch.rows[1].needsReview, false);
 }
 
 // 2. ชื่อตรง ค่าเปลี่ยน · structural (column เชื่อได้ + margin กว้าง) → ยังต้อง amber (ธงเหนียว)
@@ -75,13 +75,14 @@ function check(label: string, got: unknown, want: unknown) {
   check("นับ greenlit", f.greenlit, 1);
 }
 
-// 5. แถวใหม่ · structural แต่ไม่มีขอบเกณฑ์ให้เทียบ → amber
+// 5. แถวใหม่ที่ไม่มีขอบเกณฑ์ให้เทียบ → ก็ยังเขียว (เกณฑ์ของแถวนี้เป็นเรื่องของ evaluator ไม่ใช่ด่านนี้)
 {
   const inc = rpt([row("Moisture", 0.71, null, 2)]);
   const ch = rpt([row("Moisture", 0.71, null, 2), row("Appearance", 1, null, null, "-")]);
   const f = flagChallengerPasses(ch, inc, "text-layer", "structural");
-  check("แถวใหม่ไม่มีขอบ → amber", ch.rows[1].needsReview, true);
-  check("นับ surfaced", f.surfaced, 1);
+  check("แถวใหม่ไม่มีขอบ → ไม่ amber", ch.rows[1].needsReview, false);
+  check("ไม่นับ surfaced", f.surfaced, 0);
+  check("นับ greenlit", f.greenlit, 1);
 }
 
 // 6. ★ เคสคมสุด ★ สองแถวสลับค่ากัน — preservesPasses นับว่า "PASS เดิมครบ" ทั้งคู่ ทั้งที่เลขผิดทั้งคู่
@@ -149,24 +150,23 @@ function check(label: string, got: unknown, want: unknown) {
   const fA = flagChallengerPasses(chA, mk(), "rapidocr", "spatial");
   check("ชื่อซ้ำ: ค่าเดิมยังอยู่ → ไม่ฟ้องเขียนทับ", fA.overwritten.length, 0);
   check("ชื่อซ้ำ: แถวค่าเดิม → ไม่ amber", chA.rows[1].needsReview, false);
-  check("ชื่อซ้ำ: แถวใหม่ → amber", chA.rows[0].needsReview, true);
+  check("ชื่อซ้ำ: แถวใหม่ → ไม่ amber", chA.rows[0].needsReview, false);
   const chB = rpt([row("Particle Size", 0.1, null, 0.5), row("Particle Size", 0.4, null, 0.5)]);
   const fB = flagChallengerPasses(chB, mk(), "rapidocr", "spatial");
   check("สลับลำดับแล้วผลเท่ากัน (surfaced)", fB.surfaced, fA.surfaced);
   check("สลับลำดับแล้วผลเท่ากัน (overwritten)", fB.overwritten.length, fA.overwritten.length);
 }
 
-// 12. ★ เคสที่ reviewer จับได้ ★ ค่าผลว่าง + เกณฑ์ซ้ำกันหลายแถว (RI-015 มี 3 แถวเกณฑ์ <15)
-//     "≤15 + ค่าว่าง" ไม่ใช่ลายนิ้วมือ → ห้ามเอาไปยืนยันแถวใหม่ที่ชื่อไม่ตรงกับใคร
+// 12. ค่าผลว่าง + เกณฑ์ซ้ำกันหลายแถว (RI-015 มี 3 แถวเกณฑ์ <15) → แถวใหม่ก็ยังเขียว ไม่ปักธง
 {
   const inc = rpt([row("Sb (ppm)", null, null, 15)]);
   const ch = rpt([row("Hg (ppm)", null, null, 15), row("Sb (ppm)", null, null, 15)]);
   const f = flagChallengerPasses(ch, inc, "rapidocr", "spatial");
-  check("แถวใหม่ค่าว่าง → amber (ห้ามยืนยันด้วยเกณฑ์)", ch.rows[0].needsReview, true);
+  check("แถวใหม่ค่าว่าง → ไม่ amber", ch.rows[0].needsReview, false);
   check("แถวที่ incumbent ยืนยันแล้ว → ไม่ amber", ch.rows[1].needsReview, false);
 }
 
-// 13. เกณฑ์ซ้ำ 2 แถวในฝั่ง incumbent → triple ไม่ unique → ห้ามยืนยันแถวใหม่ข้ามชื่อ
+// 13. เกณฑ์ซ้ำ 2 แถวในฝั่ง incumbent → แถวใหม่ไม่ถูกปักธง และแถวเดิมไม่ถูกแตะ
 {
   const inc = rpt([row("Fe2O3", 0.02, null, 0.1), row("TiO2", 0.02, null, 0.1)]);
   const ch = rpt([
@@ -175,7 +175,7 @@ function check(label: string, got: unknown, want: unknown) {
     row("TiO2", 0.02, null, 0.1),
   ]);
   const f = flagChallengerPasses(ch, inc, "rapidocr", "spatial");
-  check("triple ซ้ำ → แถวใหม่ amber", ch.rows[0].needsReview, true);
+  check("triple ซ้ำ → แถวใหม่ไม่ amber", ch.rows[0].needsReview, false);
   check("triple ซ้ำ → แถวเดิมทั้งคู่ไม่ amber", [ch.rows[1].needsReview, ch.rows[2].needsReview], [false, false]);
 }
 
@@ -186,7 +186,7 @@ function check(label: string, got: unknown, want: unknown) {
   flagChallengerPasses(ch, inc, "rapidocr", "spatial");
   check("เขียนทับ → valueDisputed", ch.rows[0].valueDisputed, true);
   check("เขียนทับ → reason บอกเลขทั้งสองฝั่ง", /0.71\|\|2 → 0.95\|\|2/.test(ch.rows[0].reason), true);
-  check("แถวใหม่ → reason ไม่ว่าง", ch.rows[1].reason.length > 0, true);
+  check("แถวใหม่ → reason ไม่ถูกเติม", ch.rows[1].reason, "");
   check("แถวใหม่ → ไม่ติด valueDisputed", ch.rows[1].valueDisputed, undefined);
 }
 
@@ -197,7 +197,7 @@ function check(label: string, got: unknown, want: unknown) {
   const ch = rpt([row("Moisture", 0.71, null, 2), keep]);
   flagChallengerPasses(ch, inc, "rapidocr", "spatial");
   check("reason เดิมยังอยู่", ch.rows[1].reason.startsWith("bound result <15"), true);
-  check("ต่อท้ายด้วยเหตุผลใหม่", ch.rows[1].reason.includes("ยืนยันไม่ได้"), true);
+  check("แถวใหม่ไม่ถูกต่อท้ายเหตุผล", ch.rows[1].reason, "bound result <15 satisfies spec <15");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

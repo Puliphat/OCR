@@ -352,15 +352,14 @@ function preservesPasses(challenger: CoaReport, incumbent: CoaReport): boolean {
   return true;
 }
 
-// ปักธงให้คนตรวจทุกแถว PASS ของ challenger ที่ incumbent ยืนยันไม่ได้ — ไม่งั้นเลขที่เถียงกันอยู่ขึ้นจอเป็นเขียว
-//   ชื่อตรงแต่ค่าต่าง = เขียนทับแถวที่ผ่านแล้ว (amber เสมอ) · ค่าตรงแต่ชื่อต่าง = ยืนยันแล้ว · แถวใหม่ = ตาม column provenance
+// ปักธงเฉพาะแถว PASS ที่สองรอบอ่านเลขไม่ตรงกัน — ไม่งั้นเลขที่เถียงกันอยู่ขึ้นจอเป็นเขียว
+//   แถวที่รอบแรกอ่านไม่ออกเลย ไม่ใช่เลขที่เถียงกัน จึงไม่ปักธง (ดู phase 3)
 export function flagChallengerPasses(
   challenger: CoaReport,
   incumbent: CoaReport,
   engine: OcrEngine,
   gridSource: GridSource | undefined
 ): { surfaced: number; greenlit: number; overwritten: string[]; marginCleared: number } {
-  const isStructural = gridSource === "structural";
   const pool = incumbent.rows.filter((r) => r.status === "PASS");
   const used = new Set<number>();
   const overwritten: string[] = [];
@@ -403,21 +402,9 @@ export function flagChallengerPasses(
     flag(r, `เลขแถวนี้ไม่ตรงกับที่อ่านรอบแรก (${move} = ค่า|min|max) — เทียบกับใบจริง`);
   }
 
-  // phase 3: ชื่อเทียบไม่ได้เลย — ยืนยันด้วยค่าได้เฉพาะค่าที่ไม่ว่าง และ triple ไม่ซ้ำในฝั่ง incumbent
-  //   "≤15 + ค่าผลว่าง" ไม่ใช่ลายนิ้วมือ (RI-015 มี 3 แถวเกณฑ์ <15) → ยืนยันข้ามแถวมั่วได้
-  for (const r of leftover) {
-    const vk = passValueKey(r);
-    const unique = r.result != null && pool.filter((c) => passValueKey(c) === vk).length === 1;
-    if (unique && pool.some((c, i) => !used.has(i) && passValueKey(c) === vk)) {
-      used.add(pool.findIndex((c, i) => !used.has(i) && passValueKey(c) === vk));
-      continue; // incumbent อ่านชื่อผิด แต่ค่า+เกณฑ์ตรง (KGP-H65 "g/ml" vs "嵩密度")
-    }
-    if (isStructural && !structuralPassNeedsAmber(r)) {
-      greenlit++;
-      continue;
-    }
-    flag(r, "แถวนี้รอบแรกยืนยันไม่ได้ (อ่านคอลัมน์ใหม่) — เทียบกับใบจริง");
-  }
+  // phase 3: แถวที่รอบแรกอ่านไม่ออกเลย ปล่อยเขียว — keep-best เก็บรอบสองเฉพาะตอนชนะขาดอยู่แล้ว
+  //   ราคา: เลขของแถวพวกนี้มีที่มารอบเดียว ไม่มีใครทานให้ (user decision 2026-09-11)
+  greenlit += leftover.length;
 
   // margin-green รันซ้ำเพราะธงข้างบนปักหลังรอบแรกใน runExtractionPass — CLEAR-ONLY, G0 กัน spatial
   //   และ G6 กันแถว valueDisputed ไว้แล้ว (margin ตอบไม่ได้ว่า "เลขไหนคือเลขบนใบ")
@@ -438,22 +425,6 @@ function gridBeatsFlat(grid: CoaReport, flat: CoaReport): boolean {
 }
 
 const VALUE_MARGIN_M = 0.30; // margin-green gate: result must be ≥30% of |result| away from the binding spec bound
-
-// ★ structural grid → digits are EXTRACTED, not recognized ★ (ROUND 22)
-//   gridSource="structural" ตั้งได้เฉพาะหน้า engine="text-layer" (ดู extractTextPerPage) = ตัวเลขดึงจาก
-//   text layer ของ PDF ตรงๆ + คอลัมน์ยืนยันด้วย ruling line ของ pdfplumber → ความเสี่ยงที่ margin-green
-//   G2–G4 กันอยู่ (digit scramble / ทศนิยมหาย / คอลัมน์เดา) เป็นความเสี่ยงของ OCR ล้วน ซึ่ง path นี้ไม่มี.
-//   ปักธงตาม "ใกล้ขอบ" บน path นี้ = ธงเฟ้อทั้งที่ตัวเลขเชื่อได้ (KGP-H65: 4/7 แถว ⚠ ทั้งที่ตรงใบจริง
-//   + ตรงตรา 合格 ของ QA เอง) → คนเลิกเชื่อธง = อันตรายกว่าไม่มีธง
-//   ★ ค่าตรงขอบ spec พอดีก็ไม่ amber (user decision 2026-08-03): ค่าที่อยู่ในกรอบ min/max รวมค่าติดขอบ
-//     = ผ่านตามใบจริง ไม่ต้องให้คนตรวจซ้ำ · หลุดกรอบเมื่อไรถึงเป็น FAIL ★
-//   ★ ไม่แตะ path อื่น: spatial / scanned-vector (คอลัมน์เดา หรือเลขมาจาก OCR) ยัง amber เสมอ ★
-function structuralPassNeedsAmber(r: EvaluatedItem): boolean {
-  const res = typeof r.result === "number" ? r.result : Number(r.result);
-  if (!Number.isFinite(res)) return true;
-  if (r.min == null && r.max == null) return true; // ไม่มีขอบให้เทียบ → ไม่ปล่อยเขียว
-  return false;
-}
 
 // ★ Margin-green policy (Track 2 + scanned-vector) ★ — CLEAR-ONLY: sets needsReview=false on PASS
 //   rows that are safely away from spec bounds. Never sets needsReview=true (only guards do that).
@@ -1135,7 +1106,7 @@ async function runFlatGridBest(
       }
       console.log(
         `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${flag.surfaced}${
-          isStructural ? ` · clean-green +${flag.greenlit} (structural, text-layer digits)` : ""
+          flag.greenlit > 0 ? ` · clean-green +${flag.greenlit} (แถวที่ flat อ่านไม่ออก)` : ""
         }${flag.marginCleared > 0 ? ` · margin-green เคลียร์ ${flag.marginCleared}` : ""}`
       );
       return gridReport;
