@@ -58,10 +58,8 @@ export function resetGpuState(): void {
 export class OllamaCoaService {
   private readonly generateUrl =
     process.env.OLLAMA_URL || "http://localhost:11434/api/generate";
-  // default = qwen3:4b: pilot บน 16-file corpus (_validate/_pilot-qwen3.log) — เร็วกว่า 7b 2.6x
-  //   (10s vs 27s/file) เพราะ ~2.8GB fit GPU จริง (7b 4.7GB ตก CPU-fallback บนเครื่องนี้),
-  //   abstain มากกว่า (honest SKIP > confident-wrong ตาม Priority #1), StructEval สูงกว่า 7b.
-  //   raw 4b ยัง mis-associate บางแถว → guard เต็ม pipeline (drop/fail/pass-guard) จับเป็น SKIP.
+  // default = qwen3:4b: pilot บน 16-file corpus เร็วกว่า 7b 2.6x (fit GPU จริง, 7b ตก CPU-fallback บนเครื่องนี้)
+  //   abstain มากกว่า (honest SKIP > confident-wrong) + StructEval สูงกว่า — guard ทั้งสายจับ mis-associate เป็น SKIP
   //   qwen3 = reasoning model → ต้อง think:false (ดู makeBody). override ด้วย OLLAMA_MODEL ได้
   private readonly model = process.env.OLLAMA_MODEL || "qwen3:4b";
 
@@ -170,9 +168,8 @@ ${text}
         dumpOllamaRaw(rawStr);
         const parsed = JSON.parse(rawStr);
         if (!parsed || !Array.isArray(parsed.items)) return null;
-        // ★ ปล่อย CPU runner ทิ้งหลังใช้เสร็จ ★ — Ollama (0.32.3) reuse runner ตาม "ชื่อ model" โดยไม่สน
-        //   ว่า num_gpu ต่างกัน → runner ที่ num_gpu:0 สร้างไว้จะรับ call ถัดไปทั้งหมดต่อ แม้ call นั้น
-        //   ไม่ได้ขอ CPU (วัดจริง: ค้างบน CPU 8.6 tok/s · หลัง unload โหลดกลับลง GPU 94 tok/s = 11x)
+        // ★ ปล่อย CPU runner ทิ้งหลังใช้เสร็จ ★ — Ollama (0.32.3) reuse runner ตามชื่อ model ไม่สน num_gpu
+        //   ต่างกัน → runner CPU รับ call ถัดไปทั้งหมดแม้ไม่ได้ขอ (วัดจริง: 8.6 vs 94 tok/s unload กลับ GPU)
         //   ทำเฉพาะตอนไม่ latch (fallback ชั่วคราวจาก timeout) — ถ้า GPU พังจริงก็ต้องอยู่ CPU ต่อไป
         if (a.label === "cpu" && !gpuDisabled) void this.releaseRunner();
         return parsed as RawCoa;
@@ -187,10 +184,9 @@ ${text}
         const gpuTimedOut = /timeout|etimedout|ECONNABORTED/i.test(lastErr);
         const gpuRetriable = a.label === "gpu" && (gpuCrashed || gpuTimedOut);
         if (gpuRetriable) {
-          // ★ latch เฉพาะ hard-crash ★ — timeout แปลว่า "call นี้ช้า" ไม่ใช่ "GPU ใช้ไม่ได้". เดิม latch
-          //   ทั้งคู่ → 1 timeout = ทุก call ที่เหลือ *ทั้ง process* วิ่ง CPU ถาวร. วัดจริงบน corpus:
-          //   timeout ครั้งเดียวที่ 1F1710 p4 ทำให้ไฟล์หลังจากนั้นช้า ~8x (PR1950W_4064 25s → 199s,
-          //   4A 23s → 163s) และ server ที่รันยาวจะช้าไปทั้งวันจนกว่าจะ restart
+          // ★ latch เฉพาะ hard-crash ★ — timeout แปลว่า "call นี้ช้า" ไม่ใช่ "GPU ใช้ไม่ได้" เดิม latch ทั้งคู่
+          //   1 timeout ทำให้ call ที่เหลือทั้ง process วิ่ง CPU ถาวร (วัดจริง: ช้าไปทั้งไฟล์หลังจากนั้น ~8x)
+          //   server ที่รันยาวจะช้าไปทั้งวันจนกว่าจะ restart ถ้าไม่แยก timeout ออกจาก crash
           if (gpuCrashed) gpuDisabled = true;
           console.warn(
             `[ollama-coa] GPU attempt failed (${lastErr.slice(0, 90)}) → retry on CPU (num_gpu:0)${
@@ -242,10 +238,9 @@ ${text}
   }
 }
 
-// ★ Keep-warm ★ — qwen3 (~3.2GB+KV) โดน evict จาก VRAM เมื่อ idle เกิน keep_alive → upload ถัดไป
-//   เสีย ~37s โหลด model กลับ "ระหว่าง user รอ". ping ทุก 8 นาที (< keep_alive 10m) = ถ้าโดน evict
-//   ก็โหลดกลับแบบ background แทน. ปิดด้วย OLLAMA_KEEP_WARM=false. เรียกจาก index.ts เท่านั้น
-//   (CLI/test-coa ไม่ใช้ — batch run คง warm เองตามธรรมชาติ)
+// ★ Keep-warm ★ — qwen3 โดน evict จาก VRAM เมื่อ idle เกิน keep_alive → upload ถัดไปเสีย ~37s โหลด model กลับ
+//   ping ทุก 8 นาที (< keep_alive 10m) กัน evict ให้โหลดกลับแบบ background แทน — ปิดด้วย OLLAMA_KEEP_WARM=false
+//   เรียกจาก index.ts เท่านั้น (CLI/test-coa ไม่ใช้ — batch run คง warm เองตามธรรมชาติ)
 export function startOllamaKeepWarm(intervalMs = 8 * 60_000): void {
   if (process.env.OLLAMA_KEEP_WARM === "false") return;
   const svc = new OllamaCoaService();

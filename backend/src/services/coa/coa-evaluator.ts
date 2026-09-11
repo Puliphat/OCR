@@ -57,9 +57,8 @@ export interface EvaluatedItem {
 }
 
 // ★ Ambiguous thousands ★ — "1,500" แยกไม่ออกว่าเป็น EU decimal (1.5) หรือ US thousands (1500)
-//   toNum เลือก EU เสมอ (ถูกกับ corpus ปัจจุบัน: 200,00 · 0,28 · 12,097 = ทศนิยมจริง)
-//   หา anchor มาพินสเกล 2 ชั้น แล้วค่อยยกธง — ★ ยกธงเฉพาะที่ตัดสินไม่ได้จริง ๆ ★ (ธงเยอะ = คนต้องตรวจซ้ำหมด
-//   = OCR ไม่ได้ลดงานหน้างาน) ชั้น 1 เลขตัวอื่นในกลุ่มเดียวกัน (ดู hasUnpinnedAmbiguity) · ชั้น 2 ขอบเกณฑ์
+//   toNum เลือก EU เสมอ (ถูกกับ corpus ปัจจุบัน) แล้วหา anchor พินสเกล 2 ชั้นก่อนค่อยยกธง
+//   ยกธงเฉพาะที่ตัดสินไม่ได้จริง (ธงเยอะ = คนตรวจซ้ำหมด = OCR ไม่ได้ลดงาน) — ชั้น 1 เลขอื่นในกลุ่ม · ชั้น 2 ขอบเกณฑ์
 export function evaluateItem(item: CoaItemInput): EvaluatedItem {
   const core = evaluateItemCore(item);
 
@@ -285,13 +284,9 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
       break;
   }
 
-  // ★ Anti-fabricated-PASS guard ★ — โมเดลเล็กบางตัว (เห็นใน qwen2.5) เวลาเจอตารางคอลัมน์แยก
-  //   "Spec | Result" จะเอา "ค่าผล" ไปแปะเป็นขอบช่วง spec (เช่น spec=80.0, result=69.11 → "69.11~80.0")
-  //   ทำให้ result ตกในช่วงของตัวเองเสมอ → PASS ปลอม 100% ซึ่งซ่อนของที่อาจ OOS = บาปหนักสุดของ QA
-  // สัญญาณ: spec เป็น between แล้ว result ตรงกับขอบเป๊ะ → ดาวน์เกรดเป็น SKIP ให้คนตรวจ
-  // ปลอดภัย: เคสนี้เป็น would-be-PASS เท่านั้น (FAIL จริง result อยู่นอกช่วง ไม่มีทาง == ขอบ) → ไม่ซ่อน FAIL
-  // ขอบเดียว (≤/≥/Max./Min.) ที่ค่าผลตรงขอบเป๊ะ = ลายนิ้วมือเดียวกัน — TAIHEIYO CMF ยกช่อง "0.5≧"
-  // ไปเป็นค่าผล 0.5 ด้วย. เว้นทิศที่เดาจากคอลัมน์ (เลขเปล่า) — ใบนั้นเกณฑ์กับผลเป็นคนละช่องจริง
+  // ★ Anti-fabricated-PASS guard ★ — โมเดลเล็กเจอตาราง "Spec | Result" แยกคอลัมน์ บางทีเอาค่าผลไปแปะเป็นขอบ spec เอง
+  //   (spec=80.0, result=69.11 → "69.11~80.0") → result ตกในช่วงตัวเองเสมอ = PASS ปลอม 100%
+  //   สัญญาณ: result ตรงขอบเป๊ะ → downgrade เป็น SKIP ให้คนตรวจ (ปลอดภัยกับ FAIL จริงเพราะไม่มีทาง == ขอบ)
   const boundaryExact =
     spec.op === "between"
       ? r === spec.min || r === spec.max
@@ -319,15 +314,9 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
     };
   }
 
-  // ★ Anti-deceptive guard (bare-eq, symmetric) ★ — op=eq/approx = spec เป็น "เลขเดี่ยวไม่มีทิศ"
-  //   (ไม่มี range / ≤≥ / Max Min). โมเดลเล็กที่อ่าน spec column ไม่ออกทำ 2 บาป:
-  //     (ก) copy ค่าผลมาเป็น spec → r === value → PASS ลม (PR1950W_4064 ทุกแถว, SODA, 4A metadata)
-  //     (ข) หยิบ bound เดียวมาทิ้งทิศ → r !== value → FAIL ลม (Barimite "0.20%"=Max จริง→PASS, "95%"=Min จริง→PASS)
-  //   ทั้งคู่ "ทิศไม่รู้ = verdict เชื่อไม่ได้" → SKIP+needsReview (Priority #1: honest SKIP > confident wrong)
-  //   ★ cost ★ bare-eq ที่ FAIL จริง (Barimite D50 Min 11.0/actual 10.414) ก็โดน SKIP ด้วย —
-  //     กู้ทิศจาก flat text ไม่ได้ (lever-1 column-placeholder ลองแล้ว regress: column position เชื่อไม่ได้
-  //     เมื่อ Min/Max header merge/ค่าตกผิด slot) → จะได้ auto-FAIL คืนต้องพึ่ง structural extractor (Docling)
-  //   ปลอดภัยกับ test: fixture จริงเป็น range/bound หมด ไม่มี eq → ไม่ regress (evaluator.test ยัง 4P/0F)
+  // ★ Anti-deceptive guard (bare-eq, symmetric) ★ — op=eq/approx = spec เป็นเลขเดี่ยวไม่มีทิศ (ไม่มี range/≤≥/Max Min)
+  //   โมเดลเล็กอ่าน spec column ไม่ออกทำ 2 บาป: copy ค่าผลมาเป็น spec → PASS ลม, หรือหยิบ bound มาทิ้งทิศ → FAIL ลม
+  //   ทิศไม่รู้ = verdict เชื่อไม่ได้ → SKIP+needsReview เสมอ (honest SKIP ดีกว่า confident wrong)
   if ((spec.op === "eq" || spec.op === "approx") && spec.value != null && !specCellEquality) {
     return {
       ...base,
@@ -394,11 +383,9 @@ type ItemBase = Pick<
   "name" | "unit" | "method" | "specRaw" | "resultRaw" | "resultMin" | "resultMax"
 >;
 
-// ★ interval containment ★ — [rMin, rMax] ต้องอยู่ในกรอบ spec ทั้งช่วง
-//   between: rMin ≥ specMin AND rMax ≤ specMax · le/lt: rMax ≤ (<) spec · ge/gt: rMin ≥ (>) spec
-//   หลุดขอบใดขอบหนึ่ง → FAIL (user decision: "หลุดกรอบต้อง FAIL" — ค่าที่วัดได้จริงเกินเกณฑ์ = ของเสีย)
-//   spec เลขเดี่ยวไม่มีทิศ (eq/approx) → SKIP เหมือน path ค่าเดี่ยว (ทิศหาย = verdict เชื่อไม่ได้)
-//   result (เลขเดี่ยว) = "ขอบที่ตัดสิน" (binding) → guard/margin/decimal-risk ที่คิดบนเลขเดี่ยวยังทำงานถูกทาง
+// ★ interval containment ★ — [rMin, rMax] ต้องอยู่ในกรอบ spec ทั้งช่วง (between/le/ge ตามทิศ) หลุดขอบใดขอบหนึ่ง → FAIL
+//   (user decision: ค่าที่วัดได้จริงเกินเกณฑ์ = ของเสีย) · spec เลขเดี่ยวไม่มีทิศ → SKIP เหมือน path ค่าเดี่ยว
+//   ผูก result ไว้ที่เลขเดี่ยว (binding) เพื่อให้ guard/margin/decimal-risk ที่คิดบนเลขเดี่ยวยังทำงานถูกทาง
 function evaluateInterval(
   base: ItemBase,
   iv: { min: number; max: number },

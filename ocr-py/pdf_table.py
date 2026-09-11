@@ -31,10 +31,9 @@ try:
 except Exception:
     pass
 
-# a cell that is a PURE measured value — a result or a single-sided numeric spec.
-# accepts an optional comparator (< > ＜ ＞) and a trailing % ; rejects composite/range
-# cells like "-100/ÿ", "11.0ÿ^16.0", "Max 1", "+100" — those are NOT lone measurements,
-# so they don't inflate the orientation signal.
+# a cell that is a PURE measured value — a result or single-sided numeric spec, with an
+# optional comparator (< > ＜ ＞) and trailing %; rejects composite/range cells like
+# "-100/ÿ", "11.0ÿ^16.0", "Max 1", "+100" so they don't inflate the orientation signal.
 NUM_RE = re.compile(r"^[<>＜＞]?\s*\d+(?:[.,]\d+)?\s*%?$")
 
 

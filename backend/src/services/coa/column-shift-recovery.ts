@@ -1,18 +1,6 @@
 // ★ Anti-deceptive guard: result ถูก map เป็น "คอลัมน์ป้าย" (transposed/rotated table) → SKIP ★
-//
-// อาการ (เคสจริง RI-015 sieve table): แต่ละแถว OCR = "aperture | spec | result" เช่น
-//   `0.425 | 10.0 - 45.0 | 36.0`. LLM หยิบ cell แรก (aperture 0.425 = ป้ายแถว) มาเป็น result
-//   ทิ้ง 36.0 จริง → 0.425 vs 10-45 = FAIL ปลอม. fail-guard เดิมไม่จับ (0.425+10+45 อยู่บรรทัดเดียว).
-//
-// ★ ทำไม downgrade ไม่ overwrite ★ — ลอง overwrite (เอาเลขหลัง spec มาเป็น result) แล้ว review เจอว่า
-//   ไม่ปลอดภัย: layout `result | spec | ค่าเพื่อนบ้าน/lot อื่น/เลข method` ก็เข้าเงื่อนไขเดียวกัน →
-//   จะเขียนทับ result ที่ถูกด้วยเลขผิด = deceptive PASS (บาปหนักสุด). เพราะบนบรรทัดเดียว
-//   "cell[0] เป็นป้าย" กับ "cell[0] เป็น result จริงที่อยู่ซ้าย spec" แยกไม่ออก →
-//   action ที่ปลอดภัยคือ "ยอมรับว่า column mapping กำกวม → SKIP + needsReview" (honest > confident wrong).
-//   (auto →PASS เฉพาะ pattern ที่ grade แล้ว = ต้องให้ user เปิด opt-in / ใช้ structural extractor)
-//
-// ★ SAFETY ★ fire เฉพาะ layout "ป้ายเป็นตัวเลขนำหน้า spec" — layout ปกติ `name|spec|result`
-//   ไม่ fire (cell[0] เป็นชื่อ/ข้อความ ≠ result). แตะเฉพาะ PASS/FAIL → SKIP (สร้าง verdict ใหม่ไม่ได้).
+// RI-015: LLM หยิบ aperture เป็น result ทิ้งค่าจริง — downgrade แทน overwrite เพราะแยกไม่ออกว่า cell[0] เป็นป้าย
+// SAFETY: fire เฉพาะ layout ที่ป้ายเป็นตัวเลขนำหน้า spec แตะได้แค่ PASS/FAIL → SKIP เท่านั้น (สร้าง verdict ใหม่ไม่ได้)
 import { EvaluatedItem } from "./coa-evaluator";
 
 export interface ColumnShiftResult {
@@ -106,11 +94,8 @@ export function findColumnShiftSuspect(
     }
     if (specIdx < 1) continue;
 
-    // (3) หลัง spec มี cell ตัวเลขเดี่ยว = "result จริงน่าจะอยู่ตรงนี้"
-    //   ★ จอง "result ปัจจุบัน (aperture/ป้าย)" เท่านั้น — ไม่จอง spec bounds ★
-    //   เพราะ result จริงในตาราง sieve มักเท่าขอบ spec (เช่น 0.0% retained ใน spec 0.0-1.0):
-    //   `0.850 | 0.0 - 1.0 | 0.0` → result จริง 0.0 = spec.min พอดี. ถ้าจอง specNums จะเห็น 0.0
-    //   เป็น "spec spillover" แล้วไม่ fire → ปล่อย aperture 0.85 (∈0-1) เป็น PASS ปลอม.
+    // (3) หลัง spec มี cell ตัวเลขเดี่ยว = result จริง — จองแค่ผลปัจจุบัน (ป้าย) ไม่จอง spec bounds
+    //   เพราะ result จริงมักตรงขอบ spec เป๊ะ ถ้าจอง spec ด้วยจะมองข้ามค่านี้แล้วปล่อย aperture เป็น PASS ปลอม
     const claimed = resVal != null ? [resVal] : [];
     for (let i = specIdx + 1; i < cells.length; i++) {
       const n = singleNumberCell(cells[i]);

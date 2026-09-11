@@ -1,22 +1,6 @@
 // ★ Deterministic Average/Mean-column recovery ★
-//
-// Why: some COA tables list several per-sample measurements followed by an Average/Mean column, and
-//   the AVERAGE is the authoritative result the spec compares against (not any single measurement).
-//   A small LLM (qwen3:4b) reads this inconsistently — verified on Lot240521 "Sieve Residue on 150μ"
-//   (measurements 54/56/58, Average 56.0): the model picked the last measurement 58 instead of 56.0.
-//   The fix is NOT a smarter prompt — it's to read the result deterministically from the column-aware
-//   OCR grid, where every cell sits at a fixed global column band.
-//
-// How: locate a header cell that LITERALLY reads "Average"/"Mean"/"Avg" → that band is the result
-//   column. Read each data row's cell at that band; if it is a lone measured number, it is the true
-//   result. Join grid rows to the LLM items by the spec text (the cell immediately right of the avg
-//   column — distinctive and copied verbatim by the LLM), with a normalized-name fallback. Override
-//   only when the recovered average is numeric and differs from the LLM result.
-//
-// ★ SAFETY ★ ABSTAINS unless an avg-header column is confidently identified (header keyword + ≥2 data
-//   rows with a lone numeric avg cell). Never guesses a column. Override = correcting to the document's
-//   own authoritative figure, not inventing data. The caller flags needsReview on changed PASS rows
-//   (spatial grids = inferred columns → amber), keeping a corrected value out of silent clean-green.
+// บางใบมีคอลัมน์ Average/Mean ที่เป็นค่าจริง — qwen3:4b อ่านสลับกัน (เคย Lot240521 พลาด) จึงอ่านตรงจาก grid แทน
+// ABSTAINS ถ้าคอลัมน์ avg ไม่ชัวร์ (header keyword + ≥2 แถวตัวเลข) — เปลี่ยนค่าแล้วปักธง needsReview เสมอ
 import { RawCoaItem } from "./ollama-coa.service";
 
 const AVG_HEADER_RE = /^(?:average|mean|avg\.?)$/i;

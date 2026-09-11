@@ -214,9 +214,8 @@ export interface SpecCandidate {
 // ทั้ง min+max → between, มีอย่างเดียว → ge/le, ไม่มี → fallback ใช้ specRaw
 export function normalizeSpecFromCandidate(c: SpecCandidate): ParsedSpec | null {
   // ★ specRaw (verbatim 1 cell) ที่มี operator/range ชัด = น่าเชื่อสุด — เช็คก่อน min/max ★
-  //   LLM เล็กชอบใส่ทั้ง specRaw="0.01 Max." (ถูก) + specMin="0.01" (bare) พร้อมกัน → ถ้าเช็ค min ก่อน
-  //   bare specMin บังให้เป็น ge → fabricated FAIL. specMin/specMax คือ "การตีความ column" ของ LLM
-  //   (พลาดบ่อย) ส่วน specRaw คือ copy ตรง ๆ → ทิศใน specRaw ชนะเมื่อมันบอกทิศชัด (ไม่ใช่เลขเปล่า)
+  //   LLM ชอบใส่ทั้ง specRaw="0.01 Max." (ถูก) + specMin="0.01" (ไร้ทิศ) — เชื่อ min ก่อน = ge ผิด = FAIL ปลอม
+  //   specMin/specMax คือ LLM ตีความ column เอง (พลาดบ่อย) · specRaw คือ copy ตรง → specRaw ชนะเมื่อบอกทิศชัด
   if (c.specRaw != null && String(c.specRaw).trim() !== "") {
     const pr = normalizeSpec(c.specRaw);
     if (pr && pr.op !== "eq") return pr;

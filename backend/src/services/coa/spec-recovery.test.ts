@@ -6,7 +6,7 @@ import { evaluateCoa } from "./coa-evaluator";
 import { RawCoaItem } from "./ollama-coa.service";
 
 // OCR จริงของ Lot240521 (จาก coa-logs/_last-ocr.txt) — เป็น scan ที่ noisy
-// ★ มีบรรทัด density ซ้ำ 2 ครั้ง (line 5 + line 13) — เคสจริงที่ Tesseract อ่านซ้ำ ★
+// ★ มีบรรทัด density ซ้ำ 2 ครั้ง (line 5 + line 13) — เคสจริงจากสมัยใช้ Tesseract, RapidOCR ก็ยังอ่านซ้ำได้ ★
 //   ใช้ lock ว่า ordered-zip ตัดบรรทัดซ้ำได้ ไม่งั้น specLines เกินจำนวน item → recovery พัง
 const OCR = [
   "BS ee a a",

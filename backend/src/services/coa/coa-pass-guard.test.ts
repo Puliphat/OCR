@@ -83,10 +83,9 @@ check(
   rBulk5.downgraded.length === 0 && bulk5[0].status === "PASS"
 );
 
-// ★ glue-name regression (เคสจริง Lot240521 350μ) ★ — OCR อ่านชื่อแถวติดกัน "SieveResidueon350ur%)"
-//   result 42.3 ∈ 15~45 = PASS จริง. แถวจริง (บรรทัด 2) มี 42.3 + 15~45 co-located ครบ แต่ชื่อติดกัน
-//   → token-anchor พลาด ไป anchor บรรทัด 500μ (แชร์ "sieve residue on") → เคย downgrade ผิด.
-//   glue-match ชี้บรรทัดจริง (ชื่อเต็มเป็น substring) → คง PASS
+// ★ glue-name regression (เคสจริง Lot240521 350μ) ★ — ชื่อแถว OCR ติดกัน "SieveResidueon350ur%)"
+//   ทำ token-anchor พลาดไป anchor บรรทัด 500μ (แชร์คำ "sieve residue on") → เคย downgrade ผิด
+//   glue-match ชี้บรรทัดจริงด้วยชื่อเต็มเป็น substring แทน → คง PASS ถูกต้อง (42.3 ∈ 15~45)
 const glue350 = [
   row({ name: "Sieve Residue on 350ur%)", specRaw: "15 ~45", min: 15, max: 45, result: 42.3, resultRaw: "42.3" }),
 ];
@@ -97,11 +96,9 @@ check(
   `(downgraded=${rGlue.downgraded.length})`
 );
 
-// ★ glue exact-cell (Opus review HIGH) ★ — glue ต้อง match "ทั้ง cell" ไม่ใช่ substring ที่ไหนก็ได้
-//   ของจริง 500u = 0.3/≤3 (บรรทัด true). LLM ยก 42/45 จากแถวอื่น (deceptive). มี foreign blob line
-//   ที่ชื่อโผล่เป็น "substring" (xx_sieveresidueon500u_blob) + แบก 42/45 → ถ้า glue ใช้ substring จะ
-//   ยก foreign line เข้า anchor set แล้ว validate ค่ายืม = PASS ปลอมรอด. exact-cell → foreign blob
-//   ไม่ match (cell = "xxsieveresidueon500ublob" ≠ "sieveresidueon500u") → anchor บรรทัดจริง → downgrade
+// ★ glue exact-cell (Opus review HIGH) ★ — glue ต้อง match ทั้ง cell ไม่ใช่ substring ที่ไหนก็ได้
+//   ของจริง 500u = 0.3/≤3 แต่ LLM ยก 42/45 จากแถวอื่น (deceptive); foreign blob line มีชื่อเป็น
+//   substring ของ cell จริง — ถ้าใช้ substring match จะยกบรรทัดนี้เข้า anchor แล้ว PASS ปลอมรอด → exact-cell กัน
 const GLUE_DECEPTIVE_OCR = [
   "Sieve Residue on 500u  |  0.3  |  3 Max.  |  Success",
   "xx_sieveresidueon500u_blob  42  45 Max  borrowed",
@@ -128,10 +125,9 @@ check(
   `(downgraded=${rGarble.downgraded.length})`
 );
 
-// ★ qwen review #1 (aperture garble ทุกบรรทัด ห้ามถอยเกินเดิม) ★ — deceptive PASS: result 4 ยืมจากแถว
-//   coating, ค่าจริงบรรทัด filter = 8. OCR garble เลข aperture 200 หายหมด (ไม่มีบรรทัดไหนมี 200).
-//   ถ้า exclusion zero ทุกบรรทัด → backoff → keep deceptive PASS (อันตราย). apertureOnSomeLine=false →
-//   fall back scoring เดิม → anchor บรรทัด filter (overlap 2) → result 4 ไม่อยู่ → downgrade ถูกต้อง
+// ★ qwen review #1 (aperture garble ทุกบรรทัด ห้ามถอยเกินเดิม) ★ — OCR garble เลข aperture 200 หายหมด
+//   ทุกบรรทัด, เสี่ยง backoff เก็บ deceptive PASS ไว้ (result 4 ยืมจากแถว coating ค่าจริงคือ filter=8)
+//   apertureOnSomeLine=false → fall back scoring เดิม anchor บรรทัด filter ถูก → downgrade ถูกต้อง
 const APERTURE_GONE_OCR = [
   "Filter mesh size  |  8  |  5 Max  |  Pass",
   "Coating weight  |  4  |  20 Max  |  Pass",

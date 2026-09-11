@@ -1,28 +1,6 @@
 // ★ Deterministic Specification-column recovery — DuPont "double Min/Max" layout ★
-//
-// Why: some vendor COAs (DuPont fiber/freeness sheets) print TWO Min/Max column groups per row —
-//   a left "Batch" group (the lot's own measured min/max) and a right "Specification" group (the
-//   acceptance limits). qwen3:4b reads the FIRST Min/Max it sees and reports the Batch range as the
-//   spec — e.g. 1F1710 Fiber Length shows 0.990~1.180 (the batch spread) when the real spec is
-//   0.920~1.420. The result value is correct; only the spec is mis-sourced. A wrong (often NARROWER)
-//   spec is a latent deceptive-PASS risk, so it must be corrected from the document's own geometry.
-//
-// How (header-anchored, never positional-guess):
-//   GATE  — abstain unless the grid carries BOTH a "Specification" header keyword AND at least one
-//           column-header row with ≥2 "Min" and ≥2 "Max" cells (the double-group signature). No other
-//           corpus layout has this, so the module is a strict no-op everywhere else.
-//   BANDS — for each double-group column-header row, the Specification pair = the RIGHTMOST "Min" band
-//           and RIGHTMOST "Max" band (Batch sits left, Spec sits right), requiring minCol < maxCol.
-//   READ  — for each data row under that header, read those exact bands. A mangled cell (e.g. OCR
-//           "S.000" for 5.000) → NaN → the row is REJECTED, never falling through to a neighbour
-//           column (that is exactly how a fabricated spec would slip in).
-//   AGREE — collect (min,max) candidates per item name across all blocks/pages of the grid; override
-//           only when a modal pair has ≥2 agreeing reads AND a strict majority (ties → abstain).
-//
-// ★ SAFETY ★ Mutates only spec (specRaw/specMin/specMax), never result. Asserts a spec ONLY on
-//   ≥2-block agreement; otherwise leaves the LLM value untouched. Every row of the detected layout is
-//   returned in `dupontNames` so the caller flags it needsReview (spatial grid = inferred columns →
-//   amber), keeping even a corrected spec out of silent clean-green.
+// Why: some COAs print both a "Batch" and "Specification" Min/Max group — qwen3:4b reads Batch as the spec, too narrow.
+// ★ SAFETY ★ Mutates only spec fields, overrides on ≥2-block modal agreement, flags every affected row needsReview.
 import { RawCoaItem } from "./ollama-coa.service";
 import { EvaluatedItem, evaluateItem } from "./coa-evaluator";
 
@@ -272,21 +250,8 @@ export function recoverSpecificationColumn(items: RawCoaItem[], gridText: string
 }
 
 // ★ Cross-page reconciliation — เอกสาร DuPont แบบ multi-batch (เคสจริง 1F1710) ★
-//
-// Why: ใบพวกนี้พิมพ์บล็อกเดิมซ้ำทีละ Batch ไปเรื่อยๆ ข้ามหน้า (1F1710 = 11 บล็อกใน 4 หน้า) และ
-//   Specification band ของ property เดียวกัน **เท่ากันทุกบล็อกทั้งไฟล์** (ตรวจกับใบจริงแล้ว:
-//   Freeness 160.000~360.000 · Fiber Length 0.920~1.420 · Percent Moisture 5.000~11.000)
-//   แต่ pipeline ประมวลผลทีละหน้า → หน้าไหนอ่านพลาดก็พลาดเงียบๆ ไม่มีใครค้าน. เคสจริงที่จับได้:
-//   หน้า 3 อ่าน Percent Moisture เป็น 5.400~9.500 ซึ่งคือ **คอลัมน์ Batch Min/Max ไม่ใช่ Specification**
-//   (หน้า 2 กับ 4 อ่านได้ 5.000~11.000 ถูกต้อง) — spec แคบกว่าความจริง = deceptive-FAIL รออยู่
-//
-// How: โหวตด้วย "จำนวนหน้า" ไม่ใช่จำนวนแถว (บล็อกซ้ำในหน้าเดียวไม่ควรมีน้ำหนักมากกว่าหน้าอื่น)
-//   band ที่ชนะต้องมาจาก ≥2 หน้า และมากกว่าอันดับสองจริง (เสมอ = abstain ทั้งกลุ่ม)
-//   • แถวที่ตรง band ที่ชนะ → เคลียร์ธง (หน้าอื่นยืนยันให้แล้ว = หลักฐานที่หน้าเดียวไม่มี)
-//   • แถวที่ต่าง → แก้ spec เป็น band ที่ชนะ + evaluate ใหม่ + **คงธงไว้** (หน้านี้เคยอ่านพลาดมาแล้ว)
-//
-// ★ SAFETY ★ แตะเฉพาะแถวที่ specDupont (layout นี้เท่านั้น) · ไฟล์หน้าเดียว/ไม่มีเสียงข้างมาก = no-op
-//   ทุกกรณี → guard ตัวอื่นและ COA ปกติไม่ได้รับผลกระทบ
+// Why: pipeline อ่านทีละหน้า หน้าที่อ่านพลาด (เอา Batch มาเป็น Specification) ก็แคบกว่าจริงเงียบๆ เสี่ยง deceptive-FAIL
+// โหวตด้วยจำนวนหน้าที่เห็นตรงกัน (≥2 หน้า ไม่เสมอ) มาแก้ — แตะเฉพาะแถว specDupont เท่านั้น ใบอื่นไม่กระทบ
 export interface DupontReconcileResult {
   greened: number;
   corrected: { page: number; name: string; from: string; to: string; status: string }[];

@@ -1,14 +1,6 @@
 // Structural table extraction for text-layer PDFs via pdfplumber (Python subprocess, NO torch).
-//
-// Why: the flatten step in coa-pipeline destroys column geometry — the LLM then can't tell
-//   specMin vs specMax vs result (worst on transposed COAs where items are columns). pdfplumber
-//   lines-strategy recovers the TRUE 2D cell-grid from the PDF's ruling lines, giving the LLM
-//   column-correct input. Used as the keep-best "grid challenger" for text-layer pages.
-//   ★ anti-regression: flat stays the floor; grid only kept when it strictly wins (see processPage) ★
-//
-// source = "lines"  → grid from real ruling lines (geometry-verified columns; trust higher)
-//          "text"   → grid from text-alignment fallback (no ruling lines)
-//          "none"   → no table recovered on this page
+// Flattening loses column geometry (LLM confuses specMin/specMax/result); pdfplumber grid is the keep-best challenger.
+// source = "lines" (real ruling lines, higher trust) | "text" (alignment fallback) | "none" (no table)
 import * as fs from "fs";
 import * as path from "path";
 import { spawnSync } from "child_process";
@@ -51,12 +43,9 @@ const SCRIPT = path.join(OCR_PY_DIR, "pdf_table.py");
 //   เพราะไม่มี grid challenger) ซึ่งคือ failure mode เดียวกับ OCR fallback ที่ถอดทิ้งไปแล้ว
 export const PDF_GRID_DOWN = "PDF_GRID_DOWN";
 
-// Extract per-page structural grid from a PDF. Synchronous subprocess (one-shot, not on a hot
-// path — runs once per PDF during extraction).
-// ★ THROWS เมื่อ pdfplumber ทำงานไม่ได้ (spawn ไม่ขึ้น / exit ≠ 0 / stdout ไม่ใช่ JSON) ★ — เดิม
-//   fail-soft คืน [] เงียบ ๆ ทำให้ผลตกโดยไม่มีใครรู้ (เจอจริง 31 ก.ค. 2026: ทั้ง 4 ใบ text-layer
-//   ร่วงพร้อมกัน หน้าเว็บไม่บอกอะไร) → user decision 2026-08-03: หยุดดัง ๆ เหมือน OCR_DAEMON_DOWN
-// ★ "หน้านี้ไม่มีตาราง" (source="none") ไม่ใช่ error ★ — pdfplumber ทำงานปกติ แค่ใบนี้ไม่มีเส้นตาราง
+// Extract per-page structural grid from a PDF. Synchronous subprocess (one-shot, not on a hot path).
+// ★ THROWS เมื่อ pdfplumber ทำงานไม่ได้ ★ — เดิม fail-soft คืน [] เงียบๆ ทำให้ผลตกโดยไม่มีใครรู้ (เคยร่วงพร้อมกัน 4 ใบ)
+// "หน้านี้ไม่มีตาราง" (source="none") ไม่ใช่ error — pdfplumber ทำงานปกติ แค่ใบนี้ไม่มีเส้นตาราง
 export function extractPdfGridPerPage(filePath: string): PdfGridPage[] {
   const res = spawnSync(PY, [SCRIPT, filePath], {
     encoding: "utf8",

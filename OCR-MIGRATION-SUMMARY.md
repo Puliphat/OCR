@@ -45,6 +45,7 @@ PDF → [text-layer extract: TS เดิม]                    ← 8 ไฟล
 ```
 
 sidecar = HTTP daemon (เหมือน Ollama) — start แยก, ถ้า daemon ล่ม pipeline fall back Tesseract อัตโนมัติ.
+(★ ข้อนี้เป็นสภาพ ณ 2026-06-02 เท่านั้น — Tesseract ถูกถอดออกแล้ว ดูท้ายไฟล์ ★)
 
 ## Code map — อะไรอยู่ตรงไหน
 
@@ -125,22 +126,14 @@ Gates: spec-normalizer.test **39/39** · spec-recovery.test **ALL** · evaluator
 3. **specRaw authoritative** — `normalizeSpecFromCandidate`: ถ้า specRaw มี operator/range ชัด (non-eq) → เชื่อ specRaw ก่อน min/max. เพราะ LLM ชอบใส่ทั้ง `specRaw:"0.01 Max."` (ถูก) + `specMin:"0.01"` (bare ผิด) → เดิม bare ชนะ → fabricated FAIL. [SODA Insoluble]
 4. **correctSpecDirectionFromOcr** (defense-in-depth, ยิง 0× บน corpus นี้) — เผื่อ LLM ให้ bare bound ล้วน ไม่มี specRaw แต่ OCR มี "X Max/Min" → anchor ที่ค่า V หาทิศใน OCR.
 
-## ขั้นต่อไป (ค้างไว้ — ต้อง user ตัดสิน)
+## เกิดอะไรขึ้นต่อจากนี้
 
-**ปัญหาที่เหลือทั้งหมด = LLM parse (qwen 3b) บนตารางซับซ้อน — ไม่ใช่ OCR.** ทางเลือกแก้ (ต้องเลือก):
+คำถามที่เอกสารนี้ค้างไว้ ("จะเปลี่ยน parse model ใหญ่ขึ้นไหม / tune prompt / ทำ per-template parser")
+**ตัดสินไปหมดแล้ว** และไม่ได้ไปทางใดทางหนึ่งตามที่ลิสต์ไว้:
 
-1. **เปลี่ยน parse model ใหญ่ขึ้น** — qwen2.5:**7b**-instruct (q4 ~5GB) parse ตารางซับซ้อนแม่นกว่า 3b มาก. RAM อาจพอ (vision ไม่โหลด) แต่ต้อง pull (~4.7GB download) + ทดสอบว่ารันไหว. = น่าจะคุ้มสุด แต่ต้องลอง. (ยังไม่ทำ — รอตัดสิน)
-2. **tune parse prompt** — เพิ่ม rule จัด column (เลือก result column เดียว, ห้ามยัด result เข้า spec). เสี่ยง regress + non-deterministic + 3b เพดานต่ำ.
-3. **per-template parser** — COA แต่ละ supplier layout ต่างกันมาก (RI-015 7 Lot# cols, Suzorite, fax). ทำ parser เฉพาะ template ที่เจอบ่อย = แม่นสุดแต่ใช้แรง.
+- parse model → `qwen3:4b` (ไม่ใช่ 7b — 7b ลองแล้ว SKIP เยอะกว่า, reject)
+- per-template parser → ไม่ทำ · แทนด้วย **guard/recovery module deterministic** หลัง LLM parse หลายสิบตัว
+- Tesseract fallback ที่เอกสารนี้ยังพูดถึง → **ถอดออกแล้ว** (`61e5989`) ตอนนี้ daemon ล่ม = `OCR_DAEMON_DOWN` พังดังๆ ไม่มีตัวสำรอง
 
-**อื่น ๆ:**
-- **Lot240521 fax** — เคสแย่สุด. ถ้าต้องการให้ผ่าน: preprocess รูป fax (deskew/contrast) หรือ x-clustering ใน `rapidocr.service.ts`. แต่ fax คุณภาพนี้เพดานต่ำ.
-- daemon ยัง start เอง (ไม่ auto-spawn) — ถ้า deploy จริงให้ backend spawn หรือทำเป็น service.
-- **ยังไม่ commit อะไรเลย** — รอ user สั่ง.
-
-## สถานะ commit (ยังไม่ commit)
-
-ใหม่: `ocr-py/` (sidecar), `backend/src/services/coa/rapidocr.service.ts`, `backend/src/scripts/diag-extract.ts`, `OCR-MIGRATION-SUMMARY.md`
-แก้: `coa-pipeline.ts`, `spec-normalizer.ts` (+test), `spec-recovery.ts` (+test), `backend/package.json`, `CLAUDE.md`
-ค้างจากก่อนหน้า: `CLAUDE.md`, `ollama-coa.service.ts` (model name)
-```
+ประวัติเต็มของทุกรอบที่แก้หลังจากนี้อยู่ที่ `backend/src/services/coa/TEST-LOG.md` ·
+สถานะปัจจุบันของระบบดู `CLAUDE.md`

@@ -11,10 +11,8 @@ export interface VectorGeom {
   tableBbox: [number, number, number, number];     // [x0, y0, x1, y1] in PDF points
 }
 
-// Returns " | " delimited grid text (rows joined by \n) or null when blockers fire:
-//   (1) correctionAngle !== 0 — RapidOCR was run on a rotated image; token coords don't match PDF points
-//   (2) geom.pageRotation !== 0 — same reason
-//   (3) colEdges.length < 4 — need ≥3 columns (4 edges)
+// Returns " | " delimited grid text, or null when the image is rotated (token coords no longer match PDF points),
+// or when colEdges has fewer than 4 entries (need >=3 columns worth of ruling-line edges).
 export function buildScannedGrid(
   tokens: OcrToken[],
   geom: VectorGeom,

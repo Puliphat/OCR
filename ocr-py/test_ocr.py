@@ -1,5 +1,6 @@
 # Quick RapidOCR test — read a COA image, group tokens into rows by y-position,
-# print so we can compare number accuracy vs Tesseract (the "ค่าเพี้ยน" problem).
+# print so we can compare number accuracy vs Tesseract, which this project used before
+# removing it (the "ค่าเพี้ยน" problem it had).
 import sys
 from rapidocr_onnxruntime import RapidOCR
 

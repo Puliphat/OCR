@@ -1,18 +1,6 @@
-// ★ Result-side Min|Max recovery (deterministic) ★ — ใบที่ "ไม่มีคอลัมน์ result เดี่ยว"
-//
-// โครงที่กัน (เคสจริง RB220 / Rockwool-Lapinus): ฝั่งผลแตกเป็น 2 คอลัมน์ Min|Max เทียบกับฝั่งเกณฑ์
-//   ที่แตกเป็น Min|Max อีกชุด — ค่าที่วัดได้จึงเป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง
-//     Batch no. | Fibre length | Results ( micron ) | Limits ( micron )
-//     Min. | Max. | Min. | Max.
-//     72700403 | 200,00 | 250,00 | 180 | 280
-//   qwen3:4b map พลาดทุกรัน (result=200 + resultMin=250 · แถว shot เอา 0,28 ไปเป็น specRaw)
-//   → กู้แบบ deterministic จาก header ไม่พึ่ง LLM (ตรวจย้อนได้ + ไม่ drift)
-//
-// ★ ABSTAIN-BY-DEFAULT ★ ต้องครบทั้ง 3 ชั้นถึงแตะ item:
-//   1. group-header line มี cell "Results…" และ cell "Limits/Specification…" โดย Results อยู่ซ้ายกว่า
-//   2. บรรทัดถัดไปเป็น sub-header ที่เป็น Min./Max. ล้วน ≥3 ช่อง และเริ่มด้วย Min,Max (= ฝั่ง result)
-//   3. data line มี cell ตัวเลขล้วน ≥ จำนวน sub-header → align จากขวา (ตัด batch no./ชื่อแถวออกเอง)
-//   ไม่ครบ → no-op (ใบอื่นทั้ง corpus ไม่มีโครงนี้ → ไม่ถูกแตะ)
+// ★ Result-side Min|Max recovery ★ — ใบไม่มี result เดี่ยว (เคย RB220) ผล+เกณฑ์แตกเป็น Min|Max — qwen3:4b พลาดทุกรัน
+//   จึงกู้แบบ deterministic จาก header แทน (ตรวจย้อนได้ ไม่ drift) — ผลเป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง
+// ABSTAIN-BY-DEFAULT: ต้องเจอ header Results...Limits + sub-header Min./Max. ≥3 ช่อง + data ครบ ถึงแตะ item
 import { RawCoaItem } from "./ollama-coa.service";
 
 export interface MinMaxOverride {

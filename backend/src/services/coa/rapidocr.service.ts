@@ -1,8 +1,6 @@
-// Bridge ไป Python OCR sidecar (RapidOCR daemon) — OCR engine ตัวเดียวของระบบสำหรับ COA scan
-// daemon: ocr-py/ocr_server.py บน :8765 (start แยกเหมือน Ollama — `npm run ocr:daemon`)
-// อ่านเลข/ตาราง COA ได้แม่น (± ≥ ทศนิยมไม่เพี้ยน, multi-column ติด)
-// CPU onnxruntime ~300MB → ไม่ชน memory wall แบบ vision LLM 3B
-// ถ้า daemon ล่ม/unreachable → คืน null ให้ pipeline โยน OCR_DAEMON_DOWN (ไม่มี fallback engine)
+// Bridge ไป Python OCR sidecar (RapidOCR daemon, ocr-py/ocr_server.py :8765) — engine ตัวเดียวของระบบสำหรับ COA scan
+// อ่านเลข/ตาราง COA แม่น (± ≥ ทศนิยมไม่เพี้ยน, multi-column ติด), CPU onnxruntime ~300MB ไม่ชน memory wall vision LLM
+// daemon ล่ม/unreachable → คืน null ให้ pipeline โยน OCR_DAEMON_DOWN (ไม่มี fallback engine)
 import axios from "axios";
 import * as fs from "fs";
 import * as os from "os";
@@ -40,11 +38,9 @@ export class RapidOcrService {
     variant: OcrVariant = "default",
     sink?: { degraded?: OcrDegraded }
   ): Promise<OcrToken[] | null> {
-    // ★ ส่ง image เป็น bytes (base64) เสมอ ★ — daemon อาจอยู่คนละเครื่อง (LAN deploy) →
-    //   เอื้อมถึง disk ของ backend ไม่ได้. path ยังส่งไปด้วยเพื่อ log/error เท่านั้น
-    //   (daemon เลือก b64 ก่อน, ไม่มี b64 ค่อย fall back อ่าน path = same-machine back-compat).
-    //   เดิมส่งแค่ path → daemon os.path.exists() เปิดจาก disk ตัวเอง → เครื่องอื่นหาไฟล์ไม่เจอ
-    //   → HTTP 500 → ทั้ง request พัง (เห็นทันที ดีกว่าเพี้ยนเงียบ)
+    // ★ ส่ง image เป็น bytes (base64) เสมอ ★ — daemon อาจอยู่คนละเครื่อง (LAN deploy) เอื้อมถึง disk ของ backend ไม่ได้
+    //   path ยังส่งไปด้วยเพื่อ log/error เท่านั้น (daemon เลือก b64 ก่อน, fall back path = same-machine)
+    //   เดิมส่งแค่ path → เครื่องอื่นหาไฟล์ไม่เจอ → HTTP 500 ทั้ง request พัง (เห็นทันที ดีกว่าเพี้ยนเงียบ)
     const abs = path.resolve(imagePath);
     let imageB64: string;
     try {
@@ -159,9 +155,8 @@ export class RapidOcrService {
   }
 
   // ★ Rotation auto-correct ★ — สแกนหมุน 90/270° ทำ RapidOCR อ่านตัวอักษรตะแคง → เลข/spec เพี้ยน
-  //   ตรวจจาก aspect ratio ของ box (tall เยอะ = หมุน) แล้วลอง OCR ภาพหมุน 90/270 เลือกมุมที่ "อ่านตรง"
-  //   (wide เยอะสุด, tie-break ด้วย mean score) → คืน tokens ของมุมที่ดีที่สุด
-  //   ★ Fast-path ★: ไฟล์ไม่หมุน (wide-dominant) คืน tokens เดิมทันที — output เท่าเดิมเป๊ะ, ไม่ OCR ซ้ำ
+  //   ตรวจจาก aspect ratio ของ box (tall เยอะ = หมุน) แล้วลอง OCR หมุน 90/270 เลือกมุมที่อ่านตรงสุด (wide เยอะสุด)
+  //   Fast-path: ไฟล์ไม่หมุน (wide-dominant) คืน tokens เดิมทันที — output เท่าเดิมเป๊ะ ไม่ OCR ซ้ำ
   private async correctRotation(
     imagePath: string,
     tokens0: OcrToken[],

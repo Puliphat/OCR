@@ -1,6 +1,4 @@
-// คิวงานในหน่วยความจำ — รันทีละ CONCURRENCY งาน (default 1) เพราะคอขวดจริงมีตัวเดียว:
-// OCR daemon มี lock เดียว + Ollama โมเดลเดียว → ยิงขนานไม่ได้เร็วขึ้น แต่ทำให้ทุกคนช้าเท่ากัน
-//
+// คิวงานในหน่วยความจำ — รันทีละ CONCURRENCY งาน (default 1) เพราะคอขวดจริงมีตัวเดียว (OCR/Ollama) ยิงขนานไม่เร็วขึ้น
 // ตั้งใจไม่รู้จัก COA เลย (generic run/progress + hook กู้ระบบ) — ผู้เรียกฉีด logic เข้ามา
 // ★ ไม่ persist ★ restart backend = คิวหาย ผู้ใช้อัปใหม่ (ตกลงไว้: process เดียว ไม่เอา Redis/BullMQ)
 import * as crypto from "crypto";

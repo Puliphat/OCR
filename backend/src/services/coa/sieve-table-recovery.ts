@@ -1,36 +1,6 @@
 // ★ Sieve/particle-size table result recovery (gated, → PASS) ★
-//
-// เคสจริง RI-015: ตาราง PARTICLE SIZE มีโครง `SIEVE | PATTERN | Lot#` =
-//   `<aperture> | <spec> | <result>` เช่น `0.425 | 10.0 - 45.0 | 36.0`.
-//   LLM หยิบ cell แรก (aperture 0.425 = ขนาดตะแกรง = ป้ายแถว) มาเป็น result ทิ้ง 36.0 จริง.
-//   column-shift guard จับว่า "result = คอลัมน์ป้าย" แล้ว downgrade → honest SKIP (ปลอดภัย default).
-//   โมดูลนี้ = ขั้น "กล้ากว่า": overwrite result = เลขหลัง spec → re-eval → promote เฉพาะ PASS.
-//
-// ★ บทเรียนจาก Opus review (รอบ overwrite แรกถูก kill) ★ — บนบรรทัด flat `X | spec | Y` แยก
-//   "X = aperture/ป้าย" กับ "X = result จริงที่อยู่ซ้าย spec" ไม่ออก. ถ้า X เป็น result จริง (OOS) และ
-//   Y เป็นเพื่อนบ้านที่บังเอิญ in-range → overwrite X→Y = deceptive PASS ซ่อนของเสีย (บาปหนักสุด).
-//   gate ที่อิงแค่ "ชื่อ row มี sieve" กันไม่อยู่ เพราะแถวจริงชื่อ "Residue on sieve(106μm)" ก็ผ่าน.
-//
-// ★ QUAD GATE — promote ต่อเมื่อครบทั้ง 4 ★
-//   (1) ไฟล์มีตาราง sieve/particle-size (header signature)
-//   (2) ชื่อ row สื่อ sieve/particle size
-//   (3) โครง aperture|spec|result บนบรรทัด OCR (result==cell[0]) — เหมือน column-shift
-//   (4) ★ POSITIVE EVIDENCE: aperture ของ "ชุด candidate" เป็น series ลดหลั่น ≥3 ค่าไม่ซ้ำ ★
-//       — apertures ของตะแกรงจริงเรียงเล็กลงเสมอ (2.0 > 0.85 > 0.425 > 0.15). row เดี่ยว ๆ ที่
-//       cell[0] บังเอิญเป็น result จริง (เคส deceptive ของ reviewer ทุกตัวเป็น single-row) →
-//       มี candidate < 3 → ไม่ผ่าน gate(4) → ไม่ promote (kill ครบ). ต้องมี ≥3 แถวที่ aperture
-//       ลดหลั่นพร้อมกันถึงจะเชื่อว่า cell[0] เป็น "คอลัมน์ป้าย/ขนาดตะแกรง" จริง.
-//   + promote เฉพาะ re-eval = PASS (ไม่สร้าง FAIL จากค่า reconstruct) + needsReview=true เสมอ.
-//   ปิดโมดูล/ลบ = fall back honest SKIP (ไม่แย่ลง).
-//
-// ★ RESIDUAL RISK (Opus re-review) — gate(4) เป็น heuristic เชิงสถิติ ไม่ใช่ proof ★
-//   "col0 เรียงลดหลั่น ⇒ เป็น aperture" แยกไม่ออกจาก "result จริงเรียงลดหลั่น" (retained-% ลดตามตะแกรง).
-//   ตาราง residue หลายแถวที่ layout เป็น `result(OOS) | spec | เพื่อนบ้าน(in-range)` + result เรียงลด
-//   + ชื่อมี sieve → ยังเจาะ gate(4) ได้ (uncommon บน COA จริง: ต้อง result-ซ้าย-spec + ≥3 แถวลดหลั่น
-//   + ทุกแถว OOS พร้อมเพื่อนบ้าน in-range). ★ ตาข่ายกันสุดท้าย = needsReview=true → frontend render
-//   amber "ต้องตรวจ" + กันออกจาก headline "ผ่าน" ★ — เคสที่หลุดถูก "เปิดให้คนตรวจ" ไม่ใช่ "เขียวเงียบ".
-//   ห้ามแก้ frontend ให้ needsReview PASS โชว์เขียวล้วน/นับเป็น clean pass (จะกลายเป็น deceptive จริง).
-//   auto→PASS แบบไม่ต้อง review = ต้อง structural extractor (Docling) อ่านหัวคอลัมน์จริง.
+// RI-015: guard เคยดัก aperture เป็น result แล้ว SKIP — โปรโมต PASS เมื่อผ่าน quad gate เต็ม กัน deceptive PASS
+// คง needsReview เสมอ — ปิด/ลบโมดูลนี้ก็แค่กลับไป honest SKIP ไม่แย่ลงกว่าเดิม
 import { EvaluatedItem, evaluateItem } from "./coa-evaluator";
 import { findColumnShiftSuspect, singleNumberCell } from "./column-shift-recovery";
 
@@ -112,10 +82,8 @@ export function recoverSieveTableResults(
       specRaw: r.specRaw,
       result: String(suspect),
     });
-    // promote เป็น PASS เมื่อ result จริงเข้า spec — รวมเคส "ค่าตรงขอบ range" (เช่น 0.0% retained =
-    //   spec.min) ที่ evaluateItem ดักเป็น SKIP (anti-fabricated-PASS). ในตาราง sieve result มาจาก cell
-    //   คนละช่องกับ spec จริง → boundary coincidence = ของจริง → PASS ได้. re-eval นอกช่วง → ปล่อย SKIP
-    // ขอบเดียว (≤/≥) ก็นับ — เกณฑ์ sieve ที่มีขอบด้านเดียวเจอบ่อยพอกับ range
+    // promote เป็น PASS แม้ค่าตรงขอบ spec เป๊ะ (ปกติ evaluateItem กัน anti-fabricated-PASS ไว้ที่ SKIP) —
+    //   ในตาราง sieve result กับ spec มาจากคนละ cell กัน ตรงขอบพอดีคือของจริงไม่ใช่เดา นับขอบเดียว (≤/≥) ด้วย
     const within =
       (re.min != null || re.max != null) &&
       (re.min == null || suspect >= re.min) &&
@@ -136,10 +104,9 @@ export function recoverSieveTableResults(
   return { recovered };
 }
 
-// ★ Missing bare-eq sieve-row recovery (gated → add SKIP+amber, แทรกตำแหน่งจริง) ★ — RI-015 `2.000|0.0|0.0`
-//   LLM ทิ้งแถวที่ spec+result เป็นค่าเดียวเท่ากัน (มองเป็นว่าง). scope แคบ = เฉพาะ bare-eq (min===max) +
-//   result==ค่า → range row ไม่ถูกแตะ (กัน add ซ้ำ). GATE: sieve table + apertures ลดหลั่น ≥3 (อ่าน OCR ตรง).
-//   ★ คง SKIP+amber เสมอ (ไม่ promote PASS — Opus: bare-eq ทิศไม่รู้) ★ เป้า = ให้แถวที่หาย "แสดง" บน UI
+// ★ Missing bare-eq sieve-row recovery (gated → add SKIP+amber ต้องตรวจ) ★ — LLM ทิ้งแถวที่ spec กับ result
+//   เป็นค่าเดียวเท่ากัน (เห็นเป็นว่าง) — เติมกลับเฉพาะ bare-eq (min===max) หลัง gate sieve table + apertures
+//   ลดหลั่น ≥3 ยืนยันแล้ว คง SKIP เสมอ (ทิศ bare-eq ไม่รู้ ไม่ promote PASS) เป้าคือให้แถวที่หาย "แสดง" บน UI
 export function recoverMissingSieveRows(
   rows: EvaluatedItem[],
   ocrText: string

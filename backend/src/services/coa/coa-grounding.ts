@@ -1,20 +1,6 @@
-// ★ Anti-hallucination guard ★ — ตัด row ที่ "ไม่มีอยู่จริงในเอกสาร" ออกก่อน evaluate
-//
-// อาการที่กัน (เคสจริง 1F1710): OCR เอกสารเป็น pulp COA (freeness/fiber/moisture) แต่ LLM ปั้น
-//   ทั้งใบเป็น metal COA (Tin/Iron/Manganese + "DUPONT Method") ที่ไม่มีในเอกสารเลย → PASS ปลอม 3 แถว
-//   needsReview=false = มั่นใจแบบผิด ๆ = บาปหนักสุด (ส่งงานบอก "ผ่าน" จากข้อมูลที่ไม่มีจริง)
-//
-// grounded เมื่อ "ตรวจย้อนไป OCR ได้" ทางใดทางหนึ่ง:
-//   1. name grounded — ชื่อ row โผล่ใน OCR (whole-word latin หรือ substring ≥5 ตัว เผื่อไทย/ชื่อยาว)
-//   2. number co-located — result และ spec ต้องโผล่ "บรรทัด OCR เดียวกัน" (= แถวตารางจริงอยู่บรรทัดเดียว)
-//   ไม่เข้าทั้งสอง → ถือว่าปั้น → drop
-//
-// ★ ทำไม co-location ★ เอกสาร number-dense (multi-batch) ค่า hallucinate มักบังเอิญชนเลขจริง "คนละที่"
-//   (1F1710: result 0.42 + spec 0.5 มีอยู่จริงแต่คนละบรรทัด) → ถ้าเช็คแค่ "มีในเอกสาร" จะปั้นรอด
-//   แถวจริง result+spec อยู่บรรทัดเดียวกันเสมอ → บังคับ co-location ตัดความบังเอิญทิ้ง
-//
-// ★ SAFETY ★ row จริงชื่ออยู่ใน OCR → ผ่านทาง name (short-circuit) ไม่แตะ number เลย
-//   number path เป็น fallback เฉพาะแถวที่ชื่อเพี้ยน/non-latin → drop = miss (honest) ไม่ใช่ false verdict
+// ★ Anti-hallucination guard ★ — ตัด row ที่ไม่มีอยู่จริงในเอกสารก่อน evaluate
+//   (เคสจริง 1F1710: LLM ปั้นทั้งใบเป็น metal COA ที่ไม่มีในเอกสาร → PASS ปลอม 3 แถว, needsReview=false = มั่นใจผิด ๆ)
+//   grounded ต้องมีชื่อ row ใน OCR หรือ result+spec co-locate บรรทัดเดียวกัน — ไม่เข้าทั้งสอง = ถือว่าปั้น → drop
 import { RawCoaItem } from "./ollama-coa.service";
 import { EvaluatedItem, textKey } from "./coa-evaluator";
 
@@ -90,10 +76,9 @@ function numberMatches(n: string, tokens: NumToken[]): boolean {
   return false;
 }
 
-// ★ transposed-table grounding (path 3) ★ — RI-015 chem: items-as-columns, ชื่อ/spec/result คนละบรรทัด
-//   (wt%Cu: ชื่อ token <3 → path1 พัง · spec+result คนละบรรทัด → path2 พัง). grounded เมื่อ result+spec
-//   อยู่ "column เดียวกัน คนละบรรทัด" ใน pipe-block ที่ "ชื่อ row อยู่ใน block นั้น" — column-anchored +
-//   name-in-block + exact-value → กัน fabricated row ที่ค่า align column บังเอิญ (Opus review HIGH/MEDIUM)
+// ★ transposed-table grounding (path 3) ★ — เอกสารที่ชื่อ/spec/result อยู่คนละบรรทัด (RI-015 chem)
+//   grounded เมื่อ result+spec อยู่ column เดียวกัน ในบล็อก pipe ที่มีชื่อ row
+//   ต้อง exact-value ไม่ใช่ align บังเอิญ กัน fabricated row หลุด
 
 // block = บรรทัด pipe-delimited ติดกัน (≥3 cell/บรรทัด, ≥2 บรรทัด/block) — เก็บ raw line ไว้ match ชื่อ
 function buildPipeBlocks(ocrText: string): string[][] {
@@ -253,15 +238,9 @@ export function dropUngroundedItems(
   return { kept, dropped };
 }
 
-// ★ OCR digit-scramble outlier guard ★ — downgrade FAIL ที่ result ห่างจาก specMax เกิน 100×
-//
-// อาการ (เคสจริง 1F1710 Fiber Length): OCR misread "1.090" → "0601" → qwen parse เป็น 601
-//   → 601 ตกนอก spec 0.920~1.420 → FAIL. แต่ fail-guard ไม่จับเพราะ co-locate ปกติ
-//   (tokens ทั้งหมด—result+spec—อยู่บรรทัดเดียว). ratio 601/1.42 ≈ 423× ชี้ชัดว่าเป็น OCR error
-//
-// กติกา (two-sided spec เท่านั้น — one-sided วัดไม่ได้ว่า "ไกลเกินจริงแค่ไหน"):
-//   result เกิน specMax × 100 → คง FAIL ไว้ (user decision 2026-09-11) + ปักธงว่าเลขน่าจะเพี้ยน
-//   แตะเฉพาะ FAIL + ต้องมี min AND max (two-sided) + result เป็น finite number
+// ★ OCR digit-scramble outlier guard ★ — ปักธง FAIL ที่ result ห่างจาก specMax เกิน 100× ว่าเลขน่าจะเพี้ยน
+//   เคสจริง 1F1710: OCR อ่าน "1.090" เป็น "0601" หลุด spec ทั้งที่ tokens co-locate ปกติ (fail-guard ไม่จับ)
+//   เฉพาะ two-sided spec (one-sided วัดไม่ได้ว่าไกลแค่ไหน) — คง FAIL ไว้เสมอ (user decision 2026-09-11) แค่เติมธงเตือน
 export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult {
   const downgraded: { name: string; reason: string }[] = [];
   for (const r of rows) {
@@ -280,20 +259,9 @@ export function downgradeOcrOutlierFails(rows: EvaluatedItem[]): FailGuardResult
   return { downgraded };
 }
 
-// ★ Anti-fabricated-FAIL guard (column collapse) ★ — downgrade FAIL ที่ spec ไม่ใช่ของแถวตัวเอง
-//
-// อาการ (เคสจริง Lot240521, Suzorite): scan/text-layer ตาราง transposed (ชื่อ/spec/result คนละบรรทัด)
-//   หรือ scan เอียง → LLM map spec ผิด เอา spec ค่าเดียว broadcast ทุกแถว
-//   (Lot240521: "20 Max" ×3 แถว sieve · Suzorite: "92~100" ×3 ทั้งที่จริง +100=Max1, -100/+200=Max5)
-//   → result ตกนอก spec ที่ "ไม่ใช่ของตัวเอง" → FAIL ปลอม needsReview=false = บอกของเสียทั้งที่ไม่รู้จริง
-//
-// กติกา: FAIL row คง verdict ได้ ต่อเมื่อ spec กับ result โผล่ "บรรทัด OCR เดียวกัน"
-//   (= เป็นแถวตารางจริง result ถูกเทียบกับ spec ที่อยู่ข้างกันจริง ไม่ใช่ spec ที่ยกมาจากแถวอื่น)
-//   ไม่ co-locate → คง FAIL ไว้ + ปักธงให้เทียบใบจริง (user decision 2026-09-11: ค่าหลุดเกณฑ์ต้องขึ้นไม่ผ่าน)
-//
-// ★ SAFETY ★ แตะเฉพาะ status FAIL (would-be bad verdict) — PASS/SKIP ไม่ยุ่ง
-//   true FAIL ในตารางปกติ (name|spec|result บรรทัดเดียว) → spec+result co-locate → คง FAIL ไว้
-//   ใช้ numberMatches แบบ whole-token (เลขเท่ากัน/digit-string เท่ากัน) ตัดความบังเอิญ substring
+// ★ Anti-fabricated-FAIL guard (column collapse) ★ — ปักธง FAIL ที่ spec อาจไม่ใช่ของแถวตัวเอง (broadcast bug)
+//   เคสจริง Lot240521: scan เอียง → LLM ยัด spec ค่าเดียวทุกแถว → FAIL ปลอมที่ไม่ปักธง
+//   spec+result co-locate บรรทัดเดียวกันจึงคง verdict ตรงๆ · ไม่ co-locate → คง FAIL แต่ปักธงให้เทียบใบจริง
 export interface FailGuardResult {
   downgraded: { name: string; reason: string }[];
 }
@@ -332,10 +300,9 @@ export function downgradeUngroundedFails(
     for (const lt of lineTokens) {
       if (!lt.length) continue;
       const rHit = resultNums.some((n) => numberMatches(n, lt));
-      // ★ ต้องครบทุก bound ★ — spec ทั้งหมด (min+max ของ range) ต้องอยู่บรรทัด result เดียวกัน
-      //   ใช้ .every กัน "range ประกอบข้ามแถว": LLM เล็กชอบ comma-join cell คนละคอลัมน์
-      //   (เคสจริง _diag/Lot240521 350μ: spec จริง "15~45" แต่ LLM ได้ "45~56" โดย 56 ยกมาจากแถว 150μ)
-      //   .some เดิมปล่อยผ่านเพราะ 45 บังเอิญอยู่บรรทัด result → fabricated FAIL รอด. .every จับได้
+      // ★ ต้องครบทุก bound ★ — spec ทั้งหมด (min+max) ต้องอยู่บรรทัด result เดียวกัน ใช้ .every ไม่ใช่ .some
+      //   กัน "range ประกอบข้ามแถว": LLM เล็ก comma-join cell คนละคอลัมน์ (เคสจริง Lot240521 350μ ยืม 56 จากแถว 150μ)
+      //   .some เดิมปล่อยผ่านเพราะ bound บางตัวบังเอิญอยู่บรรทัดเดียวกัน ทำให้ fabricated FAIL รอด
       const sHit = specNums.every((n) => numberMatches(n, lt));
       if (rHit && sHit) {
         colocated = true;
@@ -353,31 +320,9 @@ export function downgradeUngroundedFails(
   return { downgraded };
 }
 
-// ★ Anti-deceptive-PASS guard (column collapse, PASS side) ★ — คู่แฝดของ downgradeUngroundedFails
-//   แต่ฝั่ง PASS. false-PASS = บาปหนักสุดของ QA (บอก "ผ่าน" จาก spec/result ที่ไม่ใช่ของแถวนั้นจริง)
-//
-// อาการ (เคสจริง Lot240521 item1): ตาราง transposed, OCR อ่านถูก
-//   "Sieve Residue on 500 μ(%) | 0.3 | 3 Max. | Success"  (result จริง 0.3, spec จริง ≤3)
-//   แต่ LLM ดึงเลขข้ามบรรทัด → result 42 / specMax 45 (ยกจากแถว 350μ) → 42 ≤ 45 = PASS ปลอม
-//
-// ★ ทำไม name-anchored (ไม่ใช่ any-line แบบ fail-guard) ★ — เอกสาร number-dense ค่าผิดของ item1
-//   (42, 45) ดันไป co-locate "บรรทัดของ item2" พอดี → เช็คแบบ any-line จะปล่อยผ่าน (false PASS รอด)
-//   ต้อง anchor บรรทัดที่ "เป็นของ row นี้จริง" = บรรทัด OCR ที่ overlap ชื่อมากสุด
-//   (เลข 500/350/150 ในชื่อเป็นตัวแยกแถว sieve → ดึงบรรทัดถูกตัว)
-//
-// กติกา (ปลอดภัย — เช็คเฉพาะ "result co-location" + ต้องเป็น data line จริง เพื่อลด false SKIP):
-//   1. แตะเฉพาะ PASS. FAIL มี fail-guard แล้ว, SKIP ไม่ต้องยุ่ง
-//   2. ต้อง anchor ได้จริง: ชื่อมี ≥2 token (รวมเลข) + เจอบรรทัด OCR ที่ overlap ผ่าน threshold
-//      (เดียวกับ spec-recovery). anchor ไม่ได้ → ปล่อย PASS (พิสูจน์ collapse ไม่ได้ = honest miss)
-//   3. เช็ค RESULT co-locate บน "บรรทัด anchor" (overlap สูงสุด, ties เก็บหมด) ด้วย exact value (ไม่ใช่ digit-string)
-//      + spec: เช็ค co-locate เฉพาะ single-bound (Max/Min/≤/≥/=) ที่ bound โผล่ตรงตัวใน OCR
-//      ★ between/± ข้าม spec check ★ เพราะ normalize เป็น min/max "คำนวณขึ้น" (7±3 → 4,10) ไม่มีใน OCR
-//      (เช็คจะ false-SKIP เช่น Viscosity 6.6 ใน 7±3). single-bound เช็คได้ → กัน borrowed-spec PASS ปลอม
-//   4. ★ บรรทัด anchor ต้องมี "data number" (เลขที่ไม่ใช่เลขฝังในชื่อ เช่น 500/106) ★ ถึงจะถือเป็น "บรรทัด data จริง"
-//      ถ้าบรรทัดชื่อไม่มี data number = ชื่อถูก OCR ตัดมา/เป็น header (เช่น "Canadian Standard" ที่จริงคือ
-//      "Canadian Standard Freeness" ตัด 2 บรรทัด, "pH\n(Aqueous Solution)") → ค่าจริงอยู่บรรทัด continuation
-//      → พิสูจน์ collapse ไม่ได้ → ปล่อย PASS (กัน false SKIP จากชื่อ wrap)
-//   → downgrade เฉพาะเมื่อ "บรรทัดชื่อมีค่า data ของตัวเอง แต่ result ที่ LLM ให้ไม่ใช่ค่านั้น" = ยกเลขมาจากแถวอื่นจริง
+// ★ Anti-deceptive-PASS guard (column collapse, PASS side) ★ — คู่แฝดของ downgradeUngroundedFails แต่ฝั่ง PASS
+//   false-PASS คือบาปหนักสุดของ QA (เคสจริง Lot240521: LLM ยกผล/spec ข้ามแถวมา ได้ 42≤45 PASS ทั้งที่ตัวจริงคือ 0.3≤3)
+//   ต้อง anchor ด้วยชื่อแถว (ไม่ใช่ any-line) — พิสูจน์ collapse ไม่ได้ = คง PASS (honest miss ดีกว่า false SKIP)
 export interface PassGuardResult {
   downgraded: { name: string; reason: string }[];
 }
@@ -436,20 +381,13 @@ export function downgradeUngroundedPasses(
 
     // หาบรรทัด overlap สูงสุด (= บรรทัดของ row นี้). threshold เดียวกับ spec-recovery
     const need = Math.max(2, Math.ceil(nameSig.length * 0.6));
-    // ★ glue-tolerant anchor ★ — เคสจริง Lot240521 350μ: OCR อ่านชื่อแถวติดกันเป็น token เดียว
-    //   "SieveResidueon350ur%)" → token-match (sieve/residue/on/350ur) พลาดหมด → anchor ไป
-    //   ดึง "บรรทัด 500μ" ที่แชร์ "sieve residue on" 3 token → result 42.3 ไม่อยู่บรรทัดนั้น →
-    //   downgrade PASS ที่ถูกต้องทิ้ง.
-    //   กัน: ถ้าชื่อเต็ม (token ต่อกัน) = "ทั้ง cell" ของบรรทัดไหน → บรรทัดนั้นคือบรรทัดจริงของ row → full credit.
-    //   ★ ต้อง exact-cell ไม่ใช่ substring ทั้งบรรทัด (Opus review HIGH) ★ — substring หลวมไป: บรรทัดแปลก
-    //   ที่บังเอิญมีชื่อเป็น substring + ยกค่ายืมมาบนบรรทัดเดียวกัน จะได้ full credit แล้ว validate ค่ายืม
-    //   = deceptive PASS รอด. ชื่อแถวจริงมีเลข aperture ฝัง (350/500/150) → เป็น cell เต็มเฉพาะบรรทัดตัวเอง
-    //   เท่านั้น. ถ้าชื่อ glue ปนขยะ (ไม่ใช่ cell เต็ม) → glue ไม่ติด → fall back เดิม (false SKIP = honest)
+    // ★ glue-tolerant anchor ★ — OCR บางทีอ่านชื่อแถวติดกันเป็น token เดียว ทำ token-match พลาดไปแมตช์บรรทัดอื่น
+    //   ที่แชร์ token บางส่วน → downgrade PASS ที่ถูกต้องทิ้ง (เคสจริง Lot240521 350μ)
+    //   กันด้วย exact-cell match (ไม่ใช่ substring) — ต้องตรงทั้ง cell ถึงได้ full credit ไม่งั้น fall back เดิม
     const joinedName = nameSig.join("");
-    // ★ aperture exclusion (Lot240521 150μ) ★ — เลขฝังในชื่อ (150/350/500) = ตัวแยกแถว unique
-    //   บรรทัดที่ไม่มีเลขนี้ → ไม่ใช่แถวนี้ → score 0 (กัน garble ชื่อ→ anchor ข้าม aperture ผิด → false SKIP)
-    //   ★ เปิด exclusion เฉพาะเมื่อมี ≥1 บรรทัดที่มี aperture จริง ★ — ถ้า OCR garble aperture หายหมด →
-    //   fall back scoring เดิม (ไม่ zero ทุกบรรทัด → ไม่ถอยเกินเดิม → ไม่เปิดช่อง deceptive PASS หลุด)
+    // ★ aperture exclusion (Lot240521 150μ) ★ — เลขฝังในชื่อ (150/350/500) คือตัวแยกแถว unique
+    //   บรรทัดที่ไม่มีเลขนี้ = ไม่ใช่แถวนี้ → score 0 กัน garble ชื่อข้าม aperture ผิด (false SKIP)
+    //   เปิดเฉพาะเมื่อมี ≥1 บรรทัดมี aperture จริง — garble หายหมดทุกบรรทัด → fall back scoring เดิม
     const nameNums = nameEmbeddedDigits(r.name);
     const apertureOnSomeLine =
       nameNums.size > 0 &&
@@ -473,10 +411,9 @@ export function downgradeUngroundedPasses(
     ].filter((n) => !Number.isNaN(n));
     if (!resultNums.length) continue; // ไม่มีเลข result ให้เทียบ → ปล่อย
 
-    // ★ spec co-location เฉพาะ single-bound (Max/Min/≤/≥/=) — bound โผล่ตรงตัวใน OCR ★
-    //   between/± (min≠max) ข้าม: bound บางตัวเป็นค่าคำนวณ (7±3 → min4 max10) ไม่มีใน OCR → เช็คจะ false-SKIP
-    //   กัน "borrowed-spec PASS": result ถูกแต่ LLM ยืม bound หลวมจากแถวอื่น (เช่น 12 ใต้ spec จริง 10 Max
-    //   แต่ได้ 50 Max มา → 12≤50 PASS ปลอม ทั้งที่จริง FAIL) → bound 50 ไม่อยู่บรรทัดนี้ → จับได้
+    // ★ spec co-location เฉพาะ single-bound (Max/Min/≤/≥/=) ที่ bound โผล่ตรงตัวใน OCR ★ — ข้าม between/± (min≠max)
+    //   เพราะ bound พวกนั้นเป็นค่าคำนวณ (7±3 → min4 max10) ไม่มีใน OCR เช็คจะ false-SKIP
+    //   กัน borrowed-spec PASS: LLM ยืม bound หลวมจากแถวอื่น (12≤50 แทน 12≤10) → bound ไม่อยู่บรรทัดนี้จับได้
     const isBetween = r.min != null && r.max != null && r.min !== r.max;
     const boundVal = isBetween ? null : r.max != null ? r.max : r.min;
 
@@ -498,19 +435,9 @@ export function downgradeUngroundedPasses(
     if (validated) continue; // result(+bound) อยู่บรรทัด data จริง → ค่าเป็นของแถวนี้ → คง PASS
     if (!hasDataNumber) continue; // บรรทัดชื่อไม่มี data number (ชื่อ wrap/header) → พิสูจน์ collapse ไม่ได้ → คง PASS
 
-    // เช็ค sub-row: บรรทัดชื่อเป็น section header (มีแค่เลขลำดับ = "data number") result จริงอยู่ sub-row
-    //   ข้างล่าง. เช่น D-2072 "Shear Strength" header ไม่มี result · sub-row "- Room Temperature" +
-    //   "- Heat Resistance (200°C)" ถือ result. ยืนยันโดยเช็คว่า result (+ bound ถ้ามีด้านเดียว) อยู่ sub-row ใกล้ๆ
-    //
-    // ★ ขอบเขต sub-row (สำคัญ — ไม่มีขอบ = guard ตายทั้งตัว) ★ ถ้าปล่อยให้ scan ข้ามไปแถวอื่นได้
-    //   มันจะไปเจอ "ค่าที่ LLM ยืมมา" พอดี (ค่ายืมอยู่บรรทัดแถวอื่นเสมอ) แล้ว validate ผ่าน → deceptive
-    //   PASS รอดทุกเคส (guard ตายสนิท). 2 ด่าน:
-    //   ด่าน 1 — บรรทัด anchor ต้องเป็น "header ล้วน" คือไม่มีเลขของตัวเองนอก cell แรก (cell แรก = ช่อง
-    //     ชื่อ/เลขลำดับ). D-2072 "3 | Shear Strength (kgf/cm²)*" = header จริง (spec/result อยู่ sub-row
-    //     ข้างล่าง) · "Sieve Residue on 500μ | 0.3 | 3 Max. | Success" มีค่าครบในบรรทัดตัวเอง → ค่าของ
-    //     แถวนี้ต้องอยู่บรรทัดนี้ ห้ามไปหาที่อื่น
-    //   ด่าน 2 — บรรทัด sub-row ต้องเป็น continuation: bullet ("- Room Temperature") / label ที่แชร์ token
-    //     กับชื่อแถวนี้ / เลขล้วน. เจอชื่อ item อื่น → หยุด
+    // เช็ค sub-row: ชื่อเป็น header ไร้ค่าตัวเอง (เช่น D-2072 "Shear Strength") ค่าจริงอยู่ sub-row ข้างล่าง
+    //   ต้องมีขอบเขตชัด ไม่งั้น scan ไปเจอเลขที่ยืมมาจากแถวอื่น = guard ตายทั้งตัว
+    //   ด่าน 1: anchor ต้องไม่มีเลขของตัวเองนอกช่องแรก · ด่าน 2: sub-row ต้องเป็น continuation เจอ item อื่นหยุดทันที
     const isHeaderLine = (li: number) => {
       const cells = splitCells(lines[li]);
       const hasOwn = (toks: NumToken[]) => toks.some((tk) => !nameNums.has(tk.digits));

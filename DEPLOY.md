@@ -15,6 +15,12 @@ Runbook สำหรับ deploy COA analyzer บนเครื่อง **ser
 
 client เครื่องอื่น **คุยกับแค่ 3000 + 3001** · daemon กับ Ollama เป็นเรื่องภายในของ server (localhost)
 
+⚠️ **backend ยัง spawn Python อีกเส้นหนึ่งที่ไม่ใช่ daemon** — `pdfplumber` (อ่านตารางของ PDF ที่มี text-layer)
+ถูกเรียกเป็น process สั้นๆ ต่อไฟล์ จาก venv ตัวเดียวกับ daemon. venv พัง = ได้ `PDF_GRID_DOWN`
+แม้ `:8765` จะยังเขียวอยู่ — สองเส้นนี้ล่มแยกกันได้ (ดู `INSTALL-OFFLINE.md` §3.1)
+
+upload หลายไฟล์พร้อมกัน = backend **เข้าคิวรันทีละงาน** (OCR/LLM มีตัวเดียว) client เห็นลำดับคิวบนหน้าจอ
+
 ```
 [client browser] --3000--> [frontend] --(ใน browser client)--3001--> [backend] --localhost--> [daemon :8765]
                                                                               \--localhost--> [Ollama :11434]
@@ -123,7 +129,7 @@ pm2 status                                  # 3 ตัว online, restart count 
 
 # บน client เครื่องอื่นใน LAN
 #   เปิด browser → http://<SERVER_LAN_IP>:3000
-#   upload ไฟล์ COA จริง 1 ใบ → ต้องได้ตารางผล PASS/FAIL/SKIP (ไม่ค้าง/ไม่ error)
+#   upload ไฟล์ COA จริง 1 ใบ → ต้องได้ตารางผลแยก 3 ช่อง ผ่าน/ต้องตรวจ/ไม่ผ่าน (ไม่ค้าง/ไม่ error)
 ```
 
 ---
@@ -134,6 +140,7 @@ pm2 status                                  # 3 ตัว online, restart count 
 |---|---|---|
 | client upload แล้ว error/ค้าง แต่บน server เองใช้ได้ | `frontend\.env.local` ใส่ `localhost` หรือลืม build ใหม่ | ตั้ง `NEXT_PUBLIC_API_BASE_URL=http://<SERVER_IP>:3001` → `npm run build` → `pm2 restart coa-frontend` |
 | ไฟล์สแกน error `OCR_DAEMON_DOWN` | daemon ไม่ขึ้น/ตายไปแล้ว | `pm2 restart ocr-daemon` (หรือ `restart all`) · `curl :8765/health` |
+| ไฟล์ที่มี text-layer error `PDF_GRID_DOWN` ทั้งที่ `:8765` เขียว | คนละเส้นกับ daemon — backend เรียก `pdfplumber` จาก venv ไม่ได้ (venv พัง / base Python ย้ายที่) | `ocr-py\venv\Scripts\python.exe -c "import pdfplumber, rapidocr; print('OK')"` · ไม่ผ่าน = สร้าง venv ใหม่ตาม `INSTALL-OFFLINE.md` §3.3–3.6 |
 | upload แรกหลัง server idle นาน ~37s | qwen3 โดน evict จาก VRAM | ปกติ — keep-warm ping ทุก 8 นาทีกันไว้แล้ว (`OLLAMA_KEEP_WARM`); ถ้ายังนานเช็ค Ollama process ขึ้นจริง |
 | daemon 500 / หาไฟล์ไม่เจอ | (เฉพาะถ้าแยก daemon ไปคนละเครื่องทีหลัง) code ใหม่ส่ง bytes แล้ว — เช็คว่า daemon เป็น code ล่าสุด | `pm2 restart ocr-daemon` |
 | client เข้า `:3000` ไม่ได้เลย | firewall ปิด / Next bind ผิด | เปิด firewall 3000+3001 · `pm2 logs coa-frontend` ดู bind |

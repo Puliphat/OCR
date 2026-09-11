@@ -1,17 +1,6 @@
 // ★ Header-anchored single-bound direction classifier ★ (text-layer only, post-LLM, geometry-based)
-//
-// ปัญหาที่แก้ (เคสจริง Barimite200): ตาราง spec มี header "Min. Spec. | Max. Spec. | Actual Results"
-//   แต่หลายแถวพิมพ์ bound เดียว (เช่น Moisture "0.20" ใต้คอลัมน์ Max, D50 "11.0" ใต้ Max, 325Mesh "95" ใต้ Min).
-//   พอ flatten เป็น text บรรทัด ทิศ (Min/Max) หาย → spec-normalizer เห็นเลขเปล่า → op=eq →
-//   symmetric bare-eq guard ส่ง SKIP หมด (เสีย verdict ที่จริงๆ รู้ได้) หรือก่อนหน้านี้ = FAIL ปลอม
-//
-// ★ ทำไมปลอดภัย (ต่างจาก lever-1 ที่ revert) ★
-//   1. ทำงานบน "geometry ดิบ" (token X) ที่ extractPdfText คำนวณแล้วทิ้ง — ★ ไม่แตะ flat text ที่ LLM เห็นเลย ★
-//      4b อ่าน Z99/TR_1099/Inolob/TXAX เหมือนเดิมเป๊ะ (lever-1 พังเพราะ restructure text ที่ป้อน LLM)
-//   2. คืนเป็น "hint" ให้ corrector ใช้เฉพาะ row ที่ LLM ให้ op=eq (bound เดียว) — ★ range row ไม่แตะ ★
-//      (TR_1099 ที่ lever-1 พัง เป็น range → ไม่เข้า eq → ปลอดภัยโดยโครงสร้าง)
-//   3. classify เฉพาะเมื่อ header Min/Max เจอจริง + bound X ชัดว่าใกล้ฝั่งไหน → ไม่ชัด/ไม่เจอ = ไม่ emit (คง SKIP เดิม)
-//      → upgrade SKIP→verdict ได้อย่างเดียว ไม่มีทาง flip PASS/FAIL ที่ถูกอยู่แล้ว
+// เคย Barimite200: header แยก Min./Max. แต่บางแถวพิมพ์ bound เดียว flatten แล้วทิศหาย → guard SKIP ทั้งที่รู้ทิศได้
+// ทำงานบน geometry ดิบ ไม่แตะ flat text ที่ LLM เห็น — classify เฉพาะ bound ที่ชัดว่าใกล้ Min/Max ไม่ชัด = ไม่ emit
 import * as fs from "fs";
 import * as path from "path";
 

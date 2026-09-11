@@ -1,7 +1,6 @@
 // หน้าหลัก COA UI — orchestrator เท่านั้น (state + mutation + ประกอบ component)
 // UI แต่ละส่วนแยกไฟล์ที่ components/coa/*, สไตล์ที่ app/styles/*
-// flow: เลือกไฟล์ → POST /api/coa/upload คืน jobId ทันที (งานเข้าคิวที่ backend) → poll
-//       GET /api/coa/jobs?ids= จนทุกงานจบ. รันทีละงานเพราะ OCR/LLM มีตัวเดียว
+// flow: เลือกไฟล์ → upload คืน jobId → poll /jobs?ids= จนจบ (backend รันทีละงาน OCR/LLM มีตัวเดียว)
 "use client";
 
 import { useEffect, useRef, useState } from "react";

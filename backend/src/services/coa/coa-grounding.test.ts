@@ -84,10 +84,9 @@ check("mixed: เก็บ 2 จริง ตัด 1 ปั้น", r5.kept.len
 const r6 = dropUngroundedItems(realRows, "");
 check("OCR ว่าง → ไม่ drop (ปล่อยผ่าน)", r6.kept.length === 3 && r6.dropped.length === 0);
 
-// ★ transposed-table grounding (path 3, เคสจริง RI-015 chem) ★
-//   ตาราง items-as-columns: ชื่อ/spec/result คนละบรรทัด, column = ธาตุ
-//   name path พัง (wt%Cu → token cu/wt < 3) · co-location พัง (spec+result คนละบรรทัด)
-//   → ต้องกู้ด้วย column-anchored ข้ามบรรทัดใน pipe-block
+// ★ transposed-table grounding (path 3, เคสจริง RI-015 chem) ★ — ตาราง items-as-columns:
+//   ชื่อ/spec/result คนละบรรทัด, column = ธาตุ → name path พัง (wt%Cu → token cu/wt < 3) และ
+//   co-location พัง (spec+result คนละบรรทัด) → ต้องกู้ด้วย column-anchored ข้ามบรรทัดใน pipe-block
 const TRANSPOSED_OCR = [
   "ANALYSIS  |  wt%Cu  |  wt% Zn1  |  (udd)qd",
   "Pattern  |  57 - 61  |  36 - 40  |  <50",

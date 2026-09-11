@@ -1,9 +1,6 @@
 // A/B harness: เทียบ parse model บน "ข้อความเดียวกัน" (default qwen2.5:3b vs 7b)
-// ★ Fair test ★ — extract text ครั้งเดียวต่อไฟล์ แล้วป้อน text เดิมให้ทุกโมเดล
-//   (ถ้าปล่อยให้ OCR รันใหม่ต่อโมเดล ความ non-deterministic ของ Tesseract จะปนผล)
-// รัน: npx ts-node src/scripts/ab-models.ts            (ทุกไฟล์ต้นฉบับใน uploads/)
-//      npx ts-node src/scripts/ab-models.ts <file...>  (เฉพาะไฟล์)
-// เปลี่ยนรายชื่อโมเดลที่ MODELS ด้านล่าง
+// ★ Fair test ★ — extract text ครั้งเดียวต่อไฟล์ แล้วป้อน text เดิมให้ทุกโมเดล กันความต่างของ input มาปนผลเทียบโมเดล
+//   รัน: npx ts-node src/scripts/ab-models.ts [<file...>] — แก้รายชื่อโมเดลที่ MODELS ด้านล่าง
 import * as fs from "fs";
 import * as path from "path";
 import { extractText } from "../services/coa/coa-pipeline";

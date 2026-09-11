@@ -1,20 +1,6 @@
-// ★ กู้คืน "result" ที่โมเดลเล็ก (qwen3:4b) หล่นทิ้งบางรัน — deterministic, ไม่พึ่ง LLM ★
-//
-// อาการ (เคสจริง ZP10): OCR อ่าน result ครบทุกแถว แต่ LLM คาย JSON โดย "ไม่มี key result"
-//   (row 2-4: Fiber Length 1.09, Specific Surface Area 9.31, Moisture 6.2) → result=null → SKIP
-//   "result not numeric" ทั้งที่ค่าอยู่ใน OCR ครบ.
-//
-// ★ ทำไมเสี่ยงกว่า spec-recovery (ซึ่งจงใจไม่แตะ result — ดู spec-recovery.ts หัวไฟล์) ★
-//   เติม result ผิด = สร้าง verdict ปลอม (deceptive PASS/FAIL = บาปหนักสุดของ QA). ดังนั้นกติกาเข้ม:
-//   เติมก็ต่อเมื่อ "บนบรรทัด OCR ของ row นั้นเอง เหลือ 'cell ตัวเลขเดี่ยว' ผู้สมัครเพียงตัวเดียว"
-//   หลังตัด cell ที่เป็น spec / method / unit / เลขในชื่อ ออกแล้ว. กำกวม (0 หรือ ≥2) → ปล่อยว่าง
-//   (honest SKIP). + ปลายทางยังมี pass-guard/fail-guard re-check co-location อีกชั้น.
-//
-// ★ SAFETY (กติกาที่ทำให้ของเดิมไม่ regress) ★
-//   1. เติมเฉพาะ row ที่ result "ว่างสนิท" — ไม่เคยทับของเดิม → PASS/FAIL เดิมแตะไม่ได้ ทำได้แค่ย้าย SKIP
-//   2. row ต้องมี spec อยู่แล้ว (จะ evaluate ได้จริง) — ไม่งั้นเติม result ไปก็ SKIP อยู่ดี + เพิ่มความเสี่ยงเปล่า
-//   3. anchor บรรทัดด้วยชื่อ row (overlap ≥60%, ต้อง unique) — หาบรรทัดไม่เจอ/กำกวม → ข้าม
-//   4. ผู้สมัคร = "cell ที่เป็นตัวเลขเดี่ยวล้วน" เท่านั้น (กัน range/method/text) และต้องเหลือตัวเดียว
+// ★ กู้คืน result ที่ qwen3:4b หล่นทิ้งบางรัน (เคย ZP10 มีค่าครบแต่ JSON ไม่มี key) — deterministic ไม่พึ่ง LLM ★
+// เสี่ยงกว่า spec-recovery เพราะเติมผิด = deceptive PASS/FAIL — เติมเมื่อแถวเหลือ cell ตัวเลขเดี่ยว กำกวมปล่อย SKIP
+// SAFETY: เติมเฉพาะ row ที่ result ว่างสนิท + ต้องมี spec อยู่แล้ว + anchor ชื่อ row แบบ unique เท่านั้น
 import { RawCoaItem } from "./ollama-coa.service";
 
 export interface ResultRecoveryResult {
@@ -91,10 +77,8 @@ function hasSpec(it: RawCoaItem): boolean {
   return !blank(it.specRaw) || !blank(it.specMin) || !blank(it.specMax);
 }
 
-// ★ Judgement-column exclusion ★ — COA format บางอัน (เช่น D-2072) มีคอลัมน์ Judgement (O/X) หลัง Result
-//   OCR อ่านตัว O เป็น 0 → เจอ "0" ท้ายแถวหลังค่าจริง → result-recovery เห็น cands=[item-num, result, 0]
-//   แทนที่จะเป็น cands=[result] → unique check ล้มเหลว → ปล่อยว่าง. pattern ชี้ชัด: cell สุดท้ายของแถว
-//   เป็น Judgement symbol (0 / O / X / Passed / Failed / ACCEPT / REJECT) ตัดทิ้งก่อน scan cands
+// ★ Judgement-column exclusion ★ — บางใบ (D-2072) มี Judgement (O/X) ท้าย Result, OCR อ่าน O เป็น 0 ทำ unique check ล้ม
+//   ตัด cell สุดท้ายทิ้งก่อน scan ถ้าเป็น Judgement symbol (0/O/X/Passed/Failed/ACCEPT/REJECT)
 const JUDGEMENT_RE = /^(0|o|x|passed|failed|pass|fail|accept|reject)$/i;
 // ★ Item-sequence-number exclusion ★ — แถวบางแบบขึ้นต้นด้วย "1  | Viscosity | ..." โดยเลข 1 = ลำดับ ไม่ใช่ result
 //   ถ้า cell แรกเป็นเลขเต็ม 1-99 (ไม่มีทศนิยม) → ตัดออก (item-num ขึ้นสูงสุดแค่หลักสิบสำหรับ COA ปกติ)

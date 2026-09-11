@@ -14,9 +14,8 @@ export interface PdfTextResult {
 }
 
 // จัด X-positions ของ token ทุกตัวในหน้า → หา column anchors ด้วย simple clustering
-// Why: text-layer บน COA table มีช่องว่างกว้างระหว่าง column — join ด้วย space เดียว
-//      ทำให้ LLM อ่านไม่ออกว่า column ไหนคือ specMin vs specMax vs result
-// threshold clusterGap: ถ้า X ห่างกัน > 10 pt ถือว่าเป็น column ใหม่
+//   text-layer บน COA table join ด้วย space เดียวทำ column ติดกัน → LLM อ่านไม่ออกว่าช่องไหนคือ specMin/specMax/result
+//   threshold clusterGap: X ห่างกัน > 10 pt ถือว่าเป็น column ใหม่
 function clusterXPositions(xs: number[], clusterGap = 10): number[] {
   if (!xs.length) return [];
   const sorted = [...xs].sort((a, b) => a - b);
@@ -250,11 +249,8 @@ export async function extractPdfTextPerPage(
   return { pages, pageCount: pages.length };
 }
 
-// อ่านทุกหน้า เรียงเป็น line ตาม Y-coordinate (Δy > 2 = ขึ้นบรรทัดใหม่)
-// ถ้าตรวจพบ ≥ 2 column anchors → join ด้วย " | " แทน space เดียว
-// hasUsableText = true เมื่อข้อความ (ไม่นับช่องว่าง) ≥ 300 chars และ decode ออกจริง
-// (เดิม 100 chars — เจอ PR1950W มี text-layer 135 chars ผ่าน threshold แต่ LLM parse fail
-//  เพราะ text sparse ไม่มี row table จริง ขยับเป็น 300 ให้ fallback ไป OCR แทน)
+// อ่านทุกหน้า เรียงเป็น line ตาม Y-coordinate, ตรวจพบ ≥2 column anchors → join ด้วย " | " แทน space เดียว
+// hasUsableText = true เมื่อข้อความ ≥ 300 chars (ไม่นับช่องว่าง) และ decode ออกจริง (เดิม 100 — PR1950W หลอก threshold)
 // backward-compat: เรียก extractPdfTextPerPage แล้ว join ทุกหน้า
 export async function extractPdfText(filePath: string): Promise<PdfTextResult> {
   const { pages, pageCount } = await extractPdfTextPerPage(filePath);

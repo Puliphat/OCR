@@ -1,32 +1,6 @@
 // ★ Deterministic structural-grid parser — root fix for text-layer column-role mapping ★
-//
-// Why: even after pdfplumber recovers a clean 2D cell-grid, qwen3:4b cannot reliably map columns
-//   to roles on idiosyncratic COA layouts (a merged "Specifications" header spanning several
-//   columns, the result column headed by a lot number, ragged empty cells). On Suzorite it shifts
-//   one column right — writing the spec range into the result field and dropping the real result
-//   entirely (verified in coa-logs/_last-ollama.txt: result="Max 5"/"11.0〜16.0"). The grid is
-//   geometrically clean but still STRUCTURALLY ambiguous: the result column sits at a VARIABLE
-//   physical index per row, and a 4B model has no fixed anchor for that.
-//
-// Fix: classify each cell by CONTENT, not position. In a clean ruling-line grid every role has a
-//   distinct textual signature — a spec is a range/bound, a result is a lone measured value, a mesh
-//   designation (+100, -100/+200) is part of the item name. So role assignment is content-driven
-//   and the variable-index problem dissolves. Emit RawCoaItem[] directly — NO LLM for structural
-//   grids — and feed the SAME evaluator + guards. Deterministic, reproducible, zero new deps.
-//
-// ★ SAFETY ★ Runs only as the structural "grid challenger", gated by keep-best
-//   (processPage/gridBeatsFlat): kept only when it strictly dominates the flat PASS set with 0 FAIL.
-//   A misclassified grid can only fail-to-help, never regress. The parser ABSTAINS (null spec or
-//   null result → honest SKIP) on any row it cannot confidently classify — it never guesses a role.
-//
-// ★ Output contract pinned to the normalizers (see spec-normalizer.ts / result-normalizer.ts) ★
-//   - range / ± tolerance  → specRaw verbatim          (normalizeSpec → between)
-//   - one-sided bound       → specMin / specMax NUMBER  (a bare number in min col → ge, max col → le)
-//     ★ NEVER emit "Max 5" verbatim: normalizeSpec only reads number-first "5 Max", so word-first
-//       "Max 5" → null → false SKIP. NEVER emit a direction-less bare number as a spec: op eq → the
-//       evaluator's bare-eq guard auto-SKIPs it. Route every bound to specMin/specMax. ★
-//   - result                → passed VERBATIM as a string (so "Traces" → normalizeResult null →
-//     honest SKIP, and "<15" keeps its comparator for the bound-result path).
+// Why: qwen3:4b misreads shifted columns (e.g. Suzorite) — classify each cell by CONTENT instead, no LLM.
+// ★ SAFETY ★ Gated by keep-best (kept only if it beats the flat PASS set); ABSTAINS to SKIP instead of guessing a role.
 import { RawCoa, RawCoaItem } from "./ollama-coa.service";
 
 export type GridOrient = "normal" | "transposed";
@@ -281,21 +255,9 @@ function resolveSpecCol(
   return best;
 }
 
-// ★ sub-label column (merged-group layout) ★ — ใบที่ col0 เป็นชื่อ "กลุ่ม" ครอบหลายแถว (merged cell)
-//   แล้วมีคอลัมน์ถัดมาเป็นตัวแยกแถวจริง เช่น KGP-H65:
-//     粒度(μm) | D50 | 6.5±1.0 | 6.5 …      ← col0 มีค่าเฉพาะแถวแรกของกลุ่ม
-//              | D90 | 50以下  | 29.0 …     ← col0 ว่าง (merged) — D90 คือสิ่งเดียวที่แยกแถวนี้ออก
-//   ไม่ผนวก col1 เข้าชื่อ = ได้ "粒度(μm)" ซ้ำ 4 แถว คนอ่านแยกไม่ออกว่าแถวไหน D50/D90 (ค่าถูกแต่ไร้ป้าย)
-//   ★ gate แคบ 5 ชั้น กันไปโดนใบทรงอื่น ★ (PR1950W คอลัมน์ unit "％/sec/℃" ต้องไม่ถูกดูดเข้าชื่อ):
-//   (1) ต้องมีแถว "col0 ว่าง + มี spec ในแถวนั้น" = แถวข้อมูลที่สืบชื่อจาก merged cell ด้านบนจริง ๆ
-//       ★ ห้ามนับแค่ "col0 ว่าง" เฉย ๆ ★ — grid ของ PR1950W มีบรรทัด metadata บนหัวตาราง
-//       (" | No. 4064-08 Date Apr./06/2026 | …") ที่ col0 ว่างเหมือนกัน แต่ไม่ใช่ merged group →
-//       เคยทำให้คอลัมน์ Unit (℃/mm/sec/％) ถูกดูดเข้าชื่อ และ header "Item" กลายเป็น "Item Unit"
-//       จนรอด metadata-filter (`^item$`) ไปโผล่เป็น SKIP ปลอม
-//   (2) ไม่ใช่คอลัมน์ name/spec/result  (3) cell ไม่ใช่ spec/เลขเดี่ยว/method/unit/mesh
-//   (4) ต้องมีค่าเกินครึ่งของแถว = เป็นคอลัมน์จริง ไม่ใช่หมายเหตุประปราย
-//   (5) ★ ต้องมีค่าต่างกัน ≥2 แบบ ★ — คอลัมน์ 合否判定 ที่เป็น "合格" ซ้ำทุกแถวแยกแถวไม่ได้ ตกข้อนี้
-//   คืน -1 = ไม่มี → ชื่อเป็นพฤติกรรมเดิมเป๊ะ
+// ★ sub-label column (merged-group layout) ★ — col0 เป็นชื่อกลุ่มครอบหลายแถว มีคอลัมน์แยกแถวจริง (เช่น D50/D90)
+//   gate 5 ชั้น กันหลุดไปโดนใบทรงอื่น (เคย false-positive ดูดคอลัมน์ Unit เข้าชื่อ กลายเป็น SKIP ปลอม)
+//   คืน -1 = ไม่มี sub-label column → ชื่อเป็นพฤติกรรมเดิมเป๊ะ
 function resolveSubLabelCol(
   dataRows: string[][],
   ncol: number,
@@ -372,10 +334,8 @@ function emitGridItems(
   const subLabelCol =
     source === "structural" ? resolveSubLabelCol(dataRows, ncol, resultCol, specCol) : -1;
 
-  // ★ section carry เฉพาะ structural ★ — แถวที่ col0 ว่างยืมชื่อแถวบนได้เมื่อ cell มาจากเส้นตารางจริง
-  //   (ชื่อกลุ่ม merged แล้วแถวลูกเป็น mesh). scanned-vector สร้าง cell จาก token OCR + เส้นเวกเตอร์ที่
-  //   เหลื่อมกับภาพได้ → ชื่อสั้นหลุดคอลัมน์ไปเลย (PR1950W_4063 p2: "Flow"/"Moisture" จุดกึ่งกลาง token
-  //   ตกซ้ายเส้นแรก) → col0 ว่างเพราะ "ชื่อหาย" ไม่ใช่ "แถวลูกของกลุ่ม" → ยืมแล้วได้ชื่อผิดแบบเนียน
+  // ★ section carry เฉพาะ structural ★ — แถวที่ col0 ว่างยืมชื่อแถวบนได้ต่อเมื่อมาจากเส้นตารางจริง (merged group)
+  //   scanned-vector ชื่อสั้นหลุดคอลัมน์ได้ (เคสจริง PR1950W_4063) — col0 ว่างอาจแปลว่า "ชื่อหาย" ไม่ใช่แถวลูกของกลุ่ม
   const carrySection = source === "structural";
   const items: RawCoaItem[] = [];
   let section = "";
@@ -449,10 +409,8 @@ function emitGridItems(
   return items;
 }
 
-// Parse a pdfplumber structural grid into RawCoa with NO LLM. orient is informational: pdf_table.py
-// has already transposed transposed COAs, so the grid is always items-as-rows by the time we see it.
-// source: "structural" = เส้นตารางจริงจาก pdfplumber (text-layer) — cell เชื่อถือได้
-//         "scanned-vector" = token OCR ที่ map ลง column band — cell เลื่อนได้ → ปิดฟีเจอร์ที่พึ่งตำแหน่ง cell
+// Parse a pdfplumber structural grid into RawCoa with NO LLM. orient is informational — grid is already items-as-rows.
+// source: "structural" = เส้นตารางจริงเชื่อ cell ได้ · "scanned-vector" = OCR เลื่อนได้ → ปิดฟีเจอร์ที่พึ่งตำแหน่ง cell
 export function parseStructuralGrid(
   gridText: string,
   _orient: GridOrient,

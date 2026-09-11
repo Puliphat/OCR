@@ -1,7 +1,6 @@
-// Print-based regression test — run: npx ts-node src/services/coa/spec-column-recovery.test.ts
-// Verifies recoverSpecificationColumn picks the RIGHT (Specification) Min/Max pair on DuPont
-//   double-min/max grids, REJECTS mangled cells instead of falling through to a neighbour column
-//   (the fabricated-spec trap), needs ≥2 agreeing blocks, and abstains entirely off-layout.
+// Print-based regression test (run: npx ts-node src/services/coa/spec-column-recovery.test.ts)
+//   Verifies recoverSpecificationColumn picks the right Specification Min/Max pair on DuPont
+//   double-min/max grids, rejects mangled cells (fabricated-spec trap); needs ≥2 agreeing blocks, abstains off-layout.
 import { recoverSpecificationColumn, reconcileDupontSpecs } from "./spec-column-recovery";
 import { RawCoaItem } from "./ollama-coa.service";
 import { EvaluatedItem } from "./coa-evaluator";
@@ -19,9 +18,8 @@ function check(label: string, cond: boolean, detail?: string) {
 }
 
 // ── 1) REAL 1F1710 grid (rapidocr reconstructTextGrid, 2 blocks) — the motivating case ──
-//   Batch group = bands 3,4 · Specification group = bands 8,9 (rightmost Min/Max).
-//   block 1 Percent Moisture spec-min cell is OCR-mangled "S.000" → that row MUST be rejected,
-//   NOT read as the Aim cell (6.500). With only 1 clean Percent read it abstains (≥2 floor).
+//   Batch group = bands 3,4 · Specification group = bands 8,9 (rightmost Min/Max); Percent
+//   Moisture spec-min cell is OCR-mangled "S.000" — rejected, not Aim 6.500; only 1 clean read remains, abstains.
 const F1710_2BLOCK = [
   "  |    |  Batch  |    |    |    |    |  Spccification",
   "Property  |  UoM  |  Avg  |  Min!  |  Max  |  Std  |  Ain  |    |  Min  |  Max",

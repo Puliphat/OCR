@@ -1,15 +1,6 @@
-// กู้คืน "spec column" ที่โมเดลเล็ก (qwen2.5:3b) หล่นทิ้งบางรัน — ทำแบบ deterministic ไม่พึ่ง LLM
-//
-// ★ ทำไมต้องมี ★ โมเดลเล็กไม่เสถียร: ไฟล์เดียวกัน/โค้ดเดียวกัน บางรัน parse spec ได้ บางรัน null หมด
-//   (ดู Lot240521: run เก่า 4P/1F, run ล่าสุด 5 SKIP เพราะ spec null ทั้งคอลัมน์) ทั้งที่ spec
-//   ("3 Max","15 -45","45 -75","20 Max","270 ~350") อยู่ใน OCR text ครบ → ดึงเองด้วย regex
-//
-// ★ SAFETY (กติกาที่ทำให้ของเดิมไม่ regress) ★
-//   1. เติม spec เฉพาะ row ที่ spec "ว่างสนิท" (specRaw/specMin/specMax ว่างหมด) — ไม่เคยทับของเดิม
-//      → 41 PASS เดิมแตะไม่ได้ ทำได้แค่ย้าย SKIP → PASS/FAIL
-//   2. ไม่ยุ่งกับ result เลย (กัน digit-concatenation / สร้าง verdict ปลอม)
-//   3. assign ตาม "ลำดับเอกสาร" เมื่อจำนวน spec == จำนวน item (เคสหล่นทั้งคอลัมน์)
-//      ถ้า count ไม่ตรง → จับคู่ตามชื่อแบบ unique เท่านั้น กำกวมเมื่อไร ปล่อย SKIP (ดีกว่าทายผิดแถว)
+// กู้คืน "spec column" ที่โมเดลเล็กหล่นทิ้งบางรัน — deterministic ไม่พึ่ง LLM
+// ทำไม: โมเดลเล็กไม่เสถียร บางรัน parse spec ได้บางรันได้ null ทั้งที่มีใน OCR (เคสจริง Lot240521) → ดึงเองด้วย regex
+// SAFETY: เติมเฉพาะ row spec ว่างสนิท ไม่แตะ result — count ตรง zip ตามลำดับ, ไม่ตรงจับคู่ชื่อ unique กำกวม→SKIP
 import { RawCoaItem } from "./ollama-coa.service";
 import { normalizeSpec } from "./spec-normalizer";
 import { DirectionHint } from "./header-direction";
@@ -78,7 +69,7 @@ export function recoverSpecsFromOcr(
   if (!targets.length) return { recovered: 0, mode: "none" }; // ไม่มีอะไรต้องกู้
 
   // เก็บ (บรรทัด normalize, spec) เฉพาะ "data row จริง" + ตัดบรรทัดซ้ำเป๊ะออก
-  // Why dedupe: Tesseract บางทีอ่านบรรทัดเดิมซ้ำ (เช่น density row โผล่ 2 ครั้ง) → ถ้าไม่ตัด
+  // Why dedupe: RapidOCR (เอนจิ้นเดียวของระบบตอนนี้) ก็อ่านบรรทัดเดิมซ้ำได้ (detection box ซ้อนกันบนเส้นตาราง) — ไม่ตัด
   //   จำนวน spec จะเกินจำนวน item แล้ว ordered-zip (เงื่อนไข count ตรง) จะไม่ทำงาน
   const lines = ocrText.split(/\r?\n/);
   const entries: { key: string; spec: string }[] = [];
@@ -124,20 +115,9 @@ export function recoverSpecsFromOcr(
   return { recovered, mode: recovered ? "named" : "none" };
 }
 
-// ★ แก้ทิศ spec ที่ LLM assign ผิดช่อง — ต่างจาก recoverSpecsFromOcr (เติมเฉพาะ row ว่าง) ★
-//
-// อาการ: โมเดลเล็ก (qwen 3b) อ่าน "0.01 Max" แล้วทิ้ง "Max" ใส่ 0.01 เป็น specMin (bare) →
-//   normalizeSpecFromCandidate ตีเป็น ge 0.01 → result 0.001 (ผ่านจริง) กลายเป็น FAIL ปลอม
-//   (SODA "Insoluble matter"). spec-recovery แตะไม่ได้เพราะ spec "ไม่ว่าง"
-//
-// กติกา (ทำให้ปลอดภัย — แก้เฉพาะตอน LLM กำกวมจริง):
-//   1. แตะเฉพาะ row ที่ LLM ให้ "single BARE bound": specMin XOR specMax เป็นเลขเปล่า (op=eq)
-//      และไม่มี specRaw — คือเคสที่ทิศมาจาก "ช่อง" ล้วน ๆ (กำกวม) ไม่ใช่จาก operator
-//   2. range (มีทั้ง min+max) / spec ที่มี operator อยู่แล้ว → ไม่แตะ (ทิศชัดเจนแล้ว)
-//   3. ★ anchor ที่ "ค่าเดิมของ LLM (V) + operator ใน OCR" ★ — หาในบรรทัด OCR (จับคู่ชื่อ overlap ≥60%)
-//      ว่ามี "V Max/Min" หรือ "≤/≥/</> V" ไหม. anchor ที่ V กัน grab result column (layout Item|Spec|Result)
-//      ถ้าเจอ → ใช้ทิศนั้น (set specRaw). ถ้า LLM ถูกอยู่แล้ว ทิศตรงกับ OCR → ผล normalize เท่าเดิม = no-op
-// คืนจำนวน row ที่แก้ทิศ
+// ★ แก้ทิศ spec ที่ LLM assign ผิดช่อง (ต่างจาก recoverSpecsFromOcr ที่เติมเฉพาะ row ว่าง) ★
+// อาการ: LLM อ่าน "0.01 Max" ทิ้ง "Max" เหลือ specMin bare → normalize เป็น ge 0.01 ทำ FAIL ปลอม (เคสจริง SODA)
+// แก้เฉพาะ row ที่มี single bare bound โดย anchor ค่า+operator เดิมใน OCR แบบ unique เท่านั้น กำกวม/ไม่เจอ → ไม่แตะ
 export function correctSpecDirectionFromOcr(
   items: RawCoaItem[],
   ocrText: string
@@ -197,15 +177,8 @@ export function correctSpecDirectionFromOcr(
 }
 
 // ★ ใช้ direction hint จาก header geometry (header-direction.ts) แก้ทิศ bare-eq spec ★
-//   ต่างจาก correctSpecDirectionFromOcr (หาทิศจาก operator inline ในข้อความ) — อันนี้ใช้
-//   "ตำแหน่ง X ของ bound เทียบ header Min.Spec/Max.Spec" ที่ flat text ทำหาย (เคสจริง Barimite:
-//   Moisture 0.20 ใต้คอลัมน์ Max → ≤0.20, D50 11.0 ใต้ Max → ≤11.0, 325Mesh 95 ใต้ Min → ≥95)
-//
-// กติกาปลอดภัย (เหมือน corrector ตัวอื่น):
-//   1. แตะเฉพาะ item ที่ spec ปัจจุบัน normalize เป็น "bare eq" (เลขเดี่ยวไม่มีทิศ) — range/มี operator ไม่แตะ
-//   2. match hint แบบ unique: ชื่อ overlap ≥60% + ค่าตรง (tolerance) — กำกวม/ไม่ match → ไม่แตะ (คง SKIP)
-//   3. set specRaw = "<v> Min." / "<v> Max." → spec-normalizer ได้ ge/le ถูกทิศ
-//   → upgrade bare-eq (ที่ symmetric guard จะ SKIP) เป็น verdict ที่เชื่อได้ เฉพาะเมื่อ geometry ชัด
+// ต่างจาก correctSpecDirectionFromOcr — ใช้ตำแหน่ง X ของ bound เทียบ header Min/Max ที่ flat text ทำหาย (Barimite)
+// แตะเฉพาะ spec ที่เป็น bare-eq (เลขเดี่ยวไม่มีทิศ) + match hint แบบ unique เท่านั้น กำกวม/ไม่ match → คง SKIP เดิม
 function bareEqValue(it: RawCoaItem): number | null {
   const blank = (v: unknown) => v == null || String(v).trim() === "";
   // หา candidate spec string เดียวที่เป็น bare number (op=eq)

@@ -88,10 +88,9 @@ except ValueError:
 
 
 def resolve_image(req):
-    # Prefer inline bytes → daemon can run on a different machine than the backend
-    # (LAN deploy): the image never has to exist on this daemon's local disk.
-    # Fall back to a daemon-local path for same-machine / back-compat callers
-    # (render_and_test.py still POSTs {"path": ...}).
+    # Prefer inline bytes so the daemon can run on a different machine than the backend
+    # (LAN deploy) without the image ever touching its local disk; fall back to a
+    # daemon-local path for same-machine / back-compat callers (render_and_test.py).
     b64 = req.get("image_b64")
     if b64:
         return base64.b64decode(b64)  # RapidOCR 3.x LoadImage accepts raw bytes

@@ -48,12 +48,9 @@ import {
 } from "./coa-grounding";
 import { filterMetadataRows } from "./metadata-row-filter";
 
-// ★ grid→LLM (column-aware OCR text → LLM; keep-best) ★
-//   column band จาก token bbox เก็บ cell ว่าง → LLM map spec/result ไม่เลื่อน (เคส column-shift เช่น SODA/PR1950W)
-//   ★ ใช้แบบ keep-best (ดู processPage): flat เป็น floor เสมอ, grid challenger เก็บเฉพาะตอนชนะขาด → 0 regress ★
-//   ★ guard ทุกตัวกิน flat text (debug.ocrText) เสมอ — grid ป้อน LLM อย่างเดียว ★
-//   rapidocr engine เท่านั้น (text-layer ไม่มี token bbox)
-//   toggle: COA_GRID_LLM=false ปิด grid challenger (กลับ flat ล้วน). default เปิด
+// ★ grid→LLM (column-aware OCR text → LLM, keep-best) ★ — token bbox กันคอลัมน์ว่างทำให้ LLM map
+//   spec/result เลื่อน (กัน column-shift เช่น SODA/PR1950W). flat เป็น floor เสมอ เก็บ grid เฉพาะชนะขาด
+//   guard ทุกตัวอ่าน flat เสมอ, เฉพาะ rapidocr (text-layer ไม่มี token bbox). COA_GRID_LLM=false ปิด
 const GRID_LLM_ENABLED = process.env.COA_GRID_LLM !== "false";
 
 // ★ avg-column recovery toggle ★ — ดึงคอลัมน์ Average/Mean เป็น result (deterministic). default เปิด
@@ -64,13 +61,9 @@ const AVG_COLUMN_ENABLED = process.env.COA_AVG_COLUMN !== "false";
 //   geometry (deterministic, header-anchored). default เปิด. COA_SPEC_COLUMN=false ปิด (กลับไป LLM spec)
 const SPEC_COLUMN_ENABLED = process.env.COA_SPEC_COLUMN !== "false";
 
-// grid provenance — how the column-aware gridText was recovered:
-//   "structural" = pdfplumber ruling-line geometry (text-layer PDFs) → columns verified by real geometry.
-//                  grid-won PASS may go clean-green when the value sits mid-range of a two-sided spec
-//                  (balanced amber) — geometry confirms the column, so a between-spec value is trustworthy.
-//   "spatial"    = rapidocr token-bbox clustering (scanned) → columns INFERRED, not verified.
-//                  grid-won PASS stays amber ("ต้องตรวจ") always — can't prove the column mapping.
-//   ★ this distinction is the anti-deceptive lever: never let an inferred-column PASS show clean-green ★
+// grid provenance: "structural" = pdfplumber ruling-line geometry (text-layer) → columns VERIFIED,
+//   grid-won PASS may go clean-green even mid-range. "spatial" = rapidocr token-bbox clustering (scanned)
+//   → columns INFERRED only → grid-won PASS always stays amber (never let an inferred column show clean-green)
 type GridSource = "structural" | "spatial" | "scanned-vector";
 type PageExtract = {
   text: string;
@@ -116,9 +109,8 @@ export type PipelineProgress = {
 export type ProgressFn = (p: PipelineProgress) => void;
 
 // OCR portion only — รับ path รูปที่ render ไว้แล้ว คืน {text, engine}
-// ★ RapidOCR อย่างเดียว ไม่มี fallback ★ — Tesseract ถูกถอดออก (ROUND 23): มันให้ผล "อ่านได้แต่เลขเพี้ยน"
-//   ซึ่งเข้าทาง failure mode ที่แย่ที่สุดของระบบนี้ (PASS/FAIL จากตัวเลขที่ผิด = deceptive) ต่างจากพังดังๆ
-//   ที่คนเห็นแล้วแก้ได้. daemon ล่ม → โยน error ขึ้นไปให้หน้าเว็บเตือน + เสนอปุ่มเริ่ม daemon
+// ★ RapidOCR อย่างเดียว ไม่มี fallback ★ — Tesseract ถูกถอดแล้ว (ROUND 23): อ่านได้แต่เลขเพี้ยน = deceptive
+//   PASS/FAIL แย่กว่าพังดังๆ ที่คนเห็นแล้วแก้ได้. daemon ล่ม → โยน error ให้หน้าเว็บเตือน + เสนอปุ่มเริ่ม daemon
 async function ocrImage(
   imagePath: string
 ): Promise<{ text: string; engine: OcrEngine; gridText?: string; tokens?: OcrToken[]; correctionAngle?: number }> {
@@ -202,9 +194,8 @@ export async function extractTextPerPage(
   }
 
   // มี text-layer data: ต่อหน้าดูว่า hasUsableText หรือเปล่า
-  // ★ page alignment: imgs (convertToImage) กับ pages (extractPdfTextPerPage) วน p=1..numPages
-  //   บน doc เดียวกัน → ต้องยาวเท่ากันเสมอ. ไม่เท่า = สมมุติฐาน page-index พัง → warn ดังๆ
-  //   (อย่า OCR หน้าผิดแล้วป้ายเป็นหน้าอื่นเงียบๆ = deceptive result)
+  // ★ page alignment ★ — imgs กับ pages ต้องยาวเท่ากันเสมอ (วน p เดียวกัน). ไม่เท่า = page-index พัง → warn ดังๆ
+  //   ห้าม OCR หน้าผิดแล้วป้ายเป็นหน้าอื่นเงียบๆ = ผลลัพธ์หลอก (deceptive)
   if (needRender && imgs.length !== pages.length) {
     console.warn(
       `  [extract] ⚠ page-count mismatch: text-layer ${pages.length} vs rendered ${imgs.length} — page alignment unreliable`
@@ -236,11 +227,9 @@ export async function extractTextPerPage(
     }
   }
 
-  // ★ structural grid (text-layer root fix) ★ — recover the true 2D cell-grid from the PDF's
-  //   ruling lines via pdfplumber (no torch) and attach as gridText to text-layer pages. flatten
-  //   throws away column geometry (transposed COAs, over-flagging) — this restores it. keep-best
-  //   in processPage decides if it actually wins; flat stays the floor → 0 regression.
-  //   gridSource="structural" = columns verified by real geometry (vs rapidocr "spatial" = inferred).
+  // ★ structural grid (text-layer root fix) ★ — recovers the true 2D cell-grid from the PDF's
+  //   ruling lines via pdfplumber, attached as gridText. Flattening throws away column geometry
+  //   (transposed COAs, over-flagging) — keep-best in processPage decides if it wins; flat stays the floor.
   if (GRID_LLM_ENABLED && results.some((r) => r.engine === "text-layer")) {
     const grids = extractPdfGridPerPage(filePath);
     const gridByPage = new Map(grids.map((g) => [g.page, g]));
@@ -258,11 +247,9 @@ export async function extractTextPerPage(
     }
   }
 
-  // ★ scanned-vector grid (Track 2) ★ — for scanned PDFs with pdfplumber vector ruling-line geometry.
-  //   Maps RapidOCR tokens into geometry-verified columns → gridSource="scanned-vector" →
-  //   deterministic parseStructuralGrid (no LLM). Only SODA/PR1950W_4063-class PDFs qualify
-  //   (chars=0 but vector rects). 7 pure-raster scanned files stay spatial (no rects → no geom).
-  //   THREE BLOCKERS: (1) correctionAngle≠0 (2) pageRotation≠0 (3) colEdges.length<4
+  // ★ scanned-vector grid (Track 2) ★ — for scanned PDFs with pdfplumber vector ruling-line geometry:
+  //   maps RapidOCR tokens into geometry-verified columns → deterministic parseStructuralGrid (no LLM).
+  //   Only SODA/PR1950W_4063-class PDFs qualify; blocked by correctionAngle/pageRotation≠0 or colEdges<4.
   if (GRID_LLM_ENABLED && results.some((r) => r.engine === "rapidocr" && r.tokens?.length)) {
     const svGrids = extractPdfGridPerPage(filePath);
     const svByPage = new Map(svGrids.map((g) => [g.page, g]));
@@ -300,14 +287,11 @@ export async function extractTextPerPage(
   return results;
 }
 
-// ───────── keep-best: flat ก่อนเสมอ · ลอง grid เฉพาะไฟล์ที่ flat อาการ column-collapse · เก็บ grid เฉพาะตอนชนะขาด ─────────
+// ───────── keep-best: flat ก่อนเสมอ · ลอง grid เฉพาะไฟล์ column-collapse · เก็บ grid เฉพาะชนะขาด ─────────
 
-// "flat โชว์อาการ column-collapse" = มี SKIP ที่ guard ดาวน์เกรดเพราะ collapse.
-//   ★ จับจาก keyword ในข้อความ reason (ภาษาคน) ★: "สลับ" (อ่านสลับคอลัมน์/แถว/ค่าผล↔เกณฑ์ = column-shift,
-//   fail-downgrade, bare-eq copy) · "ทิศหาย" (bare-eq เกณฑ์เลขเดี่ยวไม่มีทิศ). ★★ ถ้าแก้ wording reason
-//   ต้องคงคำเหล่านี้ไว้ ไม่งั้น grid challenger ไม่ยิง = SODA/PR1950W regress ★★
-//   ไฟล์ flat ดีอยู่แล้ว (ZP10 4P/0S · RI-015 collapse ถูก sieve-recovery promote หมด) → ไม่มี collapse-SKIP →
-//   ไม่ trigger grid → ไม่เสีย LLM call เปล่า. = ตัวกรองให้ grid challenger ยิงเฉพาะไฟล์ column-shift จริง (SODA/PR1950W)
+// "flat โชว์อาการ column-collapse" = มี SKIP ที่ guard ดาวน์เกรดเพราะ collapse — จับจาก keyword ใน reason:
+//   "สลับ" (คอลัมน์/แถว/ค่าผล↔เกณฑ์สลับกัน) · "ทิศหาย" (เกณฑ์เดี่ยวไม่มีทิศ). ★★ แก้ wording reason ต้องคงคำนี้
+//   ไว้ ไม่งั้น grid challenger ไม่ยิง (SODA/PR1950W regress) — ไฟล์ flat ดีไม่ trigger กันเสีย LLM call เปล่า
 const COLLAPSE_SKIP_RE = /สลับ|ทิศหาย/;
 function hasCollapseSymptom(rpt: CoaReport): boolean {
   // ★ ต้องรับ FAIL ด้วย ★ — collapse guard คง FAIL ไว้แล้วไม่กดเป็น SKIP (ดู downgradeUngroundedFails)
@@ -321,9 +305,8 @@ const passCount = (rpt: CoaReport): number =>
   rpt.rows.filter((r) => r.status === "PASS").length;
 
 // ชื่อ row สำหรับเทียบ PASS ข้าม variant — ยุบ whitespace + μ/µ + วรรคตอน (คง latin/digit/CJK)
-//   flat/structural/HQ สะกดชื่อไม่เหมือนกัน: "Ba SO4"="BaSO4" · "D 100"="D100" ·
-//   ★ v5 "Residue on sieve(106m)" vs mobile "(106 μ m)" ★ (บั๊ก TEST-LOG ROUND 15 item 2 — μ ทำ HQ
-//   ที่ชนะจริง 7P>6P ถูก reject เพราะนับว่า "PASS เดิมหาย")
+//   เพราะ flat/structural/HQ สะกดไม่เหมือนกัน: "Ba SO4"="BaSO4" · "D 100"="D100" · v5 "(106m)" vs mobile "(106 μ m)"
+//   (ROUND 15 บั๊ก: ไม่ยุบ μ ทำ HQ ที่ชนะจริง 7P>6P ถูก reject เพราะนับว่า "PASS เดิมหาย")
 function passNameKey(name: string): string {
   return name
     .toLowerCase()
@@ -433,14 +416,8 @@ function gridBeatsFlat(grid: CoaReport, flat: CoaReport): boolean {
 const VALUE_MARGIN_M = 0.30; // margin-green gate: result must be ≥30% of |result| away from the binding spec bound
 
 // ★ Margin-green policy (Track 2 + scanned-vector) ★ — CLEAR-ONLY: sets needsReview=false on PASS
-//   rows that are safely away from spec bounds. Never sets needsReview=true (only guards do that).
-//   Five gates must ALL pass:
-//   G0 column-trust allow-list: structural | scanned-vector | text-layer flat (never spatial)
-//   G1 status=PASS
-//   G2 margin = clearance/|result| >= VALUE_MARGIN_M
-//   G3' integer decimal-shift guard (both directions, mirrors detectDecimalRisk)
-//   G4 decimal-present: if binding bound is fractional, resultRaw must contain a decimal point
-//   G5 ambiguous-thousands: comma ที่อ่านได้ 2 ทาง (1,500) → ค่าอาจเพี้ยน 1000 เท่า margin จึงไม่มีความหมาย
+//   rows safely away from spec bounds; never sets it true (only guards do that). Multiple gates must
+//   ALL pass before clearing — each one is commented at its own check below (G0 ... G7).
 function applyMarginGreen(
   rows: EvaluatedItem[],
   engine: OcrEngine,
@@ -546,7 +523,7 @@ async function runExtractionPass(
   tokens?: OcrToken[]
 ): Promise<CoaReport> {
   // ★ structural/scanned-vector grid → parse แบบ deterministic (ไม่ใช้ LLM) ★ คอลัมน์ยืนยันด้วย geometry
-  //   ใช้: เดิน parse path นี้ · ข้าม flat-text guard (เทียบ text ผิด→false downgrade) · promote boundary · gate ด้วย keep-best
+  //   ใช้: เดิน parse path นี้ · ข้าม flat-text guard (กัน false downgrade) · promote boundary · gate ด้วย keep-best
   const isDeterministicGrid =
     variant === "grid" && (gridSource === "structural" || gridSource === "scanned-vector");
 
@@ -680,11 +657,9 @@ async function runExtractionPass(
     console.log(`  [result-recovery] เติม result จาก OCR ${recRes.recovered} รายการ`);
   }
 
-  // ★ Average/Mean-column recovery (deterministic, column-aware grid) ★ — บาง COA ลงค่าวัดหลายตัวแล้ว
-  //   ตามด้วยคอลัมน์ Average; spec เทียบกับ "ค่าเฉลี่ย" ไม่ใช่ค่าวัดเดี่ยว. qwen3:4b บางรันหยิบค่าวัดตัวเดียว
-  //   (Lot240521 150μ: หยิบ 58 ทั้งที่ค่าเฉลี่ยจริง 56.0) → override result จาก band คอลัมน์ Average.
-  //   ★ ABSTAIN ถ้าไม่เจอ header "Average/Mean" ที่ชัด → ไฟล์ที่ไม่มีคอลัมน์นี้ไม่ถูกแตะ (no-op) ★
-  //   รันหลัง result-recovery (avg = ค่าทางการ ทับค่าวัดเดี่ยวที่เพิ่งเติมได้)
+  // ★ Average/Mean-column recovery (deterministic, column-aware grid) ★ — บาง COA ลงค่าวัดหลายตัวแล้วเทียบ
+  //   spec กับ "ค่าเฉลี่ย" ไม่ใช่ค่าวัดเดี่ยว; qwen3:4b บางรันหยิบผิดตัว (เคสจริง Lot240521: หยิบ 58 แทนเฉลี่ย 56.0)
+  //   → override จากคอลัมน์ Average. ABSTAIN ถ้าไม่เจอ header ชัด (no-op), รันหลัง result-recovery
   const avgOverridden = new Set<string>();
   if (AVG_COLUMN_ENABLED && avgGrid && avgGrid.trim()) {
     const avg = recoverAverageColumn(raw.items ?? [], avgGrid);
@@ -704,10 +679,9 @@ async function runExtractionPass(
     console.log(`  [spec-direction] แก้ทิศ spec จาก OCR ${fixed} รายการ`);
   }
 
-  // ★ Header-anchored direction (text-layer only) ★ — กู้ทิศ bare-eq จาก "ตำแหน่ง X ของ bound เทียบ
-  //   header Min.Spec/Max.Spec" ที่ flat text ทำหาย (Barimite: 0.20 ใต้ Max → ≤0.20, 95 ใต้ Min → ≥95).
-  //   ★ post-LLM, อ่าน geometry ดิบจาก PDF ใหม่ — ไม่แตะ text ที่ป้อน LLM → กัน lever-1 regression ★
-  //   text-layer เท่านั้น (scan ไม่มี geometry เชื่อถือได้). fail-safe: error/ไม่เจอ header → ปล่อย SKIP เดิม
+  // ★ Header-anchored direction (text-layer only) ★ — กู้ทิศ bare-eq จากตำแหน่ง X เทียบ header
+  //   Min.Spec/Max.Spec ที่ flat text ทำหาย (Barimite: 0.20 ใต้ Max → ≤0.20). อ่าน geometry ดิบจาก PDF
+  //   ใหม่หลัง LLM ไม่แตะ text ที่ป้อน LLM (กัน regression). text-layer เท่านั้น, พังแล้วปล่อย SKIP เดิม
   if (engine === "text-layer") {
     try {
       const hints = await extractHeaderDirectionHints(filePath, page);
@@ -731,9 +705,8 @@ async function runExtractionPass(
   }
 
   // ★ Specification-column recovery (DuPont double Min/Max) ★ — runs LAST before eval so no later pass
-  //   overrides the corrected spec. Header-anchored: picks the rightmost (Specification) Min/Max pair,
-  //   rejects OCR-mangled cells, asserts only on ≥2-block agreement. ABSTAINS off-layout (no-op).
-  //   ★ flag EVERY detected DuPont row needsReview (spatial = inferred columns) — corrected or not ★
+  //   overrides it. Header-anchored: picks the rightmost (Specification) Min/Max pair, rejects OCR-mangled
+  //   cells, asserts only on ≥2-block agreement (ABSTAINS off-layout). Flags every detected row for review.
   const specDupontNames = new Set<string>();
   if (SPEC_COLUMN_ENABLED && avgGrid && avgGrid.trim()) {
     const spec = recoverSpecificationColumn(raw.items ?? [], avgGrid);
@@ -771,9 +744,8 @@ async function runExtractionPass(
   }
 
   // ★ Result-side Min|Max recovery (deterministic, header-anchored) ★ — ใบที่ฝั่งผลแตกเป็น 2 คอลัมน์
-  //   Min|Max (ไม่มีคอลัมน์ result เดี่ยว เช่น RB220) → ค่าที่วัดได้เป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง.
-  //   qwen3:4b map พลาดทุกรัน → กู้จาก header เอง. ★ ABSTAIN ถ้าไม่เจอโครง Results/Limits + Min./Max. ★
-  //   รันท้ายสุดก่อน eval (เหมือน spec-column) เพื่อไม่ให้ pass อื่นทับ spec/result ที่แก้แล้ว
+  //   Min|Max (ไม่มี result เดี่ยว เช่น RB220) → ค่าที่วัดเป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง; qwen3:4b
+  //   map พลาดทุกรัน จึงกู้จาก header เอง (ABSTAIN ถ้าไม่เจอโครง). รันท้ายสุดก่อน eval กันถูกทับ
   const minMaxRec = recoverResultMinMax(raw.items ?? [], text);
   if (minMaxRec.overridden.length > 0) {
     console.log(
@@ -825,9 +797,9 @@ async function runExtractionPass(
     items: raw.items ?? [],
   });
 
-  // ★ Anti-fabricated-FAIL ★ — downgrade FAIL ที่ spec กับ result ไม่อยู่บรรทัด OCR เดียวกัน
-  //   (column collapse: spec ถูก broadcast/map ผิดแถวบน scan ตาราง transposed) → SKIP+needsReview
-  //   กัน verdict "ของเสีย" จาก spec ที่ไม่ใช่ของแถวนั้นจริง
+  // ★ Anti-fabricated-FAIL ★ — FAIL ที่ spec กับ result ไม่อยู่บรรทัด OCR เดียวกัน (column collapse:
+  //   spec ถูก map ผิดแถวบน scan ตาราง transposed) = อาจไม่ใช่ของเสียจริง
+  //   ★ คง FAIL ไว้ ★ ปักธงให้คนเทียบใบแทน (user decision 2026-09-11 — ค่าหลุดเกณฑ์ต้องขึ้นไม่ผ่านเสมอ)
   const failGuard: FailGuardResult = isDeterministicGrid
     ? { downgraded: [] }
     : downgradeUngroundedFails(evaluated.rows, text);
@@ -899,8 +871,8 @@ async function runExtractionPass(
     }
   }
 
-  // ★ OCR digit-scramble outlier ★ — downgrade FAIL ที่ result > specMax×100 (OCR เลขเพี้ยนรุนแรง)
-  //   co-location ยังผ่านแต่ result ห่างจาก spec ผิดปกติ เช่น 1F1710 Fiber Length: "1.090"→"0601"→601
+  // ★ OCR digit-scramble outlier ★ — FAIL ที่ result ห่างจาก specMax เกิน 100× เช่น 1F1710 อ่าน "1.090" เป็น 601
+  //   เลขน่าจะเพี้ยนไม่ใช่ของเสียจริง แต่ **คง FAIL ไว้** ปักธงให้คนเทียบใบแทน
   const outlierGuard = downgradeOcrOutlierFails(evaluated.rows);
   if (outlierGuard.downgraded.length > 0) {
     console.warn(
@@ -924,10 +896,9 @@ async function runExtractionPass(
     );
   }
 
-  // ★ Anti-deceptive (column-shift) ★ — PASS/FAIL ที่ result = คอลัมน์ป้ายซ้ายของ spec (ตาราง
-  //   transposed/rotated เช่น RI-015 sieve: LLM เอา aperture เป็น result) → SKIP+needsReview.
-  //   ★ downgrade ไม่ overwrite ★ — บนบรรทัดเดียวแยก "ป้าย" กับ "result จริงที่อยู่ซ้าย spec" ไม่ออก →
-  //   เลือกเลขหลัง spec มาเป็น result = เสี่ยง deceptive PASS → honest SKIP ปลอดภัยกว่า (review เจอ)
+  // ★ Anti-deceptive (column-shift) ★ — PASS/FAIL ที่ result = คอลัมน์ป้ายซ้ายของ spec (ตาราง transposed/
+  //   rotated เช่น RI-015 sieve: LLM เอา aperture เป็น result) → downgrade เป็น SKIP+needsReview (ไม่ overwrite)
+  //   เพราะแยก "ป้าย" กับ "result จริง" บนบรรทัดเดียวไม่ออก — honest SKIP ปลอดภัยกว่าเดาแล้วเสี่ยง deceptive PASS
   const colShift: ReturnType<typeof downgradeColumnShiftedResults> = isDeterministicGrid
     ? { downgraded: [] }
     : downgradeColumnShiftedResults(evaluated.rows, text);
@@ -939,11 +910,9 @@ async function runExtractionPass(
     );
   }
 
-  // ★ Sieve/particle-size recovery (gated → PASS) ★ — รันหลัง column-shift (ทำงานบน honest SKIP):
-  //   ตาราง sieve ที่ LLM เอา aperture เป็น result → overwrite result จริง (หลัง spec) → re-eval →
-  //   promote เฉพาะ PASS, needsReview=true. QUAD GATE: sieve table + ชื่อ row sieve + โครง aperture +
-  //   ★ aperture column เป็น series ลดหลั่น ≥3 (positive evidence) ★ — kill deceptive PASS แบบ single-row
-  //   ที่ Opus review เจอ. ปิดโมดูล = fall back honest SKIP (ไม่แย่ลง)
+  // ★ Sieve/particle-size recovery (gated → PASS) ★ — รันหลัง column-shift (ทำงานบน honest SKIP): ตาราง
+  //   sieve ที่ LLM เอา aperture เป็น result → overwrite ด้วย result จริง (หลัง spec) → re-eval → promote
+  //   เฉพาะ PASS. ต้องเจอ aperture column เป็น series ลดหลั่น ≥3 ตัวก่อน กัน deceptive PASS แบบ single-row
   const sieveRec = recoverSieveTableResults(evaluated.rows, text);
   if (sieveRec.recovered.length > 0) {
     console.log(
@@ -963,9 +932,9 @@ async function runExtractionPass(
     );
   }
 
-  // ★ promote boundary-exact (เฉพาะ grid ที่ geometry ยืนยัน) ★ — evaluateCoa downgrade PASS ที่ result ตรงขอบ spec พอดี
-  //   (กัน LLM ปลอม) แต่ที่นี่ bound มาจากคอลัมน์ Lower/Upper จริง = PASS แท้ · promote SKIP→PASS แบบ
-  //   เขียวล้วน (user decision 2026-08-03: ติดขอบแต่อยู่ในกรอบ = ผ่าน ไม่ต้องตรวจซ้ำ) · เฉพาะ min≠max
+  // ★ promote boundary-exact (เฉพาะ grid ที่ geometry ยืนยัน) ★ — ปกติ result ตรงขอบ spec เป๊ะ = ต้องสงสัย LLM ปลอม
+  //   แต่ที่นี่ bound มาจากคอลัมน์ Lower/Upper จริง = PASS แท้ → promote SKIP→PASS แบบเขียวล้วน
+  //   (user decision 2026-08-03: ติดขอบแต่อยู่ในกรอบ = ผ่าน ไม่ต้องตรวจซ้ำ) เฉพาะ min≠max
   let boundaryPromoted = 0;
   if (isDeterministicGrid) {
     for (const r of evaluated.rows) {
@@ -1016,16 +985,13 @@ async function runExtractionPass(
     );
   }
 
-  // ★ result-recovery / avg-column override → ไม่ปักธงแล้ว (user decision 2026-08-03) ★
-  //   ทั้งสอง path กู้ค่าแบบ "cell เดียวบนบรรทัด anchor unique" (precondition แน่น) แล้วส่งให้ evaluator
-  //   ตัดสินตามปกติ → เข้ากรอบ min/max = PASS, หลุดกรอบ = FAIL. เดิมยังปัก amber เมื่อค่าใกล้/ติดขอบ
-  //   ซึ่งหน้างานต้องตรวจซ้ำทั้งที่ค่าถูก (verify corpus 17 ไฟล์: ค่าที่ปักธงถูกตรงใบจริง 12/12).
-  //   ★ column-remap (grid-won spatial / sieve-recovery) ยังปักธงตามเดิม — re-read ทั้งคอลัมน์เสี่ยงกว่า ★
+  // ★ result-recovery / avg-column override → ไม่ปักธงแล้ว (user decision 2026-08-03) ★ — ทั้งสอง path กู้ค่า
+  //   จาก cell เดียวบน anchor unique (precondition แน่น) แล้วให้ evaluator ตัดสินปกติ; verify corpus 17 ไฟล์
+  //   ค่าที่เคยปักธงถูกตรงใบจริง 12/12 จึงเลิกปัก. column-remap (grid-won spatial/sieve) ยังปักเหมือนเดิม — เสี่ยงกว่า
 
-  // ★ spec-column (DuPont) → surface ALL detected rows ★ — the spec was re-sourced from an inferred
-  //   (spatial) grid; even a corrected/unchanged spec must be human-verified, never silent clean-green.
-  //   ★ ปัก specDupont ไว้ด้วย ★ — เอกสารแบบนี้ซ้ำบล็อกเดิมหลายหน้า → หลังรันครบทุกหน้าเอามายันกันเองได้
-  //   (reconcileDupontSpecs) ซึ่งเป็นหลักฐานที่หน้าเดียวไม่มี
+  // ★ spec-column (DuPont) → surface ALL detected rows ★ — spec ถูก re-source จาก grid ที่ inferred (spatial)
+  //   ดังนั้นแม้แก้แล้วหรือไม่แก้ก็ต้องให้คนตรวจ ห้ามเขียวเงียบ. ปัก specDupont ไว้ด้วยเพราะเอกสารแบบนี้ซ้ำ
+  //   บล็อกเดิมหลายหน้า — รันครบทุกหน้าแล้วเอามายันกันเอง (reconcileDupontSpecs) ได้หลักฐานที่หน้าเดียวไม่มี
   if (specDupontNames.size > 0) {
     for (const r of evaluated.rows) {
       if (!specDupontNames.has(r.name.trim())) continue;
@@ -1077,10 +1043,9 @@ async function runExtractionPass(
   return evaluated;
 }
 
-// runFlatGridBest — keep-best ของ OCR text ชุดเดียว: flat floor + grid challenger
-//   flat ก่อนเสมอ (= floor, พฤติกรรมเดิม) · ถ้า flat โชว์ collapse-SKIP + มี gridText → ลอง grid challenger
-//   เก็บ grid เฉพาะเมื่อชนะ flat ขาด (เพิ่ม PASS, ไม่ลด PASS เดิม, 0 FAIL) → ไม่งั้นคง flat
-//   ★ anti-regression by construction: flat เป็น floor เสมอ — grid ทำให้ดีขึ้นได้ ทำให้แย่ลงไม่ได้ ★
+// runFlatGridBest — keep-best ของ OCR text ชุดเดียว: flat floor + grid challenger. flat รันก่อนเสมอ
+//   (= floor, พฤติกรรมเดิม); ถ้า flat โชว์ collapse-SKIP + มี gridText → ลอง grid, เก็บเฉพาะชนะขาด (เพิ่ม PASS,
+//   ไม่ลด PASS เดิม, 0 FAIL) ไม่งั้นคง flat — grid ทำให้ดีขึ้นได้ ทำให้แย่ลงไม่ได้ โดยโครงสร้าง
 async function runFlatGridBest(
   filename: string,
   filePath: string,
@@ -1117,11 +1082,9 @@ async function runFlatGridBest(
     gridSource, gridOrient, gridText, tokens
   );
 
-  // 2) grid challenger — ยิงเมื่อมี gridText และ flat ยังไม่สมบูรณ์:
-  //   • spatial (rapidocr): flat โชว์ collapse-SKIP keyword (column-shift จริง เช่น SODA/PR1950W)
-  //   • structural (pdfplumber text-layer): flat มี SKIP ใดๆ → grid อาจ recover ได้ (transposed COA
-  //     เช่น Suzorite ให้ SKIP "ค่าผลไม่ใช่ตัวเลข" ที่ไม่ match collapse keyword) ★ ไม่ยิงเมื่อ flat
-  //     สะอาดแล้ว (skip=0) — ไม่เสีย LLM call เปล่า. ★ ไม่ยิงเพื่อพลิก FAIL→PASS (FAIL จริงต้องคง honest)
+  // 2) grid challenger — ยิงเมื่อมี gridText และ flat ยังไม่สมบูรณ์: spatial (rapidocr) ยิงเมื่อ flat โชว์
+  //   collapse-SKIP keyword (SODA/PR1950W); structural (text-layer) ยิงเมื่อ flat มี SKIP ใดๆ (transposed
+  //   COA เช่น Suzorite). ไม่ยิงถ้า flat สะอาดแล้ว (skip=0) หรือเพื่อพลิก FAIL→PASS (FAIL จริงต้องคง honest)
   const isStructural = gridSource === "structural";
   const triggerGrid =
     !!gridText &&
@@ -1164,12 +1127,9 @@ async function runFlatGridBest(
 //   lazy-load) เป็น challenger ชั้นนอกสุด. default เปิด. COA_OCR_HQ_FALLBACK=false ปิด (กลับไป mobile ล้วน)
 const OCR_HQ_FALLBACK_ENABLED = process.env.COA_OCR_HQ_FALLBACK !== "false";
 
-// ★ HQ trigger filter ★ — SKIP ที่ re-OCR แล้ว "มีโอกาสหาย" = ต้องมีตัวเลขเกี่ยวข้องสักฝั่ง:
-//   • spec/result มี digit → อาจเป็นเลขที่ OCR อ่านเพี้ยน (เคส 4A: spec "≤3.5%"→"%98") → HQ ลองได้
-//   • ฝั่งใดฝั่งหนึ่ง null → OCR อาจอ่านตกทั้ง cell → HQ ลองได้
-//   แถว text ล้วนทั้งสองฝั่ง (PR1950W "Appearance": spec="body" result="Powderwithoutforeign" =
-//   visual check ไม่มีตัวเลขในเอกสารจริง) — OCR ดีแค่ไหนก็ยัง non-numeric → SKIP เหมือนเดิม →
-//   ไม่เผา HQ challenger (~35s/หน้า: re-OCR v5-server + LLM รอบใหม่) ที่รู้ล่วงหน้าว่าแพ้
+// ★ HQ trigger filter ★ — SKIP ที่ re-OCR แล้ว "มีโอกาสหาย" ต้องมีตัวเลขเกี่ยวข้องสักฝั่ง (digit ใน spec/result
+//   หรือฝั่งใดฝั่งหนึ่ง null = OCR อาจอ่านตกทั้ง cell) → ให้ HQ ลอง. แถว text ล้วนทั้งสองฝั่ง (PR1950W
+//   "Appearance" = visual check ไม่มีเลขในเอกสารจริง) ข้าม — ไม่เผา HQ challenger (~35s/หน้า) ที่รู้ล่วงหน้าว่าแพ้
 function skipMayBenefitFromHq(r: EvaluatedItem): boolean {
   // "" (LLM emit ค่าว่าง) นับเป็น "ไม่มีค่า" เหมือน null → ให้ HQ ลอง (conservative)
   const spec = r.specRaw?.trim() || (r.min ?? r.max)?.toString() || null;
@@ -1270,12 +1230,9 @@ async function thaiChallenge(
   }
 }
 
-// processPage — keep-best orchestrator ต่อ 1 หน้า (2 ชั้น)
-//   ชั้นใน: runFlatGridBest บน OCR default (mobile) — flat floor + grid challenger
-//   ชั้นนอก: ★ HQ OCR challenger ★ — ถ้า best (scanned) ยังมี SKIP → re-OCR ด้วย v5-server แล้ว
-//     keep เฉพาะเมื่อชนะ best ขาด (gridBeatsFlat: เพิ่ม PASS, ไม่ลด PASS เดิม, 0 FAIL)
-//   ★ anti-regression by construction: best เป็น floor — HQ ทำให้ดีขึ้นได้ ทำให้แย่ลงไม่ได้ ★
-//   (เคส 4A: mobile อ่าน LoI spec "%98"→SKIP · v5-server อ่าน "≤3.5%"→PASS → HQ 3P ชนะ mobile 2P)
+// processPage — keep-best orchestrator ต่อ 1 หน้า (2 ชั้น): ชั้นใน runFlatGridBest บน OCR default (mobile,
+//   flat floor + grid challenger); ชั้นนอก HQ OCR challenger — best (scanned) ยังมี SKIP → re-OCR ด้วย
+//   v5-server, keep เฉพาะชนะขาด (0 FAIL) — best เป็น floor เสมอ (เคส 4A: mobile "%98"→SKIP, v5 3P ชนะ mobile 2P)
 async function processPage(
   filename: string,
   filePath: string,
@@ -1379,14 +1336,9 @@ async function processPage(
 export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn): Promise<CoaReport[]> {
   const filename = path.basename(filePath).replace(/^\d+-/, "");
   const pages = await extractTextPerPage(filePath, onProgress);
-  // ★ HQ prefetch (perf) ★ — HQ OCR (CPU, ~10s) วิ่งขนานกับ LLM parse (GPU) ของหน้าเดียวกัน →
-  //   พอถึงคิว HQ challenger ผลรออยู่แล้ว ไม่ต้องรอ OCR อีกรอบ.
-  //   ★ JIT ต่อหน้า ★ ยิงตอนเริ่ม process หน้านั้น ไม่ใช่ยิงทุกหน้าพร้อมกันตอนเริ่มไฟล์ — daemon มี lock
-  //   เดียว (default+HQ) → ยิงรวดเดียวทำให้หน้าที่ต้องใช้ HQ จริงไปต่อท้ายคิวของหน้าที่ไม่ได้ใช้ = ไม่ทันกิน
-  //   ★ default ปิด — วัดจริงบน corpus (ROUND 20): เปิดแล้วช้าลง 329s→340s ★ hq stage ลง 93s→49s จริง
-  //   แต่ ocr +18s / parse +33s: HQ engine (v5-server) กิน CPU จนเบียด Ollama เอง (LLM อยู่ GPU ก็ยังใช้
-  //   CPU tokenize/sample) + เบียด default OCR ของไฟล์ถัดไป. คุ้มเฉพาะตอน daemon อยู่คนละเครื่อง (LAN)
-  //   → COA_OCR_HQ_SPECULATE=true เปิดตอนนั้น
+  // ★ HQ prefetch (perf) ★ — HQ OCR (CPU ~10s) วิ่งขนานกับ LLM parse (GPU) ของหน้าเดียวกัน ไม่ต้องรอ OCR ซ้ำ
+  //   ยิง JIT ต่อหน้า (ไม่ใช่ยิงทุกหน้าตอนเริ่มไฟล์ — daemon lock เดียว ยิงรวดเดียวจะเบียดคิวหน้าที่ไม่ได้ใช้ HQ)
+  //   default ปิด: วัดจริงช้าลง 329s→340s (เบียด CPU Ollama) — คุ้มเฉพาะคนละเครื่อง เปิดด้วย COA_OCR_HQ_SPECULATE=true
   const speculate = OCR_HQ_FALLBACK_ENABLED && process.env.COA_OCR_HQ_SPECULATE === "true";
   const hqSvc = speculate ? new RapidOcrService() : null;
   const reports: CoaReport[] = [];
@@ -1402,10 +1354,9 @@ export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn):
     onProgress?.({ stage: "parse", page: pg.page, pages: pages.length });
     const thaiSink: ThaiSink = {};
     const report = await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress, thaiSink, pg.tokens);
-    // ★ product/lot จากป้ายบนใบ ★ — ทำหลังเลือก candidate เสร็จ ให้หัวรายงานมีเจ้าของเดียว ไม่ขึ้นกับว่า
-    //   flat/grid/HQ ตัวไหนชนะ. ไม่มีป้าย = null (LLM เดาชื่อลูกค้ามาใส่บ่อย ดู product-lot-recovery.ts)
-    // ★ ข้อความ default เป็นเจ้าของหัวรายงานเหมือนเดิม ★ ข้อความไทยเติมเฉพาะช่องที่ default ว่าง
-    //   (ใบสองภาษาที่ default อ่าน "Product Name" ได้สะอาด แต่ rec ไทยอ่านบรรทัดเดียวกันเพี้ยน — ห้ามเอาของเพี้ยนมาทับ)
+    // ★ product/lot จากป้ายบนใบ ★ — ทำหลังเลือก candidate เสร็จ ให้หัวรายงานมีเจ้าของเดียวไม่ขึ้นกับว่า flat/
+    //   grid/HQ ตัวไหนชนะ (ไม่มีป้าย = null, กัน LLM เดาชื่อลูกค้ามาใส่ — ดู product-lot-recovery.ts). ข้อความ
+    //   default เป็นเจ้าของหัวรายงานเสมอ ข้อความไทยเติมเฉพาะช่องว่าง (กันของเพี้ยนทับของสะอาด สองภาษาผสม)
     const header = recoverProductLot(pg.text);
     if (thaiSink.text) {
       const thHeader = recoverProductLot(thaiSink.text);

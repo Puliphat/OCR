@@ -1,7 +1,6 @@
-// HTTP layer ของ COA — รับไฟล์ผ่าน multer แล้วโยนเข้า "คิว" (ไม่ได้รันในคำขอแล้ว)
-// endpoint หลัก: POST /api/coa/upload (multipart "file" ได้หลายไฟล์) → 202 { jobs }
-// + GET /jobs?ids=, GET /jobs/:id, DELETE /jobs/:id, GET /queue, GET /health
-// + GET /ocr/daemon-health (probe sidecar) + POST /ocr/restart (spawn sidecar)
+// HTTP layer ของ COA — รับไฟล์ผ่าน multer แล้วโยนเข้าคิว (ไม่ได้รันในคำขอแล้ว)
+//   endpoint หลัก: POST /api/coa/upload (multipart "file" ได้หลายไฟล์) → 202 { jobs }
+//   + jobs (GET list/รายตัว, DELETE ยกเลิก) · queue · health · ocr/daemon-health · ocr/restart
 import { Router, Request, Response } from "express";
 import multer from "multer";
 import * as path from "path";
@@ -206,8 +205,7 @@ router.post(
           // เขียน log ฉบับเต็ม (รวม debug: ocrText/llmRaw) ไว้ diagnose ว่าพังที่ model ไหน
           fs.writeFileSync(path.join(LOG_DIR, logBasename), JSON.stringify(reports, null, 2), "utf8");
 
-          // TODO: persist ลง DB เมื่อเปิดใช้ CoaReportEntity / CoaItemEntity
-          // (uncomment imports + entities ใน data-source.ts ก่อน)
+          // TODO: persist ลง DB — ต้อง uncomment imports + entities ใน data-source.ts ก่อน
           // const repo = AppDataSource.getRepository(CoaReportEntity);
           // await repo.save({ ...reports[0], items: reports[0].rows });
 
