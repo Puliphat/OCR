@@ -702,7 +702,8 @@ async function runExtractionPass(
   }
 
   // เกณฑ์สองช่องที่ขีดกลางหายตอน OCR — อ่าน header ของใบว่าช่องไหนคือค่าผล ช่องท้ายที่เหลือคือเกณฑ์
-  const pairs = recoverSpecPairs(raw.items ?? [], text);
+  //   ส่ง token ของใบสแกนไปด้วย เผื่อแถวที่ใบพิมพ์ขอบเดียว (ต้องรู้ว่าเลขนั่งช่องต่ำหรือช่องสูง)
+  const pairs = recoverSpecPairs(raw.items ?? [], text, isDeterministicGrid ? undefined : tokens);
   if (pairs.paired.length > 0) {
     console.log(
       `  [spec-pair] เติมขอบเกณฑ์ที่ขาด ${pairs.paired.length} รายการ: ${pairs.paired
