@@ -1,6 +1,7 @@
 // Print-based regression test — รัน: npx ts-node src/services/coa/coa-grounding.test.ts
 // ยืนยัน: dropUngroundedItems ตัด row ที่ LLM ปั้น (ไม่มีใน OCR) ออก แต่ไม่แตะ row จริง
-import { dropUngroundedItems } from "./coa-grounding";
+import { dropUngroundedItems, downgradeCopiedTextPasses } from "./coa-grounding";
+import { evaluateCoa } from "./coa-evaluator";
 import { RawCoaItem } from "./ollama-coa.service";
 
 let failures = 0;
@@ -122,6 +123,47 @@ const mislabeled: RawCoaItem[] = [
 ];
 const r10 = dropUngroundedItems(mislabeled, TRANSPOSED_OCR);
 check("transposed: ค่า column ตรงแต่ชื่อไม่อยู่ใน block → drop", r10.kept.length === 0 && r10.dropped.length === 1, `(kept=${r10.kept.length})`);
+
+// ── แถวข้อความที่ผ่านเพราะเกณฑ์ตรงกับผล (Kemolit "Foreign Particles" เกณฑ์จริงบนใบคือ VISUAL)
+const KEMOLIT_OCR = [
+  "1S.No  |  Particulars  |  Test Method  |  Specification  |  UOM  |  Results",
+  "4  |  Foreign Particles  |  VISUAL  |  Absent",
+].join("\n");
+const TWO_CELL_OCR = [
+  "Item  |  Specification  |  Result",
+  "Color  |  Light Yellow Color  |  Light Yellow Color",
+].join("\n");
+
+const copied = evaluateCoa({
+  filename: "kemolit.pdf",
+  items: [{ name: "Foreign Particles", method: "VISUAL", specRaw: "Absent", result: "Absent" }],
+});
+check("ก่อนด่าน เกณฑ์=ผล → PASS", copied.rows[0].status === "PASS", `(${copied.rows[0].status})`);
+const c1 = downgradeCopiedTextPasses(copied.rows, KEMOLIT_OCR);
+check(
+  "ข้อความโผล่ครั้งเดียว → SKIP",
+  copied.rows[0].status === "SKIP" && c1.downgraded.length === 1,
+  `(${copied.rows[0].status})`
+);
+check("ปักธงให้คนอ่านใบเอง", copied.rows[0].needsReview === true);
+
+const twoCell = evaluateCoa({
+  filename: "txax.pdf",
+  items: [{ name: "Color", specRaw: "Light Yellow Color", result: "Light Yellow Color" }],
+});
+const c2 = downgradeCopiedTextPasses(twoCell.rows, TWO_CELL_OCR);
+check(
+  "ใบเขียนไว้ทั้งสองช่อง → คง PASS",
+  twoCell.rows[0].status === "PASS" && c2.downgraded.length === 0,
+  `(${twoCell.rows[0].status})`
+);
+
+const numericRow = evaluateCoa({
+  filename: "num.pdf",
+  items: [{ name: "Moisture", specRaw: "0.30 MAX", result: "0.10" }],
+});
+const c3 = downgradeCopiedTextPasses(numericRow.rows, "Moisture  |  0.30 MAX  |  0.10");
+check("แถวตัวเลข → ด่านนี้ไม่แตะ", numericRow.rows[0].status === "PASS" && c3.downgraded.length === 0);
 
 console.log(failures === 0 ? "\nALL PASS ✅" : `\n${failures} CHECK(S) FAILED ❌`);
 process.exit(failures === 0 ? 0 : 1);

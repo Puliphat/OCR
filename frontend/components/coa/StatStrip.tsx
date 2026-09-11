@@ -1,7 +1,6 @@
-// แถบสถิติ 4 ช่อง (Pass / Fail / Skip / Total) พร้อมแท่ง bar ตามสัดส่วน
-import type { CoaReport } from "@/lib/types";
-
-type Summary = CoaReport["summary"];
+// แถบสถิติ 4 ช่อง (ผ่าน / ต้องตรวจ / ไม่ผ่าน / ทั้งหมด) พร้อมแท่ง bar ตามสัดส่วน
+import type { CoaRow } from "@/lib/types";
+import { bucketCounts } from "@/lib/format";
 
 function Stat({
   label,
@@ -11,7 +10,7 @@ function Stat({
 }: {
   label: string;
   value: number;
-  tone: "good" | "bad" | "muted" | "info";
+  tone: "good" | "bad" | "warn" | "info";
   pct: number;
 }) {
   return (
@@ -25,14 +24,15 @@ function Stat({
   );
 }
 
-export default function StatStrip({ summary }: { summary: Summary }) {
-  const total = Math.max(summary.total, 1);
+export default function StatStrip({ rows }: { rows: CoaRow[] }) {
+  const c = bucketCounts(rows);
+  const total = Math.max(c.total, 1);
   return (
     <div className="stats">
-      <Stat label="Pass" value={summary.pass} tone="good" pct={(summary.pass / total) * 100} />
-      <Stat label="Fail" value={summary.fail} tone="bad" pct={(summary.fail / total) * 100 || 4} />
-      <Stat label="Skip" value={summary.skip} tone="muted" pct={(summary.skip / total) * 100 || 4} />
-      <Stat label="Total" value={summary.total} tone="info" pct={100} />
+      <Stat label="ผ่าน" value={c.pass} tone="good" pct={(c.pass / total) * 100} />
+      <Stat label="ต้องตรวจ" value={c.review} tone="warn" pct={(c.review / total) * 100 || 4} />
+      <Stat label="ไม่ผ่าน" value={c.fail} tone="bad" pct={(c.fail / total) * 100 || 4} />
+      <Stat label="ทั้งหมด" value={c.total} tone="info" pct={100} />
     </div>
   );
 }

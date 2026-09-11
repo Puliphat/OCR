@@ -230,8 +230,9 @@ export default function Home() {
 
       {ordered.some((j) => j.state === "done") && (
         <HelperBar variant="tip">
-          Tip — failing parameters get a red pill, rows needing human review get an amber{" "}
-          <strong>⚠ ต้องตรวจ</strong> pill, and rows that couldn&apos;t be evaluated get a muted SKIP pill. Hover a status pill for details.
+          Tip — ผลมี 3 แบบเท่านั้น: <strong>ผ่าน</strong> (เขียว),{" "}
+          <strong>⚠ ผ่าน · ต้องตรวจ</strong> (เหลือง — ระบบยังยืนยันเองไม่ได้ ต้องเทียบกับใบจริง) และ{" "}
+          <strong>ไม่ผ่าน</strong> (แดง) · ชี้ที่ป้ายสถานะเพื่อดูเหตุผล
         </HelperBar>
       )}
     </div>

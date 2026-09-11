@@ -116,7 +116,7 @@ export default function ProgressPanel({
       <div className="p-meta mono">
         <span className="p-clock">{(liveMs / 1000).toFixed(1)}s</span>
         <span className="p-hint">
-          {queue ? "ระบบทำทีละงาน — ถึงคิวแล้วจะเริ่มเอง" : "ปกติ ~20 วิ · ไฟล์ scan หลายหน้า ~45 วิ"}
+          {queue ? "ระบบทำทีละงาน — ถึงคิวแล้วจะเริ่มเอง" : "ปกติ ~4–5 นาที · ไฟล์ scan หลายหน้านานกว่านี้"}
         </span>
       </div>
     </div>

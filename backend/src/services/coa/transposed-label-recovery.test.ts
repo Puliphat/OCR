@@ -58,6 +58,7 @@ function check(label: string, got: unknown, want: unknown) {
   check("pH → 9.8", rows[7].result, 9.8);
   check("แถวป้าย (Chemical) ไม่มีค่า", rows[0].result, null);
   check("ปักธงให้คนตรวจ", rows[1].needsReview, true);
+  check("ทั้งบล็อกเป็นค่าอ่านอย่างเดียว", rows.every((r) => r.infoOnly === true), true);
 }
 
 // 2. ตารางเดียวกันแต่ LLM จับคู่ถูกอยู่แล้ว → ห้ามแตะ
@@ -74,6 +75,8 @@ function check(label: string, got: unknown, want: unknown) {
   const res = realignTransposedLabels(rows, TAIHEIYO_OCR);
   check("ไม่มีอะไรถูกแก้", res.realigned.length, 0);
   check("SiO2 คงเดิม", rows[0].result, 41.7);
+  // ★ จับคู่ถูกอยู่แล้วก็ยังต้องรู้ว่าเป็นบล็อกไม่มีเกณฑ์ ★ ไม่งั้นใบเดียวกันรันคนละรอบขึ้นจอคนละแบบ
+  check("ยังรู้ว่าเป็นค่าอ่านอย่างเดียว", rows.every((r) => r.infoOnly === true), true);
 }
 
 // 3. แถวที่มีเกณฑ์ (min/max) ห้ามถูกแตะ แม้จะเลื่อน
@@ -91,6 +94,7 @@ function check(label: string, got: unknown, want: unknown) {
   realignTransposedLabels(rows, TAIHEIYO_OCR);
   check("แถวมีเกณฑ์คงค่าเดิม", rows[1].result, 13.2);
   check("แถวไม่มีเกณฑ์ยังแก้ได้", rows[2].result, 13.2);
+  check("แถวมีเกณฑ์ไม่ถูกย้ายไปแถบอ่านอย่างเดียว", rows[1].infoOnly, undefined);
 }
 
 // 4. เลื่อนทั้งชุด (LLM ทิ้งแถวท้าย) → ต้องจับคู่ใหม่ทุกแถว
@@ -136,6 +140,7 @@ function check(label: string, got: unknown, want: unknown) {
   const rows = [row("Moisture", 0.71), row("pH", 11.13), row("Density", 0.34)];
   const res = realignTransposedLabels(rows, ocr);
   check("ตารางปกติไม่ถูกแตะ", res.realigned.length, 0);
+  check("ตารางปกติไม่มีแถวอ่านอย่างเดียว", rows.some((r) => r.infoOnly), false);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

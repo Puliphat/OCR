@@ -45,7 +45,7 @@ body::before {
 .app {
   position: relative;
   z-index: 1;
-  max-width: 1240px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 48px 40px 96px;
 }

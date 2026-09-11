@@ -1,21 +1,12 @@
-// หนึ่งแถวในตารางผล — Item / Unit / Min / Max / Result / Status
+// หนึ่งแถวในตารางผล — Item / Unit / Spec / Min / Max / Result / Status
 import type { CoaRow } from "@/lib/types";
-import { fmtNum, fmtResult } from "@/lib/format";
+import { fmtNum, fmtResult, rowBucket } from "@/lib/format";
 
 export default function ResultRow({ row }: { row: CoaRow }) {
-  const isReview = row.needsReview === true;
-  // ★ needsReview PASS → เขียว (อ่านออกว่า "ผ่าน") + flag ⚠ amber pulse — ลด "ความตกใจ" ให้คนเหลือบยืนยันเร็ว
-  //   review ที่ยังไม่ผ่าน (SKIP/FAIL ต้องตรวจ) → amber เต็มเดิม. ★ ไม่ใช่เขียวล้วน: ⚠+edge เหลือง + header เหลือง + ยังนับ reviewCount ★
-  const isReviewPass = isReview && row.status === "PASS";
-  const statusClass = isReviewPass
-    ? " review-pass"
-    : isReview
-    ? " review"
-    : row.status === "FAIL"
-    ? " fail"
-    : row.status === "SKIP"
-    ? " skip"
-    : "";
+  // 3 ช่องเท่านั้น (ดู rowBucket) — แถวที่ระบบตัดสินเองไม่ได้ไปอยู่ช่อง "ต้องตรวจ" ไม่ใช่ช่องเทาที่คนมองข้าม
+  const bucket = rowBucket(row);
+  const isReview = bucket === "review";
+  const statusClass = bucket === "fail" ? " fail" : isReview ? " review" : "";
 
   return (
     <div className="row">
@@ -29,6 +20,10 @@ export default function ResultRow({ row }: { row: CoaRow }) {
         )}
       </div>
       <div className="row-unit">{row.unit ?? "—"}</div>
+      {/* เกณฑ์ตามที่พิมพ์บนใบ — แถวที่เทียบข้อความกับข้อความไม่มีเลข min/max ให้ดู ต้องอ่านช่องนี้ */}
+      <div className="row-spec" title={row.specRaw ?? undefined}>
+        {row.specRaw ?? "—"}
+      </div>
       <div className="row-bound">{fmtNum(row.min)}</div>
       <div className="row-bound">{fmtNum(row.max)}</div>
       {/* จอโชว์เลขที่ตีความแล้ว (จุดทศนิยม "." เสมอ) · hover เห็นข้อความตามใบไว้เทียบ */}
@@ -40,18 +35,18 @@ export default function ResultRow({ row }: { row: CoaRow }) {
         className={"row-status" + statusClass}
         title={
           row.reason ||
-          (isReview ? "ต้องตรวจ — ค่ามาจากการกู้/อ่านคอลัมน์ใหม่ ยืนยันกับใบจริง" : undefined)
+          (isReview ? "ต้องตรวจ — ระบบยังยืนยันแถวนี้เองไม่ได้ อ่านจากใบจริง" : undefined)
         }
       >
-        {isReviewPass ? (
+        {isReview ? (
           <>
             <span className="rev-icon" aria-hidden="true">⚠</span>
-            PASS
+            ผ่าน · ต้องตรวจ
           </>
-        ) : isReview ? (
-          "⚠ ต้องตรวจ"
+        ) : bucket === "fail" ? (
+          "ไม่ผ่าน"
         ) : (
-          row.status
+          "ผ่าน"
         )}
       </div>
     </div>

@@ -255,8 +255,43 @@ console.log(
     : `ONE-SIDED BOUNDARY FIXTURES: ${badBoundary} MISMATCH`
 );
 
+// ── แถวที่ใบไม่ได้เขียนเกณฑ์ไว้เลย + ค่าเป็นคำล้วน = หน้างานจดสภาพสินค้า ไม่ใช่ค่าวัด (Copper Fiber
+//    "Appearance: good") → ไม่นับเป็นรายการตรวจ. มีตัวเลขในค่าเมื่อไร = อาจเป็นค่าวัดที่เกณฑ์อ่านไม่ออก ต้องเห็น
+const noSpecWord = evaluateCoa({
+  filename: "synthetic-no-spec-word.pdf",
+  items: [
+    { name: "Appearance", result: "good" },
+    { name: "Oil", result: "nil" },
+    // TAIHEIYO Density(kg/1): แถวผีที่ชื่อโดนตัดครึ่ง ค่ามีตัวเลข → ต้องยังขึ้นให้คนตรวจ
+    { name: "Density(kg/1)", result: "0.30" },
+    // Kemolit: ใบเขียนเกณฑ์ไว้ (VISUAL) แค่ระบบเทียบเองไม่ได้ → ต้องยังขึ้นให้คนตรวจ
+    { name: "Foreign Particles", specRaw: "VISUAL", result: "Absent" },
+  ],
+});
+const expectInfo: Record<string, boolean> = {
+  Appearance: true,
+  Oil: true,
+  "Density(kg/1)": false,
+  "Foreign Particles": false,
+};
+let badInfo = 0;
+console.log("");
+for (const row of noSpecWord.rows) {
+  const want = expectInfo[row.name];
+  if (want === undefined) continue;
+  const got = row.infoOnly === true;
+  const ok = got === want && row.status === "SKIP";
+  if (!ok) badInfo++;
+  console.log(
+    `${ok ? "✓" : "✗"} ${row.name.padEnd(20)} want infoOnly=${String(want).padEnd(5)} got=${String(got).padEnd(5)} status=${row.status}`
+  );
+}
+console.log(
+  badInfo === 0 ? "NO-SPEC WORD FIXTURES: all match" : `NO-SPEC WORD FIXTURES: ${badInfo} MISMATCH`
+);
+
 // ให้ suite นี้ตกด้วย exit code เหมือนอีก 18 ตัว — เดิมพิมพ์ MISMATCH แล้ว exit 0 (gate มองไม่เห็น)
-const totalBad = bad + badFlag + badBoundary;
+const totalBad = bad + badFlag + badBoundary + badInfo;
 if (totalBad > 0) {
   console.log(`\nEVALUATOR FIXTURES: ${totalBad} MISMATCH`);
   process.exit(1);

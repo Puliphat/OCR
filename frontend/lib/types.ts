@@ -15,6 +15,9 @@ export interface CoaRow {
   // ค่าผลที่เป็นช่วง (ใบที่มีคอลัมน์ Results Min|Max เช่น RB220) — null เมื่อผลเป็นค่าเดี่ยว
   resultMin?: number | null;
   resultMax?: number | null;
+  // ช่องในบล็อกที่ใบไม่มีคอลัมน์เกณฑ์เลย (Chemical Element ของ TAIHEIYO) — ไม่มีอะไรให้เทียบ
+  //   ขึ้นเป็นแถบค่าอ่านอย่างเดียวเหนือตาราง ไม่นับใน pass/review/fail
+  infoOnly?: boolean;
 }
 
 export interface CoaReport {
@@ -24,6 +27,8 @@ export interface CoaReport {
   page?: number;
   rows: CoaRow[];
   summary: { pass: number; fail: number; skip: number; total: number };
+  // ใบไม่มีคอลัมน์เกณฑ์เลย — ทุกแถวเทียบไม่ได้จนกว่าจะตั้ง spec ในระบบ (โชว์เป็นแถบเตือนบนการ์ด)
+  noSpecOnPaper?: boolean;
   ocrEngine?: "text-layer" | "rapidocr";
 }
 

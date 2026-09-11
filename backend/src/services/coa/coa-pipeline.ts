@@ -29,6 +29,8 @@ import { recoverSplitTextRows } from "./text-row-recovery";
 import { recoverSieveTableResults, recoverMissingSieveRows } from "./sieve-table-recovery";
 import { extractHeaderDirectionHints } from "./header-direction";
 import { recoverLimitColumns } from "./limit-columns-recovery";
+import { recoverMinMaxColumns } from "./minmax-column-recovery";
+import { mergeSplitNameRows } from "./split-name-merge";
 import { recoverLotRowTable } from "./lot-row-table-recovery";
 import { recoverParenSpecRows } from "./paren-spec-recovery";
 import { recoverSplitBoundCells } from "./bound-cell-recovery";
@@ -38,6 +40,7 @@ import {
   downgradeUngroundedFails,
   downgradeUngroundedPasses,
   downgradeOcrOutlierFails,
+  downgradeCopiedTextPasses,
   FailGuardResult,
   PassGuardResult,
 } from "./coa-grounding";
@@ -562,7 +565,8 @@ async function runExtractionPass(
   variant: string,
   gridSource?: GridSource,
   gridOrient?: GridOrient,
-  avgGrid?: string
+  avgGrid?: string,
+  tokens?: OcrToken[]
 ): Promise<CoaReport> {
   // ★ structural/scanned-vector grid → parse แบบ deterministic (ไม่ใช้ LLM) ★ คอลัมน์ยืนยันด้วย geometry
   //   ใช้: เดิน parse path นี้ · ข้าม flat-text guard (เทียบ text ผิด→false downgrade) · promote boundary · gate ด้วย keep-best
@@ -776,6 +780,19 @@ async function runExtractionPass(
     );
   }
 
+  // ใบสแกนที่หัวตาราง Spec แตกเป็น Min|Max ก่อนช่อง Results — อ่านคอลัมน์ใหม่จากพิกัด token ของ OCR
+  //   ไม่มี token (หน้า text-layer) หรือไม่เจอหัวตารางทรงนี้ = ไม่แตะเลย
+  const minMaxCols = isDeterministicGrid
+    ? { fixed: [] as { name: string; from: string; to: string }[] }
+    : recoverMinMaxColumns(raw.items ?? [], tokens);
+  if (minMaxCols.fixed.length > 0) {
+    console.log(
+      `  [minmax-cols] อ่านคอลัมน์ Min/Max จากตำแหน่งช่องบนใบ ${minMaxCols.fixed.length} รายการ: ${minMaxCols.fixed
+        .map((f) => `${f.name}(${f.from} → ${f.to})`)
+        .join(", ")}`
+    );
+  }
+
   // ★ Result-side Min|Max recovery (deterministic, header-anchored) ★ — ใบที่ฝั่งผลแตกเป็น 2 คอลัมน์
   //   Min|Max (ไม่มีคอลัมน์ result เดี่ยว เช่น RB220) → ค่าที่วัดได้เป็น "ช่วง" ต้องอยู่ในกรอบ spec ทั้งช่วง.
   //   qwen3:4b map พลาดทุกรัน → กู้จาก header เอง. ★ ABSTAIN ถ้าไม่เจอโครง Results/Limits + Min./Max. ★
@@ -785,6 +802,17 @@ async function runExtractionPass(
     console.log(
       `  [result-minmax] กู้ result เป็นช่วง Min|Max ${minMaxRec.overridden.length} รายการ: ${minMaxRec.overridden
         .map((o) => `${o.name}(${o.resultMin}–${o.resultMax} vs ${o.specMin ?? "-"}~${o.specMax ?? "-"})`)
+        .join(", ")}`
+    );
+  }
+
+  // ชื่อรายการที่ OCR ตัดเป็น 2 ช่อง แล้ว LLM แตกเป็น 2 แถว — แถวหลังเป็นแถวผีที่ยืมเลขจากเกณฑ์มาเป็นค่า
+  const splitNames = mergeSplitNameRows(raw.items ?? [], text);
+  if (splitNames.merged.length > 0) {
+    raw.items = splitNames.items;
+    console.log(
+      `  [split-name] รวมชื่อที่ถูกตัดครึ่ง ${splitNames.merged.length} แถว: ${splitNames.merged
+        .map((m) => `${m.kept} (ตัดแถวผี "${m.dropped}")`)
         .join(", ")}`
     );
   }
@@ -810,19 +838,36 @@ async function runExtractionPass(
     );
   }
 
-  // แถวที่อ่านคอลัมน์ใหม่ตามหัวตาราง Lower/Upper limit — เปลี่ยนทั้งค่าและเกณฑ์ ต้องให้คนตรวจ
+  // แถวที่อ่านคอลัมน์ใหม่ตามหัวตาราง Lower/Upper limit — ปักธงเฉพาะแถวที่ยังตัดสินไม่ได้
+  //   แถวที่ผ่านไม่ต้องให้คนตรวจ: โมดูลนี้แก้ต่อเมื่อหัวตารางเรียง limit ก่อนผล + บรรทัดมีเลข 3 ตัวพอดี
+  //   + ขอบล่าง ≤ ขอบบน + ค่าเดิมของ LLM เท่าขอบล่างเป๊ะ (= อาการที่มันแก้) → เดาคอลัมน์เองไม่ได้
   if (limitCols.fixed.length > 0) {
     const names = new Set(limitCols.fixed.map((f) => f.name.trim()));
     for (const r of evaluated.rows) {
       if (!names.has(r.name.trim())) continue;
-      r.needsReview = true;
       r.columnRebuilt = true;
+      if (r.status === "PASS") continue;
+      r.needsReview = true;
       const why = "ระบบอ่านคอลัมน์ใหม่ตามหัวตาราง (เกณฑ์อยู่ก่อนค่าผล) — เทียบกับใบจริง";
       r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
     }
   }
 
+  // แถวที่อ่านคอลัมน์ Min/Max ใหม่จากพิกัด — ปักธงเหมือน limit-cols: ผ่านแล้วไม่ต้องตรวจซ้ำ
+  if (minMaxCols.fixed.length > 0) {
+    const names = new Set(minMaxCols.fixed.map((f) => f.name.trim()));
+    for (const r of evaluated.rows) {
+      if (!names.has(r.name.trim())) continue;
+      r.columnRebuilt = true;
+      if (r.status === "PASS") continue;
+      r.needsReview = true;
+      const why = "ระบบอ่านคอลัมน์ Min/Max ใหม่จากตำแหน่งช่องบนใบ — เทียบกับใบจริง";
+      r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
+    }
+  }
+
   // แถวที่ระบบจับคู่เกณฑ์-ค่าเองตามตำแหน่งช่อง — คนต้องตรวจ เหมือน path spatial อื่น
+  //   ยกเว้น paren-spec: ใบพินช่องให้เองแล้ว (ประกาศ Average + เกณฑ์ในวงเล็บท้ายบรรทัด) แถวผ่านไม่ต้องตรวจ
   const rebuilt = lotTable?.items ?? parenSpec?.items ?? specBelow?.items;
   if (rebuilt) {
     const why = lotTable
@@ -830,11 +875,13 @@ async function runExtractionPass(
       : parenSpec
       ? "ระบบอ่านค่าจากช่อง Average และเกณฑ์ในวงเล็บเอง — เทียบกับใบจริง"
       : "ระบบจับคู่เกณฑ์ที่อยู่ใต้แถวค่าโดยยึดคอลัมน์ขวา — เทียบกับใบจริง";
+    const flagPass = !parenSpec;
     const names = new Set(rebuilt.map((i) => String(i.name ?? "").trim()));
     for (const r of evaluated.rows) {
       if (!names.has(r.name.trim())) continue;
-      r.needsReview = true;
       r.columnRebuilt = true;
+      if (!flagPass && r.status === "PASS") continue;
+      r.needsReview = true;
       r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
     }
   }
@@ -936,6 +983,16 @@ async function runExtractionPass(
     );
   }
 
+  // แถวข้อความที่ผ่านเพราะเกณฑ์ตรงกับผล — ใบต้องเขียนข้อความนั้นไว้ทั้งสองช่องจริง ไม่งั้นคือ LLM คัดมาเอง
+  const copiedText = downgradeCopiedTextPasses(evaluated.rows, text);
+  if (copiedText.downgraded.length > 0) {
+    console.warn(
+      `  [copied-text] downgrade ${copiedText.downgraded.length} PASS→SKIP (เกณฑ์เป็นสำเนาของค่าผล): ${copiedText.downgraded
+        .map((d) => d.name)
+        .join(", ")}`
+    );
+  }
+
   // ตารางแนวนอนที่ชื่อกับค่าเลื่อนกัน (TAIHEIYO CMF) — จับคู่ใหม่ตามตำแหน่งช่องใน OCR
   const realign = realignTransposedLabels(evaluated.rows, text);
   if (realign.realigned.length > 0) {
@@ -972,7 +1029,8 @@ async function runExtractionPass(
     colShift.downgraded.length > 0 ||
     sieveRec.recovered.length > 0 ||
     boundaryPromoted > 0 ||
-    textRows.recovered.length > 0
+    textRows.recovered.length > 0 ||
+    copiedText.downgraded.length > 0
   ) {
     evaluated.summary = summarize(evaluated.rows);
   }
@@ -1018,7 +1076,8 @@ async function runFlatGridBest(
   page: number,
   gridText?: string,
   gridSource?: GridSource,
-  gridOrient?: GridOrient
+  gridOrient?: GridOrient,
+  tokens?: OcrToken[]
 ): Promise<CoaReport> {
   if (!text.trim()) {
     return {
@@ -1042,7 +1101,7 @@ async function runFlatGridBest(
   //    gridSource ใช้กำหนด needsReview policy ของ avg-override (spatial=amber, structural=balanced)
   const flatReport = await runExtractionPass(
     filename, filePath, text, text, engine, page, new OllamaCoaService(), "flat",
-    gridSource, gridOrient, gridText
+    gridSource, gridOrient, gridText, tokens
   );
 
   // 2) grid challenger — ยิงเมื่อมี gridText และ flat ยังไม่สมบูรณ์:
@@ -1061,7 +1120,8 @@ async function runFlatGridBest(
     );
     dumpDebug("_last-ocr-grid.txt", gridText!);
     const gridReport = await runExtractionPass(
-      filename, filePath, gridText!, text, engine, page, new OllamaCoaService(), "grid", gridSource, gridOrient
+      filename, filePath, gridText!, text, engine, page, new OllamaCoaService(), "grid", gridSource, gridOrient,
+      undefined, tokens
     );
     if (gridBeatsFlat(gridReport, flatReport)) {
       // grid won → carry product/lotNo from flat when the grid pass didn't recover them (the
@@ -1161,7 +1221,7 @@ async function thaiChallenge(
     const thGrid = GRID_LLM_ENABLED ? thOcr.grid : undefined;
     const thBest = await runFlatGridBest(
       filename, filePath, thOcr.flat, "rapidocr", page,
-      thGrid, thGrid ? "spatial" : undefined, undefined
+      thGrid, thGrid ? "spatial" : undefined, undefined, thOcr.tokens
     );
     if (!gridBeatsFlat(thBest, best)) {
       // ★ หน้านี้เป็นไทยแน่ (ผ่านด่านอักษรมาแล้ว) แต่ keep-best ทิ้งเพราะมี FAIL ★
@@ -1215,10 +1275,11 @@ async function processPage(
   imagePath?: string,
   hqPrefetch?: ReturnType<RapidOcrService["extractTextBoth"]>,
   onProgress?: ProgressFn,
-  thaiSink?: ThaiSink
+  thaiSink?: ThaiSink,
+  tokens?: OcrToken[]
 ): Promise<CoaReport> {
   const best = await runFlatGridBest(
-    filename, filePath, text, engine, page, gridText, gridSource, gridOrient
+    filename, filePath, text, engine, page, gridText, gridSource, gridOrient, tokens
   );
 
   // ★ Thai challenger ต้องมาก่อน HQ ★ — ใบไทยไม่ได้โผล่มาเป็น SKIP (ชื่อรายการหายทั้งคอลัมน์เงียบๆ)
@@ -1260,7 +1321,7 @@ async function processPage(
         //   extractTextPerPage) ที่ raster scan ไม่มี → spatial เท่านั้น
         const hqBest = await runFlatGridBest(
           filename, filePath, hqOcr.flat, "rapidocr", page,
-          hqGrid, hqGrid ? "spatial" : undefined, undefined
+          hqGrid, hqGrid ? "spatial" : undefined, undefined, hqOcr.tokens
         );
         // gridBeatsFlat = "challenger ชนะ incumbent ขาด" (generic: 0 FAIL, PASS เดิมครบ, PASS เพิ่ม)
         if (gridBeatsFlat(hqBest, best)) {
@@ -1327,7 +1388,7 @@ export async function runCoaPipeline(filePath: string, onProgress?: ProgressFn):
     }
     onProgress?.({ stage: "parse", page: pg.page, pages: pages.length });
     const thaiSink: ThaiSink = {};
-    const report = await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress, thaiSink);
+    const report = await processPage(filename, filePath, pg.text, pg.engine, pg.page, pg.gridText, pg.gridSource, pg.gridOrient, pg.imagePath, hqPrefetch, onProgress, thaiSink, pg.tokens);
     // ★ product/lot จากป้ายบนใบ ★ — ทำหลังเลือก candidate เสร็จ ให้หัวรายงานมีเจ้าของเดียว ไม่ขึ้นกับว่า
     //   flat/grid/HQ ตัวไหนชนะ. ไม่มีป้าย = null (LLM เดาชื่อลูกค้ามาใส่บ่อย ดู product-lot-recovery.ts)
     // ★ ข้อความ default เป็นเจ้าของหัวรายงานเหมือนเดิม ★ ข้อความไทยเติมเฉพาะช่องที่ default ว่าง

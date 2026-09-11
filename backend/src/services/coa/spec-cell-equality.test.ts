@@ -14,7 +14,8 @@ function check(label: string, got: unknown, want: unknown) {
 {
   const r = evaluateItem({ name: "1400μm on", specRaw: "0", result: 0, specFromCell: true });
   check("เกณฑ์ 0 จากช่องบนใบ + ผล 0 → PASS", r.status, "PASS");
-  check("ยังปักธงให้คนตรวจ", r.needsReview, true);
+  // เกณฑ์ 0 ผล 0 ผ่านเหมือนกันทุกทิศ (≤/≥/=) → ธงบอกอะไรไม่ได้ (user decision 2026-09-11)
+  check("ไม่ต้องปักธง", r.needsReview, false);
 }
 
 // 2. ★ ตัวแยกของจริง ★ FC-250-1500 ไม่มีคอลัมน์เกณฑ์ — LLM คัดลอกค่าผลมาเป็นเกณฑ์ → ต้อง SKIP ต่อ
@@ -27,13 +28,15 @@ function check(label: string, got: unknown, want: unknown) {
 {
   const r = evaluateItem({ name: "Air Jet Sieve +50M", specRaw: "0~0", result: 0, specFromCell: true });
   check("เกณฑ์ 0~0 จากช่องบนใบ + ผล 0 → PASS", r.status, "PASS");
-  check("ยังปักธงให้คนตรวจ", r.needsReview, true);
+  check("ไม่ต้องปักธง", r.needsReview, false);
 }
 
 // 4. VERMICULITE แถว total — เกณฑ์บนใบเขียน "100%" ผลรวม 100
 {
   const r = evaluateItem({ name: "total", specRaw: "100%", result: 100, specFromCell: true });
   check("เกณฑ์ 100% + ผล 100 → PASS", r.status, "PASS");
+  // เท่ากันที่ค่าไม่ใช่ 0 — ทิศของเกณฑ์ยังเปลี่ยนคำตัดสินได้ (101 ผ่านไหม?) → ธงยังต้องติด
+  check("เท่ากันที่ค่าอื่นยังปักธง", r.needsReview, true);
 }
 
 // 5. ขอบช่วงปกติไม่เกี่ยวกับด่านนี้ — Kemolit BulkDensity 0.45~0.50 ผล 0.50 ยัง SKIP เหมือนเดิม

@@ -16,7 +16,7 @@
 // ★ SAFETY ★ row จริงชื่ออยู่ใน OCR → ผ่านทาง name (short-circuit) ไม่แตะ number เลย
 //   number path เป็น fallback เฉพาะแถวที่ชื่อเพี้ยน/non-latin → drop = miss (honest) ไม่ใช่ false verdict
 import { RawCoaItem } from "./ollama-coa.service";
-import { EvaluatedItem } from "./coa-evaluator";
+import { EvaluatedItem, textKey } from "./coa-evaluator";
 
 export interface GroundingResult {
   kept: RawCoaItem[];
@@ -560,6 +560,34 @@ export function downgradeUngroundedPasses(
     r.needsReview = true;
     r.reason = PASS_DOWNGRADE_REASON;
     downgraded.push({ name: r.name, reason: PASS_DOWNGRADE_REASON });
+  }
+  return { downgraded };
+}
+
+// แถวข้อความที่ผ่านเพราะ "เกณฑ์ตรงกับผล" ต้องเห็นข้อความนั้นในใบ 2 ครั้ง (ช่องเกณฑ์ + ช่องผล)
+//   โผล่ครั้งเดียว = LLM คัดค่าผลมาใส่ช่องเกณฑ์เอง (Kemolit "Foreign Particles" เกณฑ์จริงคือ VISUAL)
+export function downgradeCopiedTextPasses(
+  rows: EvaluatedItem[],
+  ocrText: string
+): PassGuardResult {
+  const downgraded: { name: string; reason: string }[] = [];
+  if (!rows?.length || !ocrText) return { downgraded };
+
+  const paper = textKey(ocrText);
+  for (const r of rows) {
+    if (r.status !== "PASS" || r.result != null) continue;
+    const key = textKey(r.specRaw);
+    if (!key || key !== textKey(r.resultRaw)) continue;
+
+    let seen = 0;
+    for (let i = paper.indexOf(key); i >= 0; i = paper.indexOf(key, i + key.length)) seen++;
+    if (seen >= 2) continue; // ใบเขียนไว้ทั้งสองช่องจริง → ผ่านตามใบ
+
+    const why = `ใบมีข้อความ "${r.resultRaw}" ที่เดียว — ช่องเกณฑ์ของแถวนี้เขียนไว้อย่างอื่น ต้องอ่านจากใบเอง`;
+    r.status = "SKIP";
+    r.needsReview = true;
+    r.reason = why;
+    downgraded.push({ name: r.name, reason: why });
   }
   return { downgraded };
 }

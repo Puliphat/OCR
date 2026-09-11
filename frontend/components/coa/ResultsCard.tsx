@@ -1,9 +1,10 @@
 // การ์ดผลลัพธ์ — หัว (ไฟล์ + verdict) + StatStrip + ตาราง + footer meta
 import type { CoaReport } from "@/lib/types";
-import { nowIctString } from "@/lib/format";
+import { bucketCounts, nowIctString } from "@/lib/format";
 import { IconCheck, IconClose, IconClock, IconResultDoc } from "./icons";
 import StatStrip from "./StatStrip";
 import ResultRow from "./ResultRow";
+import InfoStrip from "./InfoStrip";
 
 export default function ResultsCard({
   report,
@@ -18,10 +19,14 @@ export default function ResultsCard({
   index: number;
   total: number;
 }) {
-  const { summary, rows, filename, product } = report;
-  const reviewCount = rows.filter((r) => r.needsReview === true).length;
-  const cleanPass = summary.fail === 0 && summary.total > 0 && reviewCount === 0;
-  const warnPass = summary.fail === 0 && summary.total > 0 && reviewCount > 0;
+  const { rows, filename, product } = report;
+  // แถวที่ใบไม่มีเกณฑ์ให้เทียบ แยกไปแถบด้านบน ที่เหลือคือรายการที่ระบบตรวจจริง
+  const infoRows = rows.filter((r) => r.infoOnly);
+  const checkRows = rows.filter((r) => !r.infoOnly);
+  // นับจากแถวจริง ไม่ใช่ summary ของ backend — แถวที่ระบบตัดสินไม่ได้ต้องขึ้น "ต้องตรวจ" ไม่ใช่ผ่านเงียบ
+  const count = bucketCounts(rows);
+  const cleanPass = count.fail === 0 && count.total > 0 && count.review === 0;
+  const warnPass = count.fail === 0 && count.total > 0 && count.review > 0;
   const elapsedSec = elapsedMs ? (elapsedMs / 1000).toFixed(1) : null;
 
   // lot/page badge label — shown only when total > 1
@@ -76,42 +81,51 @@ export default function ResultsCard({
               )}
             </span>
             {cleanPass
-              ? "COA passes spec"
+              ? "ผ่านครบทุกรายการ"
               : warnPass
-              ? `ผ่าน — แต่มี ${reviewCount} รายการต้องตรวจ`
-              : `${summary.fail} parameter${summary.fail === 1 ? "" : "s"} out of spec`}
+              ? `ผ่าน — แต่มี ${count.review} รายการต้องตรวจ`
+              : `ไม่ผ่าน ${count.fail} รายการ`}
           </div>
           <div className="ai-note">
             <IconClock />
             {elapsedSec ? `analyzed in ${elapsedSec}s · ` : ""}
-            {summary.total} field{summary.total === 1 ? "" : "s"} parsed
+            {count.total} field{count.total === 1 ? "" : "s"} parsed
           </div>
         </div>
       </div>
 
+      {report.noSpecOnPaper && (
+        <div className="no-spec-note">
+          ใบนี้ไม่มีคอลัมน์เกณฑ์ (spec) — ระบบเทียบเองไม่ได้ ต้องเอาเกณฑ์ที่ตั้งไว้ในระบบมาเทียบ
+        </div>
+      )}
+
+      {infoRows.length > 0 && <InfoStrip rows={infoRows} />}
+
       {/* stats */}
-      <StatStrip summary={summary} />
+      <StatStrip rows={rows} />
 
       {/* table */}
-      {rows.length > 0 && (
+      {checkRows.length > 0 && (
         <>
           <div className="rows-head">
             <div>Item</div>
             <div>Unit</div>
+            <div>Spec</div>
             <div className="rc">Min</div>
             <div className="rc">Max</div>
             <div className="ra">Result</div>
             <div className="ra">Status</div>
           </div>
           <div className="rows">
-            {rows.map((r, i) => (
+            {checkRows.map((r, i) => (
               <ResultRow key={i} row={r} />
             ))}
           </div>
         </>
       )}
 
-      {rows.length === 0 && (
+      {checkRows.length === 0 && (
         <div
           style={{
             padding: "20px 24px 22px",
@@ -120,7 +134,9 @@ export default function ResultsCard({
             borderTop: "1px solid var(--line)",
           }}
         >
-          No parameters were extracted from this file.
+          {infoRows.length > 0
+            ? "ใบนี้มีแต่ค่าที่ไม่มีเกณฑ์กำกับ — ไม่มีรายการให้ระบบตรวจ"
+            : "No parameters were extracted from this file."}
         </div>
       )}
 

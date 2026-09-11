@@ -51,6 +51,9 @@ export interface EvaluatedItem {
   // OCR 2 รอบอ่านเลขแถวนี้ไม่เหมือนกัน (ดู flagChallengerPasses) — ยังไม่รู้ว่าเลขไหนคือเลขบนใบ
   //   ด่านที่ล้างธงทุกตัวต้องข้ามแถวนี้ (margin-green G6, dupont cross-page) ไม่งั้นเลขที่เถียงกันขึ้นจอเขียว
   valueDisputed?: boolean;
+  // ช่องข้อมูลในบล็อกที่ใบไม่มีคอลัมน์เกณฑ์เลย (Chemical Element ของ TAIHEIYO) — ไม่มีอะไรให้เทียบ
+  //   จอ/CLI โชว์แยกเป็นค่าอ่านอย่างเดียว ไม่นับเป็นรายการตรวจ (ตั้งที่ transposed-label-recovery)
+  infoOnly?: boolean;
 }
 
 // ★ Ambiguous thousands ★ — "1,500" แยกไม่ออกว่าเป็น EU decimal (1.5) หรือ US thousands (1500)
@@ -126,6 +129,23 @@ export function textKey(s: string | null): string {
   return k.length >= 2 ? k : "";
 }
 
+// ขอบเกณฑ์สำหรับโชว์บนจอ — spec แบบ ≤/≥/= เก็บเลขไว้ที่ spec.value ไม่ใช่ min/max
+// ไม่เติมให้ จอขึ้น Max "—" ทั้งที่ใบเขียน "Max 1" (325-HK แถว Traces)
+function specBounds(spec: ParsedSpec): { min: number | null; max: number | null } {
+  switch (spec.op) {
+    case "ge":
+    case "gt":
+      return { min: spec.value ?? null, max: null };
+    case "le":
+    case "lt":
+      return { min: null, max: spec.value ?? null };
+    case "eq":
+      return { min: spec.value ?? null, max: spec.value ?? null };
+    default:
+      return { min: spec.min ?? null, max: spec.max ?? null };
+  }
+}
+
 // Evaluate 1 row: parse spec + result → เทียบตาม op (between/le/ge/lt/gt/eq)
 // spec อ่านไม่ออก → SKIP "spec not parseable", result ไม่ใช่ตัวเลข → SKIP "result not numeric"
 function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
@@ -165,25 +185,34 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
         needsReview: false,
       };
     }
+    // ใบไม่ได้เขียนเกณฑ์ของแถวนี้ไว้เลย และค่าเป็นคำล้วนไม่มีตัวเลข (Appearance "good", Oil "nil")
+    //   = หน้างานจดสภาพสินค้า ไม่ใช่ค่าวัด — ไม่มีอะไรให้เทียบ โชว์เป็นค่าอ่านอย่างเดียว
+    const noSpecOnRow = !String(base.specRaw ?? "").trim();
+    const wordResult = !!base.resultRaw && !/\d/.test(base.resultRaw);
     return {
       ...base,
       min: null,
       max: null,
       result: result?.value ?? null,
       status: "SKIP",
-      reason: "อ่านเกณฑ์ (spec) เป็นตัวเลขไม่ได้ — ข้ามรายการนี้",
+      reason:
+        noSpecOnRow && wordResult
+          ? `ใบไม่ได้กำหนดเกณฑ์ของรายการนี้ — บันทึกไว้ว่า "${base.resultRaw}"`
+          : "อ่านเกณฑ์ (spec) เป็นตัวเลขไม่ได้ — ต้องอ่านจากใบเอง",
       needsReview: false,
+      ...(noSpecOnRow && wordResult ? { infoOnly: true } : {}),
     };
   }
 
   if (!result) {
+    const bounds = specBounds(spec);
     return {
       ...base,
-      min: spec.min ?? null,
-      max: spec.max ?? null,
+      min: bounds.min,
+      max: bounds.max,
       result: null,
       status: "SKIP",
-      reason: "ค่าผลไม่ใช่ตัวเลข — ข้ามรายการนี้",
+      reason: `ค่าผลเป็นข้อความ "${base.resultRaw ?? ""}" เทียบกับเกณฑ์ ${spec.raw} เองไม่ได้ — ต้องอ่านจากใบ`,
       needsReview: false,
     };
   }
@@ -334,7 +363,9 @@ function evaluateItemCore(item: CoaItemInput): EvaluatedItem {
     result: r,
     status: pass ? "PASS" : "FAIL",
     reason,
-    needsReview: !!review || specCellEquality,
+    // เกณฑ์ 0 ผลวัด 0 (ตะแกรงไม่มีอะไรค้าง) ผ่านเหมือนกันหมดไม่ว่าเกณฑ์จะเป็น ≤/≥/= → ธงบอกอะไรไม่ได้
+    //   เท่ากันที่ค่าอื่นยังปักธงตามเดิม เพราะทิศของเกณฑ์ยังเปลี่ยนคำตัดสินได้
+    needsReview: !!review || (specCellEquality && r !== 0),
   };
 }
 
@@ -493,7 +524,6 @@ function evalBoundResult(
 
 // ตรวจความเสี่ยง "OCR ทศนิยมหาย" — ★ ไม่เปลี่ยน PASS/FAIL ★ แค่ตั้งธงให้คนตรวจใบจริง
 //  - FAIL: ถ้าเติมทศนิยมแล้วเข้า spec (423→42.3 ใน 15-45) = น่าจะ OCR พลาด ไม่ใช่ของเสียจริง
-//  - PASS: ถ้า spec เป็น lower-bound (≥/Min) แล้วค่าจริงอาจตก (≥10 ได้ 13 แต่จริง 1.3) = ผ่านแบบอันตราย
 function specContains(spec: ParsedSpec, v: number): boolean {
   switch (spec.op) {
     case "between":
@@ -528,13 +558,8 @@ function detectDecimalRisk(
     }
     return null;
   }
-  // pass: flag เฉพาะ spec แบบ lower-bound (กัน false alarm บนค่าที่ถูกต้องอยู่แล้ว เช่น 56 ใน 45-75)
-  if (spec.op === "ge" || spec.op === "gt") {
-    for (const a of alts) {
-      if (!specContains(spec, a))
-        return `ผ่านแบบเสี่ยง — ถ้าค่าจริงคือ ${a} (จุดทศนิยมหาย) จะไม่ผ่านเกณฑ์ — เทียบกับใบจริง`;
-    }
-  }
+  // ★ ฝั่ง PASS ไม่ปักธงแล้ว (user decision 2026-09-11) ★ — เกณฑ์ขั้นต่ำที่ค่าผลเป็นจำนวนเต็มติดธง
+  //   แทบทุกแถว (84 กับเกณฑ์ ≥80 → เตือนว่าอาจเป็น 8.4) ทั้งที่ OCR อ่านถูก = ธงเฟ้อจนคนเลิกเชื่อธง
   return null;
 }
 
@@ -562,6 +587,8 @@ export interface CoaReport {
   page?: number; // เลขหน้า PDF เริ่มที่ 1 · single-page/image = 1
   rows: EvaluatedItem[];
   summary: { pass: number; fail: number; skip: number; total: number };
+  // ใบนี้ไม่มีคอลัมน์เกณฑ์เลย (ดู suppressCopiedSpec) — ต้องเอา spec จากที่ตั้งไว้ในระบบมาเทียบเอง
+  noSpecOnPaper?: boolean;
   debug?: CoaDebug; // optional — แนบเฉพาะตอนรันจริง (route/test-coa), unit test ไม่ต้องมี
 }
 
@@ -582,27 +609,30 @@ export function summarize(rows: EvaluatedItem[]): CoaReport["summary"] {
 // Evaluate ทั้งใบ — loop เรียก evaluateItem แล้วรวม summary
 // ใบที่ไม่มีคอลัมน์เกณฑ์เลย (เช่น Imerys TIMREX) โมเดลจะ copy ค่าผลมาเป็น spec → เทียบตัวเองผ่านหมด
 //   ตัดสินระดับใบ ไม่ใช่รายแถว — บางใบมีแถวที่ค่าตรงเกณฑ์พอดีโดยชอบธรรม (RI-015 Sb "<15")
-function suppressCopiedSpec(rows: EvaluatedItem[]): EvaluatedItem[] {
+function suppressCopiedSpec(rows: EvaluatedItem[]): { rows: EvaluatedItem[]; noSpecOnPaper: boolean } {
   const copied = (r: EvaluatedItem) =>
     !!r.specRaw && r.specRaw.replace(/\s/g, "") === r.resultRaw?.replace(/\s/g, "");
   const comparable = rows.filter((r) => r.specRaw && r.resultRaw);
-  if (comparable.length < 3) return rows;
-  if (comparable.filter(copied).length / comparable.length < 0.6) return rows;
+  if (comparable.length < 3) return { rows, noSpecOnPaper: false };
+  if (comparable.filter(copied).length / comparable.length < 0.6) return { rows, noSpecOnPaper: false };
 
-  return rows.map((r) =>
-    r.status === "PASS" && copied(r)
-      ? {
-          ...r,
-          status: "SKIP" as Status,
-          reason: "ใบนี้ไม่มีคอลัมน์เกณฑ์ — ระบบเอาค่าผลมาเทียบกับตัวเอง ต้องตั้ง spec เอง",
-          needsReview: true,
-        }
-      : r
-  );
+  return {
+    noSpecOnPaper: true,
+    rows: rows.map((r) =>
+      r.status === "PASS" && copied(r)
+        ? {
+            ...r,
+            status: "SKIP" as Status,
+            reason: "ใบนี้ไม่มีคอลัมน์เกณฑ์ — ระบบเอาค่าผลมาเทียบกับตัวเอง ต้องตั้ง spec เอง",
+            needsReview: true,
+          }
+        : r
+    ),
+  };
 }
 
 export function evaluateCoa(input: CoaInput): CoaReport {
-  const rows = suppressCopiedSpec((input.items ?? []).map(evaluateItem));
+  const { rows, noSpecOnPaper } = suppressCopiedSpec((input.items ?? []).map(evaluateItem));
   const summary = summarize(rows);
   return {
     filename: input.filename,
@@ -610,6 +640,7 @@ export function evaluateCoa(input: CoaInput): CoaReport {
     lotNo: input.lotNo?.trim() || null,
     rows,
     summary,
+    noSpecOnPaper,
   };
 }
 
@@ -635,7 +666,8 @@ export function formatReport(report: CoaReport): string {
   lines.push(header);
   lines.push("-".repeat(110));
 
-  for (const r of report.rows) {
+  const checkRows = report.rows.filter((r) => !r.infoOnly);
+  for (const r of checkRows) {
     lines.push(
       [
         pad(trunc(r.name, 36), 36),
@@ -649,10 +681,33 @@ export function formatReport(report: CoaReport): string {
     );
   }
   lines.push("-".repeat(110));
-  lines.push(
-    `SUMMARY: ${report.summary.pass} PASS, ${report.summary.fail} FAIL, ${report.summary.skip} SKIP (of ${report.summary.total})`
-  );
+  const n = countRows(report.rows);
+  lines.push(`SUMMARY: ${n.pass} PASS, ${n.fail} FAIL, ${n.skip} SKIP (of ${n.total})`);
+
+  // ค่าบนใบที่ไม่มีเกณฑ์ให้เทียบ — พิมพ์ไว้ให้อ่าน ไม่รวมในตารางผลและไม่นับใน SUMMARY
+  const infoRows = report.rows.filter((r) => r.infoOnly && (r.result != null || r.resultRaw));
+  if (infoRows.length > 0) {
+    lines.push("");
+    lines.push("ค่าบนใบที่ไม่มีเกณฑ์ (ดูอย่างเดียว ไม่นับเป็นรายการตรวจ):");
+    lines.push(
+      "  " +
+        infoRows
+          .map((r) => `${r.name} ${r.result != null ? fmtNum(r.result) : r.resultRaw}${r.unit ? " " + r.unit : ""}`)
+          .join("  ·  ")
+    );
+  }
   return lines.join("\n");
+}
+
+// นับเฉพาะแถวที่ระบบตรวจจริง — แถว infoOnly ไม่มีเกณฑ์ให้เทียบ นับปนแล้ว SKIP บวมไม่ตรงกับที่คนต้องทำ
+export function countRows(rows: { status: Status; infoOnly?: boolean }[]) {
+  const counted = rows.filter((r) => !r.infoOnly);
+  return {
+    pass: counted.filter((r) => r.status === "PASS").length,
+    fail: counted.filter((r) => r.status === "FAIL").length,
+    skip: counted.filter((r) => r.status === "SKIP").length,
+    total: counted.length,
+  };
 }
 
 function pad(s: string, n: number): string {

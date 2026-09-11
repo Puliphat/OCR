@@ -18,7 +18,6 @@
   --good-soft: #edf3ec;
   --bad: #c4554d;         /* fail red */
   --bad-soft: #fbecec;
-  --skip-soft: #f1f1ef;   /* skip muted bg */
   --warn: #e0820e;        /* needs-review amber — สว่างขึ้น (เดิม #b45309 มืดไป) */
   --warn-soft: #fff6da;
   --info: #337ea9;        /* total blue */

@@ -115,7 +115,7 @@
 .stat-value.good { color: var(--good); }
 .stat-value.bad { color: var(--bad); }
 .stat-value.info { color: var(--info); }
-.stat-value.muted { color: var(--ink-3); }
+.stat-value.warn { color: var(--warn); }
 .stat-bar {
   height: 3px;
   border-radius: 2px;
@@ -132,12 +132,75 @@
 .stat-bar-fill.good { background: var(--good); }
 .stat-bar-fill.bad { background: var(--bad); }
 .stat-bar-fill.info { background: var(--info); }
-.stat-bar-fill.muted { background: var(--ink-3); }
+.stat-bar-fill.warn { background: var(--warn); }
+
+/* ใบที่ไม่มีคอลัมน์เกณฑ์ — บอกครั้งเดียวบนการ์ด ดีกว่าเหตุผลเดียวกันซ้ำทุกแถว */
+.no-spec-note {
+  margin: 0 24px 4px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+/* ค่าบนใบที่ไม่มีเกณฑ์ — วางแนวนอนตามใบ ไม่ใช้สีสถานะ จะได้ไม่ดูเหมือนผลตรวจ */
+.info-block {
+  margin: 0 24px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--hover);
+  overflow: hidden;
+}
+.info-block-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 14px 7px;
+}
+.info-block-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.info-block-note {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.info-scroll {
+  overflow-x: auto;
+  padding: 0 14px 12px;
+}
+.info-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.info-table th,
+.info-table td {
+  border: 1px solid var(--line);
+  padding: 6px 12px;
+  text-align: center;
+  white-space: nowrap;
+  background: var(--paper);
+}
+.info-table th {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.info-table td {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--ink);
+}
 
 /* ─── results table ───────────────────────────────────────────────────────── */
 .rows-head {
   display: grid;
-  grid-template-columns: 1.6fr 0.7fr 0.7fr 0.7fr 0.9fr 0.7fr;
+  grid-template-columns: 1.5fr 0.5fr 1fr 0.6fr 0.6fr 0.85fr 0.85fr;
   align-items: center;
   gap: 16px;
   padding: 12px 24px 10px;
@@ -155,7 +218,7 @@
 }
 .row {
   display: grid;
-  grid-template-columns: 1.6fr 0.7fr 0.7fr 0.7fr 0.9fr 0.7fr;
+  grid-template-columns: 1.5fr 0.5fr 1fr 0.6fr 0.6fr 0.85fr 0.85fr;
   align-items: center;
   gap: 16px;
   padding: 14px 24px;
@@ -182,6 +245,12 @@
   font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
   font-size: 12.5px;
   color: var(--ink-3);
+}
+.row-spec {
+  font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
 }
 .row-bound {
   font-family: var(--font-mono), "JetBrains Mono", ui-monospace, monospace;
@@ -215,10 +284,6 @@
   background: var(--bad-soft);
   color: var(--bad);
 }
-.row-status.skip {
-  background: var(--skip-soft);
-  color: var(--ink-3);
-}
 .row-status.review {
   background: var(--warn-soft);
   color: var(--warn);
@@ -230,13 +295,8 @@
   border-radius: 50%;
   background: currentColor;
 }
-/* needsReview PASS — เขียว (ผ่าน) + flag ⚠ amber pulse · ไม่ใช่เขียวล้วน (edge + icon เหลือง + header เหลือง + นับ reviewCount) */
-.row-status.review-pass {
-  background: var(--good-soft);
-  color: var(--good);
-  box-shadow: inset 2px 0 0 var(--warn);
-}
-.row-status.review-pass::before { display: none; }
+/* ช่อง "ผ่าน · ต้องตรวจ" ใช้ ⚠ นำหน้าแทนจุด — จุดกับไอคอนพร้อมกันแล้วป้ายรก */
+.row-status.review::before { display: none; }
 .rev-icon {
   color: #f59e0b;          /* ⚠ สว่างจี๊ดให้เด่น (สว่างกว่า --warn) */
   font-size: 13px;

@@ -69,11 +69,17 @@ export function realignTransposedLabels(
       if (own !== null && Math.abs(own - res) < 1e-9) aligned++;
       else if (left !== null && Math.abs(left - res) < 1e-9) shifted++;
     }
-    if (matched < 4 || shifted === 0 || (aligned + shifted) / matched < 0.6) continue;
+    if (matched < 4 || (aligned + shifted) / matched < 0.6) continue;
+    // ยืนยันได้แล้วว่าบรรทัดคู่นี้คือบล็อกแนวนอนของแถวพวกนี้จริง — เขียนทับค่าเฉพาะตอนที่เห็นว่าเลื่อนจริง
+    const rewrite = shifted > 0;
 
     for (const r of targets) {
       const idx = byName.get(nameKey(r.name));
       if (idx == null || idx < 0) continue;
+      // ชื่ออยู่ในหัวบล็อกที่ใบไม่มีคอลัมน์เกณฑ์ — ตั้งธงก่อนทุก continue ด้านล่าง ไม่งั้นแถวที่ค่าตรงอยู่แล้ว
+      //   หลุดธง แล้วบล็อกเดียวกันขึ้นจอคนละที่
+      r.infoOnly = true;
+      if (!rewrite) continue;
       const own = singleNumberCell(values[idx] ?? "");
       const before = r.resultRaw;
       if (own === null) {

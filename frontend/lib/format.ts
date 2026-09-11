@@ -1,4 +1,5 @@
-// ฟังก์ชัน format ที่ใช้ร่วมกันใน UI (ตัวเลข / ขนาดไฟล์ / เวลา)
+// ฟังก์ชัน format ที่ใช้ร่วมกันใน UI (ตัวเลข / ขนาดไฟล์ / เวลา / ช่องผล)
+import type { CoaStatus } from "./types";
 
 /** ตัวเลข → string: integer คงเดิม, ทศนิยมตัด trailing zero, null → "—" */
 export function fmtNum(n: number | null): string {
@@ -22,6 +23,37 @@ export function fmtResult(row: {
   if (lo != null && hi != null && lo !== hi) return `${fmtNum(lo)} – ${fmtNum(hi)}`;
   if (row.result != null) return fmtNum(row.result);
   return row.resultRaw ?? "—";
+}
+
+/**
+ * ช่องผลที่หน้างานใช้ — ระบบนี้ไม่มี "ข้าม": ผ่าน / ผ่านแต่ต้องตรวจ / ไม่ผ่าน
+ * SKIP ของ backend = ระบบตัดสินเองไม่ได้ → เข้าช่อง "ต้องตรวจ" ให้คนอ่านใบยืนยัน
+ */
+export type RowBucket = "pass" | "review" | "fail";
+
+export function rowBucket(row: { status: CoaStatus; needsReview?: boolean }): RowBucket {
+  if (row.status === "FAIL") return "fail";
+  if (row.status === "SKIP" || row.needsReview === true) return "review";
+  return "pass";
+}
+
+/** นับ 3 ช่องจากแถวจริงเสมอ — summary ของ backend รวมแถวที่ปักธง/ไม่มีเกณฑ์ไว้ด้วย นับปนแล้วเกินจริง */
+export function bucketCounts(
+  rows: { status: CoaStatus; needsReview?: boolean; infoOnly?: boolean }[]
+) {
+  let pass = 0;
+  let review = 0;
+  let fail = 0;
+  let total = 0;
+  for (const r of rows) {
+    if (r.infoOnly) continue;
+    total++;
+    const b = rowBucket(r);
+    if (b === "pass") pass++;
+    else if (b === "review") review++;
+    else fail++;
+  }
+  return { pass, review, fail, total };
 }
 
 /** bytes → "B" / "KB" / "MB" อ่านง่าย */

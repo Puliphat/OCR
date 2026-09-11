@@ -2,7 +2,7 @@
 // ใช้เวลา debug normalizer/prompt: ผลพิมพ์ลง stdout + append log ที่ coa-logs/run.log
 import * as fs from "fs";
 import * as path from "path";
-import { formatReport, CoaReport } from "../services/coa/coa-evaluator";
+import { formatReport, countRows, CoaReport } from "../services/coa/coa-evaluator";
 import { runCoaPipeline } from "../services/coa/coa-pipeline";
 
 const UPLOADS_DIR = path.join(__dirname, "..", "..", "uploads");
@@ -45,12 +45,14 @@ async function main() {
     }
   }
 
+  // นับจากแถวเหมือนที่ formatReport พิมพ์ — r.summary รวมแถว infoOnly ที่ไม่ได้ตรวจไว้ด้วย
   const totals = all.reduce(
     (a, r) => {
-      a.pass += r.summary.pass;
-      a.fail += r.summary.fail;
-      a.skip += r.summary.skip;
-      a.total += r.summary.total;
+      const n = countRows(r.rows);
+      a.pass += n.pass;
+      a.fail += n.fail;
+      a.skip += n.skip;
+      a.total += n.total;
       return a;
     },
     { pass: 0, fail: 0, skip: 0, total: 0 }
