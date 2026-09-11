@@ -1014,3 +1014,80 @@ branch นี้ = ธงกระจายมั่วในตารางเ�
   summary ไม่คำนวณใหม่หลัง `recoverMissingSieveRows`
 - ของค้างจาก ROUND 37: 4 pass ท้ายไม่อ่านธง `specFromCell` · ฟอกธงที่ `bound-cell` + `spec-pair` ·
   whitelist field ตอน parse ผล LLM · รูฝาแฝดของ `spec-bound` บนแถวจาก deterministic grid
+
+---
+
+## ROUND 39 — แถวที่ผ่านของตารางแนวนอน (เกณฑ์อยู่ใต้ค่า) เลิกปักธงให้คนตรวจ (2026-09-11)
+
+user เปิดใบจริงเทียบแล้วสั่ง: "อ่านถูกอยู่แล้ว ให้เป็นผ่านเลย" — ต่อจากข้อ 4 ของนโยบาย 3 ช่อง (`44cea99`)
+ที่ปลดธงให้ `limit-columns` / `minmax-column` / `paren-spec` / `lot-row-table` ไปแล้ว แต่ **ตกหล่น `spec-below`**
+
+### ต้นเหตุ
+
+`44cea99` เพิ่มตัวแปร `flagPass = !parenSpec && !lotTable` ใน `coa-pipeline.ts` แล้วยกเว้นเฉพาะ 2 path นั้น
+→ path ที่สาม (`spec-row-below-recovery`) ยังปักธงทุกแถว **รวมแถวที่ PASS** และต่อท้ายเหตุผล
+"ระบบจับคู่เกณฑ์ที่อยู่ใต้แถวค่าโดยยึดคอลัมน์ขวา" → Tin Powder `D50`/`D90`/`D100` ไปกองอยู่ช่อง "ต้องตรวจ"
+
+ทั้งสามโมดูลถอยทั้งใบเมื่อนับช่องไม่ครบเหมือนกัน และ `spec-row-below-recovery` ถอยเพิ่มอีกชั้น
+(ค่าที่จับคู่แล้วขัดกับเกณฑ์ = อ่านตำแหน่งผิด → คืน `null` ทั้งใบ) → เข้าเงื่อนไขเดียวกับอีก 2 ตัว ไม่มีเหตุให้แยก
+
+### แก้อย่างไร
+
+ลบ `flagPass` ทิ้ง เหลือกติกาเดียว `if (r.status === "PASS") continue;` ใช้ร่วมทั้ง 3 path
+(`coa-pipeline.ts` บล็อก "แถวที่ระบบจับคู่เกณฑ์-ค่าเองตามตำแหน่งช่อง") — 1 ไฟล์ +3/-4
+
+### ทำไมไม่ต้องรัน before-run ทั้งคลัง
+
+diff เขียนแค่ `needsReview` กับ `reason` ไม่แตะ `status` และ **ไม่มีจุดไหนอ่าน `needsReview` ไปเปลี่ยน verdict**:
+`applyMarginGreen` (`coa-pipeline.ts:435`) กับ `spec-column-recovery.ts:307` เป็น CLEAR-ONLY ทั้งคู่ ·
+ที่เหลือเป็นตัวนับสำหรับ log · keep-best ตัดสินด้วย `passCount` + จำนวน FAIL ไม่เคยดูธง
+⇒ ขยับได้เฉพาะจำนวนธง `columnRebuilt` ไม่มีใน frontend เลย (grep แล้ว) — จอไม่มีที่อื่นแสดงผลของมัน
+
+corpus17 ไม่ต้องรัน: `[spec-below]` ไม่เคยยิงในคลังนั้น (`grep` ทุก `_run-*.log` เจอเฉพาะ newformat)
+และไม่มีไฟล์ Tin Powder ใน `corpus.txt`
+
+### ผลรัน
+
+| ชุด | ก่อนแก้ (HEAD `781ac9b`) | หลังแก้ |
+|---|---|---|
+| Tin Powder เดี่ยว | 3P/0F/1S rows=4 **needsReview=4** | 3P/0F/1S rows=4 **needsReview=1** |
+
+`D50`/`D90`/`D100` = PASS เขียวล้วน ไม่มี ⚑ ไม่มีเหตุผลต่อท้าย · `D10` ยัง SKIP+⚑ ถูกแล้ว
+(ใบเขียนเกณฑ์ 3 ช่องให้ 4 คอลัมน์ — `D10` ไม่มีเกณฑ์บนใบ → ตัดสินไม่ได้ ไม่ใช่ของเสีย)
+
+`npx tsc -p .` = 0 · `spec-row-below-recovery.test.ts` 14/14 · `keep-best-flagging.test.ts` 41/41
+
+### ★ baseline ใหม่ของคลัง new format — และ regression ที่เจอระหว่างทาง ★
+
+`_validate/_run-r44-newformat-after.log` (23 ใบ, 611s) = **185P/6F/33S rows=224 needsReview=31**
+นี่คือรอบแรกที่คลังนี้ถูกรันหลัง `44cea99` / `d7a0590` / `6eceffa` — r42 (194P/0F/39S nr=58) เป็นของก่อน 3 commit นั้น **เทียบตรง ๆ ไม่ได้**
+
+diff รายไฟล์ r42 → r44 ขยับ 5 ไฟล์ 4 ตัวอธิบายได้ตามนโยบายใหม่:
+
+| ไฟล์ | r42 | r44 | อ่านว่าอะไร |
+|---|---|---|---|
+| Mica 200-S | 12P/0F/2S | 12P/**2F**/0S | `Traces` vs `Max 1` → FAIL ตามข้อ 3 ของนโยบาย |
+| PAG-80 | 5P/0F/3S | 5P/**4F**/0S | merged spec cell ที่ user พับไว้แล้ว |
+| PR3200M p2 | 3P/0F/1S | **4P**/0F/0S | ดีขึ้น (`result-recovery` คำเดียว) |
+| TAIHEIYO CMF | 5P/0F/7S | 5P/0F/6S | แถวหาย 1 |
+| **325-HK** | **10P**/0F/2S | **0P**/0F/3S | ★ ตกทั้งใบ ★ |
+
+**325-HK พังจริง และพังมาก่อน diff รอบนี้** — stash patch ออกแล้วรันซ้ำที่ HEAD ได้ `0P/0F/3S` เท่ากันเป๊ะ
+
+กลไก (อ่านจาก log ตรง ๆ): flat LLM ได้ 3 แถว 0 PASS → ยิง grid challenger → `parse-structural-grid`
+อ่านตาราง transposed ได้ **12 แถว: 10 PASS + 2 แถวที่ผลเขียนว่า `Traces`** แต่ `6eceffa` เปลี่ยน
+`Traces` จาก SKIP เป็น **FAIL** → `gridBeatsFlat` (`coa-pipeline.ts:411`) ตัดที่บรรทัดแรก
+`if (grid.summary.fail > 0) return false` → candidate ที่อ่านใบได้ครบถูกปฏิเสธทั้งก้อน
+→ log ออก `✗ grid 10P ไม่ชนะ flat 0P` แล้วคง flat 3 แถว
+
+⇒ **นโยบาย "ค่าเป็นคำ = ไม่ผ่าน" ชนกับ anti-regression rule ของ keep-best โดยตรง** ทุกใบที่มี `Traces`/`N/A`
+ปนอยู่ในตารางที่ deterministic grid อ่านได้ จะเสีย PASS ทั้งใบ ไม่ใช่แค่แถวนั้น · **ยังไม่แก้ในรอบนี้ รอ user เคาะ**
+ทางที่เห็น: (ก) สอน `result-normalizer` ให้ `Traces`/`Nil`/`N/A` = 0 (เสนอไปแล้วตั้งแต่ `6eceffa` ยังไม่ตอบ)
+(ข) ให้ keep-best นับเฉพาะ FAIL ที่ "ค่าหลุดเกณฑ์จริง" ไม่นับ FAIL ที่เกิดจากค่าเป็นคำ
+
+### ค้างไว้ (คนละ commit คนละ gate)
+
+- ★ **325-HK 0 PASS** ★ ข้างบน — ตัวที่เจ็บที่สุดในคลังตอนนี้
+- TAIHEIYO CMF แถวหาย 1 แถว (r42 12 แถว → r44 11 แถว) ยังไม่ได้ไล่ว่าหายที่ขั้นไหน
+- corpus17 ยังไม่ถูกรันกับ `44cea99`/`d7a0590`/`6eceffa` เลย — baseline ล่าสุดของคลังนั้นยังเป็น r42/r43
+- ของค้างจาก ROUND 38 ทั้งหมดยังอยู่

@@ -851,8 +851,8 @@ async function runExtractionPass(
     }
   }
 
-  // แถวที่ระบบจับคู่เกณฑ์-ค่าเองตามตำแหน่งช่อง — คนต้องตรวจ เหมือน path spatial อื่น
-  //   ยกเว้น paren-spec กับ lot-row-table: ทั้งคู่อ่านช่องจากหัวตารางแล้วถอยเมื่อนับช่องไม่ครบ แถวผ่านจึงเชื่อได้
+  // แถวที่ระบบจับคู่เกณฑ์-ค่าเองตามตำแหน่งช่อง — แถวที่ไม่ผ่าน/ตัดสินไม่ได้เท่านั้นที่ให้คนตรวจ
+  //   ทั้ง 3 path นับช่องจากหัวตาราง/ป้ายคอลัมน์แล้วถอยทั้งใบเมื่อนับไม่ครบหรือค่าขัดเกณฑ์ แถวผ่านจึงเชื่อได้
   const rebuilt = lotTable?.items ?? parenSpec?.items ?? specBelow?.items;
   if (rebuilt) {
     const why = lotTable
@@ -860,12 +860,11 @@ async function runExtractionPass(
       : parenSpec
       ? "ระบบอ่านค่าจากช่อง Average และเกณฑ์ในวงเล็บเอง — เทียบกับใบจริง"
       : "ระบบจับคู่เกณฑ์ที่อยู่ใต้แถวค่าโดยยึดคอลัมน์ขวา — เทียบกับใบจริง";
-    const flagPass = !parenSpec && !lotTable;
     const names = new Set(rebuilt.map((i) => String(i.name ?? "").trim()));
     for (const r of evaluated.rows) {
       if (!names.has(r.name.trim())) continue;
       r.columnRebuilt = true;
-      if (!flagPass && r.status === "PASS") continue;
+      if (r.status === "PASS") continue;
       r.needsReview = true;
       r.reason = r.reason?.trim() ? `${r.reason} · ${why}` : why;
     }
