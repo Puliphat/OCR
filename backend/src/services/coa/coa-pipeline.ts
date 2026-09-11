@@ -37,6 +37,7 @@ import { recoverLotRowTable } from "./lot-row-table-recovery";
 import { recoverParenSpecRows } from "./paren-spec-recovery";
 import { recoverSplitBoundCells } from "./bound-cell-recovery";
 import { recoverSpecRowBelow } from "./spec-row-below-recovery";
+import { adoptGridTextRows } from "./grid-text-rows";
 import {
   dropUngroundedItems,
   downgradeUngroundedFails,
@@ -404,11 +405,17 @@ export function flagChallengerPasses(
   return { surfaced, greenlit, overwritten, marginCleared };
 }
 
+// FAIL ที่ระบบอ่านค่าเป็นตัวเลขได้ = อาจมาจาก challenger จับคู่คอลัมน์ผิดจนปั้นของเสีย — ยังใช้ตัดทั้งใบเหมือนเดิม
+//   แต่ FAIL ที่เกิดเพราะใบเขียนผลเป็นคำ (Traces) คือสิ่งที่อยู่บนใบจริง ตัดทิ้ง = แถวที่เหลือหายตามทั้งใบ
+function numericFailCount(r: CoaReport): number {
+  return r.rows.filter((x) => x.status === "FAIL" && x.result != null).length;
+}
+
 // ★ keep-best gate (anti-regression) ★ — เก็บ grid เฉพาะเมื่อครบ 3:
-//   (1) grid ไม่สร้าง FAIL (2) grid PASS count ต่อชื่อ ≥ flat ทุกชื่อ (multiset — ห้ามทำ PASS ดีหาย แม้ชื่อซ้ำ)
+//   (1) grid ไม่สร้าง FAIL จากค่าตัวเลข (2) grid PASS count ต่อชื่อ ≥ flat ทุกชื่อ (multiset — ห้ามทำ PASS ดีหาย แม้ชื่อซ้ำ)
 //   (3) grid เพิ่ม PASS รวม. ไม่ครบ → คง flat → 0 regression. (ZP10: grid 1P < flat 4P → คง flat)
 function gridBeatsFlat(grid: CoaReport, flat: CoaReport): boolean {
-  if (grid.summary.fail > 0) return false;
+  if (numericFailCount(grid) > 0) return false;
   if (!preservesPasses(grid, flat)) return false;
   return passCount(grid) > passCount(flat);
 }
@@ -965,7 +972,10 @@ async function runExtractionPass(
   }
 
   // แถวข้อความที่ผ่านเพราะเกณฑ์ตรงกับผล — ใบต้องเขียนข้อความนั้นไว้ทั้งสองช่องจริง ไม่งั้นคือ LLM คัดมาเอง
-  const copiedText = downgradeCopiedTextPasses(evaluated.rows, text);
+  //   ข้ามเมื่อแถวมาจาก grid จริง: ช่องเกณฑ์กับช่องผลแยกกันอยู่แล้ว ไม่มีการคัดให้จับ (นับคำใน flat text ไม่ตรงเพราะคนละลำดับ token)
+  const copiedText = isDeterministicGrid && gridSource === "structural"
+    ? { downgraded: [] }
+    : downgradeCopiedTextPasses(evaluated.rows, text);
   if (copiedText.downgraded.length > 0) {
     console.warn(
       `  [copied-text] downgrade ${copiedText.downgraded.length} PASS→SKIP (เกณฑ์เป็นสำเนาของค่าผล): ${copiedText.downgraded
@@ -1098,6 +1108,18 @@ async function runFlatGridBest(
       filename, filePath, gridText!, text, engine, page, new OllamaCoaService(), "grid", gridSource, gridOrient,
       undefined, tokens
     );
+    // แถวข้อความของใบที่มีเส้นตารางจริง — เชื่อช่องของ grid ไม่เชื่อการจับคู่ของ LLM
+    if (isStructural) {
+      const adopt = adoptGridTextRows(flatReport, gridReport);
+      if (adopt) {
+        console.log(
+          `  [grid-text] ใช้แถวข้อความจาก grid ${adopt.adopted.length} แถว แทนของ LLM ${adopt.replaced.length} แถว: ${adopt.adopted
+            .map((n) => truncForLog(n, 30))
+            .join(", ")}`
+        );
+      }
+    }
+
     if (gridBeatsFlat(gridReport, flatReport)) {
       // grid won → carry product/lotNo from flat when the grid pass didn't recover them (the
       //   structural parser doesn't see prose like "GRADE: …" that the flat LLM read) — cosmetic.
@@ -1109,7 +1131,7 @@ async function runFlatGridBest(
         console.warn(`  [keep-best] ⚠ grid เขียนเลขทับแถวที่ flat ผ่านอยู่แล้ว — ${o} · ปักธงให้คนตรวจ`);
       }
       console.log(
-        `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (0 FAIL, PASS เดิมครบ) — ใช้ grid · needsReview +${flag.surfaced}${
+        `  [keep-best] ✓ grid ชนะ ${passCount(flatReport)}P→${passCount(gridReport)}P (ไม่มี FAIL จากค่าตัวเลข, PASS เดิมครบ) — ใช้ grid · needsReview +${flag.surfaced}${
           flag.greenlit > 0 ? ` · clean-green +${flag.greenlit} (แถวที่ flat อ่านไม่ออก)` : ""
         }${flag.marginCleared > 0 ? ` · margin-green เคลียร์ ${flag.marginCleared}` : ""}`
       );
@@ -1220,7 +1242,7 @@ async function thaiChallenge(
     // ส่งข้อความไทยกลับไปหาป้าย product/lot — **เพิ่มตรงที่ default ว่าง ไม่ใช่เขียนทับ** (ดู runCoaPipeline)
     if (sink) sink.text = thOcr.flat;
     console.log(
-      `  [th-ocr] ✓ เครื่องอ่านไทยชนะ ${passCount(best)}P→${passCount(thBest)}P (0 FAIL, PASS เดิมครบ) · needsReview +${thFlag.surfaced}`
+      `  [th-ocr] ✓ เครื่องอ่านไทยชนะ ${passCount(best)}P→${passCount(thBest)}P (ไม่มี FAIL จากค่าตัวเลข, PASS เดิมครบ) · needsReview +${thFlag.surfaced}`
     );
     return thBest;
   } catch (e) {
@@ -1292,7 +1314,7 @@ async function processPage(
           filename, filePath, hqOcr.flat, "rapidocr", page,
           hqGrid, hqGrid ? "spatial" : undefined, undefined, hqOcr.tokens
         );
-        // gridBeatsFlat = "challenger ชนะ incumbent ขาด" (generic: 0 FAIL, PASS เดิมครบ, PASS เพิ่ม)
+        // gridBeatsFlat = "challenger ชนะ incumbent ขาด" (generic: ไม่มี FAIL จากค่าตัวเลข, PASS เดิมครบ, PASS เพิ่ม)
         if (gridBeatsFlat(hqBest, best)) {
           if (!hqBest.product && best.product) hqBest.product = best.product;
           if (!hqBest.lotNo && best.lotNo) hqBest.lotNo = best.lotNo;
@@ -1309,7 +1331,7 @@ async function processPage(
             );
           }
           console.log(
-            `  [hq-ocr] ✓ HQ ชนะ ${passCount(best)}P→${passCount(hqBest)}P (0 FAIL, PASS เดิมครบ) — ใช้ HQ · needsReview +${hqFlag.surfaced}`
+            `  [hq-ocr] ✓ HQ ชนะ ${passCount(best)}P→${passCount(hqBest)}P (ไม่มี FAIL จากค่าตัวเลข, PASS เดิมครบ) — ใช้ HQ · needsReview +${hqFlag.surfaced}`
           );
           return hqBest;
         }

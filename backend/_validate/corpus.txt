@@ -1,3 +1,4 @@
+uploads/(NYGLOS8).pdf
 uploads/20260203_Lot240521.pdf
 uploads/20260305_Inolob_T204F.pdf
 uploads/20260306_TR_1099.pdf
@@ -15,3 +16,25 @@ uploads/20260514_4A_Lot_34002411172.pdf
 uploads/20260514_RB220_72700403.pdf
 uploads/20260518_PR1950W_Lot_4064-08__4064-09.pdf
 uploads/20260527_ KGP-H65 Lot 25110901.pdf
+uploads/20260610_CIIR1066 Lot C4Z13,C4Z14.pdf
+uploads/20260618_TSC Zeolite Lot 251204.pdf
+uploads/20260702_TR 1099 Lot 100007713.pdf
+uploads/20260721_FC-250-1500 Lot 037-24-1.pdf
+uploads/20260805_HG-PP#180 Lot 080312.2.pdf
+uploads/20260820_FRICSTAR Lot 25006014.PDF
+uploads/20260820_Z99 2-3.5 UM Lot Z25L8-7.pdf
+uploads/20260826_Calcium Meta Silicate (Kemolit KF-3) Lot F300925021.pdf
+uploads/20260826_TAIHEIYO CMF  Lot  12607181.pdf
+uploads/20260826_TXAX-A  (Potassium Hexatitanate)Lot A-66066, A-66096.pdf
+uploads/325-HK.pdf
+uploads/Copper Fiber CCW-210(A).pdf
+uploads/KGP-H65.pdf
+uploads/Kemolit KF-3.pdf
+uploads/Mica 200-S .pdf
+uploads/PAG-80.pdf
+uploads/PR3200M.pdf
+uploads/SA149.pdf
+uploads/TXAX-MA  (Potassium Hexatitanate).pdf
+uploads/Tin Powder AT-Sn No.200.pdf
+uploads/VERMICULITE #0.pdf
+uploads/Zirconium Silicate MZ-1000B.pdf

@@ -35,8 +35,8 @@ function check(label: string, got: unknown, want: unknown) {
 {
   const r = evaluateItem({ name: "total", specRaw: "100%", result: 100, specFromCell: true });
   check("เกณฑ์ 100% + ผล 100 → PASS", r.status, "PASS");
-  // เท่ากันที่ค่าไม่ใช่ 0 — ทิศของเกณฑ์ยังเปลี่ยนคำตัดสินได้ (101 ผ่านไหม?) → ธงยังต้องติด
-  check("เท่ากันที่ค่าอื่นยังปักธง", r.needsReview, true);
+  // แถว total คือตัวเช็คยอดรวม — ผลเท่าเกณฑ์เป๊ะ ผ่านทุกทิศที่เป็นไปได้ ธงบอกอะไรไม่ได้ (user 2026-09-11)
+  check("เท่าเกณฑ์เป๊ะ ไม่ปักธง", r.needsReview, false);
 }
 
 // 5. ขอบช่วงปกติไม่เกี่ยวกับด่านนี้ — Kemolit BulkDensity 0.45~0.50 ผล 0.50 ยัง SKIP เหมือนเดิม

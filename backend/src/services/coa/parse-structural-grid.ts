@@ -391,6 +391,15 @@ function emitGridItems(
       }
     }
 
+    // ★ เกณฑ์ที่เป็นข้อความ (淡黄色 / Absent / K2Ti6O13) ★ — classifySpec รับเฉพาะเกณฑ์ตัวเลข เลยทิ้งช่องนี้ไป
+    //   หยิบข้อความดิบในคอลัมน์เกณฑ์มาให้ evaluator เทียบคำ — ข้ามช่องที่อ่านเป็นเลขได้ (bare-eq มีกติกาของมันเอง)
+    if (!spec && specCol > 0 && specCol !== resultCol && !otherValueCols.has(specCol)) {
+      const cell = nrm(row[specCol] ?? "");
+      if (cell && numOrNull(cell) === null && specCol !== meshIdx && specCol !== methodIdx && specCol !== unitIdx) {
+        spec = { specRaw: cell };
+      }
+    }
+
     // ABSTAIN: a spacer row (no spec, no result) is dropped; a row with no identifiable name is not
     //   emitted (phantom). A row with only one of spec/result still emits → evaluator honest-SKIPs.
     if (!spec && !resultRaw) continue;
