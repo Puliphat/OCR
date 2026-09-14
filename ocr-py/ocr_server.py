@@ -12,6 +12,13 @@ import numpy as np
 from rapidocr import RapidOCR
 from rapidocr.utils.typings import ModelType, OCRVersion, LangRec
 
+# pm2 บน Windows ส่ง stdout ผ่าน codepage ของเครื่อง (874/1252) — log ที่มีอักษรไทย/★/→ จะ throw
+# UnicodeEncodeError แล้วพา request ที่แค่จะเขียน log พังไปด้วย (ท่าเดียวกับ pdf_table.py)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 _MT = {"mobile": ModelType.MOBILE, "server": ModelType.SERVER}
 _OV = {"PP-OCRv4": OCRVersion.PPOCRV4, "PP-OCRv5": OCRVersion.PPOCRV5}
 
